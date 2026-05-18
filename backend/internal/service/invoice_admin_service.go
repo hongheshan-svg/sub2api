@@ -33,14 +33,14 @@ var invoiceNoFormat = regexp.MustCompile(`^[A-Za-z0-9-]{6,64}$`)
 
 // allowedInvoiceMimeTypes whitelists upload MIME types for invoices.
 var allowedInvoiceMimeTypes = map[string]bool{
-	"application/pdf":               true,
-	"image/png":                     true,
-	"image/jpeg":                    true,
-	"image/jpg":                     true,
-	"application/zip":               true,
-	"application/x-zip-compressed":  true,
-	"application/octet-stream":      true,
-	"application/vnd.ms-excel":      true,
+	"application/pdf":              true,
+	"image/png":                    true,
+	"image/jpeg":                   true,
+	"image/jpg":                    true,
+	"application/zip":              true,
+	"application/x-zip-compressed": true,
+	"application/octet-stream":     true,
+	"application/vnd.ms-excel":     true,
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
 }
 
@@ -476,4 +476,3 @@ func prefixedInvoiceColumns(alias string) string {
 	}
 	return strings.Join(out, ", ")
 }
-
