@@ -79,15 +79,8 @@ func SetupRouter(
 				syncSEOEnabled(frontendServer, settingService)
 			})
 
-			// Register SEO crawler endpoints (always available; respect noindex via meta).
-			seoH := handler.NewSEOHandler(
-				frontendServer.SEORegistry(),
-				cfg.Server.FrontendURL,
-				&legalDocSourceAdapter{svc: settingService},
-			)
-			r.GET("/robots.txt", seoH.Robots)
-			r.GET("/sitemap.xml", seoH.Sitemap)
-			r.GET("/llms.txt", seoH.LLMsTxt)
+			// Register SEO crawler endpoints (embed build only — no-op otherwise).
+			registerSEOEndpoints(r, frontendServer, settingService, cfg.Server.FrontendURL)
 
 			r.Use(frontendServer.Middleware())
 		}
@@ -104,7 +97,7 @@ func SetupRouter(
 // syncSEOEnabled reads the current SEO toggle from settings and applies it to the frontend server.
 // Failures are swallowed (logged at debug level) — SEO toggle must never block startup.
 func syncSEOEnabled(fs *web.FrontendServer, svc *service.SettingService) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := contextWithTimeout()
 	defer cancel()
 	s, err := svc.GetPublicSettings(ctx)
 	if err != nil || s == nil {
@@ -113,24 +106,8 @@ func syncSEOEnabled(fs *web.FrontendServer, svc *service.SettingService) {
 	fs.SetSEOEnabled(s.SEOEnabled)
 }
 
-// legalDocSourceAdapter bridges SettingService's public settings (which carry
-// login_agreement_documents) into the LegalDocSource interface that SEOHandler needs.
-type legalDocSourceAdapter struct {
-	svc *service.SettingService
-}
-
-func (a *legalDocSourceAdapter) ListPublic() []handler.LegalDoc {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	s, err := a.svc.GetPublicSettings(ctx)
-	if err != nil || s == nil {
-		return nil
-	}
-	out := make([]handler.LegalDoc, 0, len(s.LoginAgreementDocuments))
-	for _, d := range s.LoginAgreementDocuments {
-		out = append(out, handler.LegalDoc{ID: d.ID, Title: d.Title})
-	}
-	return out
+func contextWithTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Second)
 }
 
 // registerRoutes 注册所有 HTTP 路由
