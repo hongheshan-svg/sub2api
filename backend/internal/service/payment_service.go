@@ -188,6 +188,9 @@ type PaymentService struct {
 	resumeService            *PaymentResumeService
 	affiliateService         *AffiliateService
 	notificationEmailService *NotificationEmailService
+	invoiceNotifier          *NotificationService
+	invoiceSettingService    *SettingService
+	invoiceEmailSender       InvoiceEmailSender
 }
 
 func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService) *PaymentService {
@@ -198,6 +201,31 @@ func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, load
 
 func (s *PaymentService) SetNotificationEmailService(notificationEmailService *NotificationEmailService) {
 	s.notificationEmailService = notificationEmailService
+}
+
+func (s *PaymentService) SetInvoiceNotifier(n *NotificationService) {
+	if s == nil {
+		return
+	}
+	s.invoiceNotifier = n
+}
+
+func (s *PaymentService) SetInvoiceSettingService(ss *SettingService) {
+	if s == nil {
+		return
+	}
+	s.invoiceSettingService = ss
+}
+
+type InvoiceEmailSender interface {
+	SendEmailWithAttachment(ctx context.Context, to, subject, body string, attachments []EmailAttachment) error
+}
+
+func (s *PaymentService) SetInvoiceEmailSender(sender InvoiceEmailSender) {
+	if s == nil {
+		return
+	}
+	s.invoiceEmailSender = sender
 }
 
 // --- Provider Registry ---
