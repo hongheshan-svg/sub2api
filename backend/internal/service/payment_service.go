@@ -83,6 +83,7 @@ type CreateOrderRequest struct {
 	PaymentSource   string
 	OrderType       string
 	PlanID          int64
+	Locale          string
 }
 
 type CreateOrderResponse struct {
@@ -174,21 +175,19 @@ type TopUserStat struct {
 // --- Service ---
 
 type PaymentService struct {
-	providerMu            sync.Mutex
-	providersLoaded       bool
-	entClient             *dbent.Client
-	registry              *payment.Registry
-	loadBalancer          payment.LoadBalancer
-	redeemService         *RedeemService
-	subscriptionSvc       *SubscriptionService
-	configService         *PaymentConfigService
-	userRepo              UserRepository
-	groupRepo             GroupRepository
-	resumeService         *PaymentResumeService
-	affiliateService      *AffiliateService
-	invoiceNotifier       *NotificationService // optional, set via SetInvoiceNotifier
-	invoiceSettingService *SettingService      // optional, set via SetInvoiceSettingService; used for site-name lookup in invoice emails
-	invoiceEmailSender    InvoiceEmailSender   // optional; nil means invoice email features are disabled (admin will get EMAIL_NOT_CONFIGURED at runtime)
+	providerMu               sync.Mutex
+	providersLoaded          bool
+	entClient                *dbent.Client
+	registry                 *payment.Registry
+	loadBalancer             payment.LoadBalancer
+	redeemService            *RedeemService
+	subscriptionSvc          *SubscriptionService
+	configService            *PaymentConfigService
+	userRepo                 UserRepository
+	groupRepo                GroupRepository
+	resumeService            *PaymentResumeService
+	affiliateService         *AffiliateService
+	notificationEmailService *NotificationEmailService
 }
 
 func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService) *PaymentService {
@@ -197,38 +196,8 @@ func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, load
 	return svc
 }
 
-// SetInvoiceNotifier injects the notification service used for invoice/refund hooks.
-// This is intentionally a setter (not a constructor arg) to avoid widening
-// NewPaymentService's signature. Pass nil to disable in-app notifications.
-func (s *PaymentService) SetInvoiceNotifier(n *NotificationService) {
-	if s == nil {
-		return
-	}
-	s.invoiceNotifier = n
-}
-
-// SetInvoiceSettingService injects the SettingService used by invoice email
-// body builders to look up the site name. Pass nil to fall back to "Sub2API".
-func (s *PaymentService) SetInvoiceSettingService(ss *SettingService) {
-	if s == nil {
-		return
-	}
-	s.invoiceSettingService = ss
-}
-
-// InvoiceEmailSender abstracts the email transport used by CompleteInvoiceRequest.
-// Implemented by *EmailService.
-type InvoiceEmailSender interface {
-	SendEmailWithAttachment(ctx context.Context, to, subject, body string, attachments []EmailAttachment) error
-}
-
-// SetInvoiceEmailSender injects the email sender used by CompleteInvoiceRequest.
-// Pass nil to disable email-based invoice completion (will error at runtime).
-func (s *PaymentService) SetInvoiceEmailSender(sender InvoiceEmailSender) {
-	if s == nil {
-		return
-	}
-	s.invoiceEmailSender = sender
+func (s *PaymentService) SetNotificationEmailService(notificationEmailService *NotificationEmailService) {
+	s.notificationEmailService = notificationEmailService
 }
 
 // --- Provider Registry ---
