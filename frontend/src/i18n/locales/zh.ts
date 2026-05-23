@@ -4107,6 +4107,9 @@ export default {
       createProxy: '添加代理',
       editProxy: '编辑代理',
       deleteProxy: '删除代理',
+      ad: {
+        inline: '正在寻找合适的代理 IP？'
+      },
       deleteConfirmMessage: "确定要删除代理 '{name}' 吗？",
       testProxy: '测试代理',
       dataImport: '导入',
@@ -5473,7 +5476,7 @@ export default {
         emailSuffixWhitelist: '邮箱域名白名单',
         emailSuffixWhitelistHint:
           "仅允许使用指定域名的邮箱注册账号（例如 {'@'}qq.com, {'@'}gmail.com, *.edu.cn）",
-        emailSuffixWhitelistPlaceholder: '@example.com, *.edu.cn',
+        emailSuffixWhitelistPlaceholder: "{'@'}example.com, *.edu.cn",
         emailSuffixWhitelistInputHint: '留空则不限制。使用 *.edu.cn 可匹配 edu.cn 及其子域名。',
         promoCode: '优惠码',
         promoCodeHint: '允许用户在注册时使用优惠码',
