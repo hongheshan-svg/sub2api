@@ -21,7 +21,7 @@
         </div>
       </div>
 
-      <!-- Right: Announcements + Language + Subscriptions + Balance + User Dropdown -->
+      <!-- Right: Announcements + Docs + Language + Subscriptions + Balance + User Dropdown -->
       <div class="flex items-center gap-3">
         <!-- Announcement Bell -->
         <AnnouncementBell v-if="user" />
@@ -116,18 +116,6 @@
                   <Icon name="key" size="sm" />
                   {{ t('nav.apiKeys') }}
                 </router-link>
-
-                <a
-                  v-if="docUrl"
-                  :href="docUrl"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  @click="closeDropdown"
-                  class="dropdown-item"
-                >
-                  <Icon name="book" size="sm" />
-                  {{ t('nav.docs') }}
-                </a>
 
                 <a
                   v-if="authStore.isAdmin"
@@ -239,7 +227,6 @@ const user = computed(() => authStore.user)
 const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 const contactInfo = computed(() => appStore.contactInfo)
-const docUrl = computed(() => appStore.docUrl)
 const avatarUrl = computed(() => user.value?.avatar_url?.trim() || '')
 
 // 只在标准模式的管理员下显示新手引导按钮
