@@ -267,7 +267,7 @@ func (s *PaymentService) ListInvoiceProfiles(ctx context.Context, userID int64) 
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_PROFILE_LIST_FAILED", "failed to list invoice profiles").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	profiles := make([]InvoiceProfile, 0)
 	for rows.Next() {
@@ -549,7 +549,7 @@ func (s *PaymentService) ListInvoiceRequests(ctx context.Context, userID int64, 
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("INVOICE_REQUEST_LIST_FAILED", "failed to list invoice requests").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	requests := make([]InvoiceRequest, 0)
 	requestIDs := make([]int64, 0)
@@ -606,7 +606,7 @@ func (s *PaymentService) ListInvoiceableOrders(ctx context.Context, userID int64
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("INVOICE_ORDER_LIST_FAILED", "failed to list invoiceable orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	orders := make([]InvoiceRequestOrder, 0)
 	for rows.Next() {
@@ -680,7 +680,7 @@ func queryInvoiceableOrdersByIDs(ctx context.Context, tx *sql.Tx, userID int64, 
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_ORDER_LOAD_FAILED", "failed to load invoice orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	orders := make([]InvoiceRequestOrder, 0)
 	for rows.Next() {
@@ -707,7 +707,7 @@ func queryInvoiceRequestOrders(ctx context.Context, db *sql.DB, requestIDs []int
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_REQUEST_ORDER_LIST_FAILED", "failed to list invoice request orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make(map[int64][]InvoiceRequestOrder, len(requestIDs))
 	for rows.Next() {

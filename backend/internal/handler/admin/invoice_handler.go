@@ -252,4 +252,3 @@ func sanitizeHeader(value string) string {
 	v = strings.ReplaceAll(v, "\n", " ")
 	return strings.TrimSpace(v)
 }
-

@@ -232,8 +232,8 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	// rather than after downloading hundreds of MB.
 	if err := checkDirWritable(exeDir); err != nil {
 		return ErrUpdateExeDirNotWritable.WithMetadata(map[string]string{
-			"exe_dir":   exeDir,
-			"exe_path":  exePath,
+			"exe_dir":    exeDir,
+			"exe_path":   exePath,
 			"underlying": err.Error(),
 		})
 	}

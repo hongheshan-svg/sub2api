@@ -49,13 +49,13 @@ func (s *PaymentService) OnOrderRefundedForInvoices(ctx context.Context, orderID
 	for rows.Next() {
 		var l linked
 		if err := rows.Scan(&l.ReqID, &l.UserID, &l.SerialNo, &l.Status); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			slog.Warn("invoice refund hook: scan failed", "order_id", orderID, "error", err)
 			return
 		}
 		hits = append(hits, l)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if rowsErr := rows.Err(); rowsErr != nil {
 		slog.Warn("invoice refund hook: rows error", "order_id", orderID, "error", rowsErr)
 		return

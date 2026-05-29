@@ -33,14 +33,14 @@ var invoiceNoFormat = regexp.MustCompile(`^[A-Za-z0-9-]{6,64}$`)
 
 // allowedInvoiceMimeTypes whitelists upload MIME types for invoices.
 var allowedInvoiceMimeTypes = map[string]bool{
-	"application/pdf":               true,
-	"image/png":                     true,
-	"image/jpeg":                    true,
-	"image/jpg":                     true,
-	"application/zip":               true,
-	"application/x-zip-compressed":  true,
-	"application/octet-stream":      true,
-	"application/vnd.ms-excel":      true,
+	"application/pdf":              true,
+	"image/png":                    true,
+	"image/jpeg":                   true,
+	"image/jpg":                    true,
+	"application/zip":              true,
+	"application/x-zip-compressed": true,
+	"application/octet-stream":     true,
+	"application/vnd.ms-excel":     true,
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
 }
 
@@ -137,7 +137,7 @@ func (s *PaymentService) AdminListInvoiceRequests(ctx context.Context, params Ad
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("INVOICE_REQUEST_LIST_FAILED", "failed to list invoice requests").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	results := make([]AdminInvoiceRequest, 0)
 	requestIDs := make([]int64, 0)
@@ -350,7 +350,7 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 	if err != nil {
 		return nil, infraerrors.BadRequest("INVOICE_FILE_OPEN_FAILED", "failed to read uploaded file")
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	content, err := io.ReadAll(io.LimitReader(src, maxInvoiceFileBytes+1))
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_FILE_READ_FAILED", "failed to read invoice file").WithCause(err)
@@ -476,4 +476,3 @@ func prefixedInvoiceColumns(alias string) string {
 	}
 	return strings.Join(out, ", ")
 }
-
