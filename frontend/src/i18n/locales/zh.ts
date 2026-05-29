@@ -6955,10 +6955,18 @@ export default {
       invoiceNo: '发票号码',
       processedAt: '处理时间',
       invoiceType: '发票类型',
+      baseAmount: '申请金额',
+      invoiceFee: '专票开票费',
+      invoiceAmount: '实际开票金额',
+      serviceCategory: '开票类目',
     },
     invoiceTypes: {
       general: '普通发票',
       vat_special: '增值税专用发票',
+    },
+    fee: {
+      noticeTitle: '专票须知',
+      notice: '增值税专用发票将收取 {rate}% 开票费,从开票金额中扣除。实际开票金额 = 申请金额 × {net}%,开票类目为{category}。',
     },
     refundCoupling: {
       badge: '订单已退款',
@@ -7013,6 +7021,7 @@ export default {
       invoiceNoRequired: '请填写发票号码',
       completed: '发票邮件已发送至客户邮箱',
       rejected: '已拒绝，通知邮件已发送',
+      completeAmountNotice: '请按实际开票金额 {amount}、类目「{category}」开具增值税专用发票。',
     },
     empty: {
       requests: '暂无开票记录',

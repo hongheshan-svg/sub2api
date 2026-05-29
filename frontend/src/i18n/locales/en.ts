@@ -6775,10 +6775,18 @@ export default {
       invoiceNo: 'Invoice No.',
       processedAt: 'Processed At',
       invoiceType: 'Invoice Type',
+      baseAmount: 'Requested Amount',
+      invoiceFee: 'VAT-Special Fee',
+      invoiceAmount: 'Invoice Amount',
+      serviceCategory: 'Category',
     },
     invoiceTypes: {
       general: 'General Invoice',
       vat_special: 'VAT Special Invoice',
+    },
+    fee: {
+      noticeTitle: 'VAT Special Invoice Notice',
+      notice: 'A {rate}% fee applies to VAT special invoices and is deducted from the amount. Invoice amount = requested amount × {net}%; category: {category}.',
     },
     refundCoupling: {
       badge: 'Refunded',
@@ -6833,6 +6841,7 @@ export default {
       invoiceNoRequired: 'Invoice number is required',
       completed: 'Invoice email sent to customer.',
       rejected: 'Request rejected. Notification email sent.',
+      completeAmountNotice: 'Please issue the VAT special invoice for {amount}, category "{category}".',
     },
     empty: {
       requests: 'No invoice requests',
