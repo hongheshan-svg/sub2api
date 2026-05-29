@@ -1183,6 +1183,8 @@ type PublicSettingsInjectionPayload struct {
 
 	InvoiceVATSpecialFeeRate float64 `json:"invoice_vat_special_fee_rate"`
 	InvoiceServiceCategory   string  `json:"invoice_service_category"`
+
+	FrontendURL string `json:"frontend_url"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1211,6 +1213,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		SiteName:                         settings.SiteName,
 		SiteLogo:                         settings.SiteLogo,
 		SiteSubtitle:                     settings.SiteSubtitle,
+		FrontendURL:                      s.GetFrontendURL(ctx),
 		APIBaseURL:                       settings.APIBaseURL,
 		ContactInfo:                      settings.ContactInfo,
 		DocURL:                           settings.DocURL,

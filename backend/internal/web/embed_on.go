@@ -195,9 +195,26 @@ func (s *FrontendServer) injectSettings(settingsJSON []byte) []byte {
 	// The placeholder will be replaced with actual nonce at request time
 	script := []byte(`<script nonce="` + NonceHTMLPlaceholder + `">window.__APP_CONFIG__=` + string(settingsJSON) + `;</script>`)
 
-	// Inject before </head>
+	// Build the SEO head block from the injected settings.
+	var cfg struct {
+		SiteName     string `json:"site_name"`
+		SiteSubtitle string `json:"site_subtitle"`
+		SiteLogo     string `json:"site_logo"`
+		FrontendURL  string `json:"frontend_url"`
+	}
+	_ = json.Unmarshal(settingsJSON, &cfg)
+	seoHead := BuildSEOHead(SEOInput{
+		SiteName:     cfg.SiteName,
+		SiteSubtitle: cfg.SiteSubtitle,
+		BaseURL:      cfg.FrontendURL,
+		Logo:         cfg.SiteLogo,
+		Lang:         "zh-CN",
+	})
+
+	// Inject SEO head + config script before </head>
 	headClose := []byte("</head>")
-	result := bytes.Replace(s.baseHTML, headClose, append(script, headClose...), 1)
+	inject := append(seoHead, script...)
+	result := bytes.Replace(s.baseHTML, headClose, append(inject, headClose...), 1)
 
 	// Replace <title> with custom site name so the browser tab shows it immediately
 	result = injectSiteTitle(result, settingsJSON)
