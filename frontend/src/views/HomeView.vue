@@ -1926,7 +1926,31 @@ onUnmounted(() => {
   .stat-item { padding: 0 2rem; }
   .pricing-section__title { font-size: 2rem; }
   .table-wrapper { overflow-x: auto; }
-  .pricing-table { min-width: 700px; }
+  /* 区块纵向间距收敛(移动端 80px→约 56px),减少大段留白 */
+  .transfer-experience { padding: 3.5rem 0; }
+  .ide-section { padding: 3.5rem 0; }
+  .stats-section { padding: 3.5rem 0; }
+  .partners-section { padding: 2.5rem 0; }
+  .why-choose { padding: 3rem 0 3.5rem; }
+  /* 大标题字号下调到移动端可读尺度 */
+  .transfer-experience__title { font-size: 2rem; }
+  .ide-section__title { font-size: 2rem; }
+  .stats-section__title { font-size: 2rem; }
+  /* 收敛大间距/卡片内边距,消除 IDE 区块底部 8rem 空洞 */
+  .ide-section__grid { gap: 2.5rem; margin-bottom: 2.5rem; }
+  .transfer-experience__card { padding: 1.75rem; margin-bottom: 2rem; }
+  .stats-section__subtitle { margin-bottom: 2.5rem; }
+  .why-choose__card { padding: 1.75rem; min-height: auto; }
+  /* 统计数字降档,避免占满屏 */
+  .stat-num { font-size: 2.5rem; }
+  .stat-num--xl { font-size: 3rem; }
+  .stat-item { padding: 0 1.25rem; }
+  /* Hero 描述与按钮尺寸收敛 */
+  .hero-section__desc { margin-bottom: 2.5rem; }
+  .hero-section__btn { height: 3rem; padding: 0 1.75rem; font-size: 0.95rem; }
+  /* 定价表:压缩单元格密度,降低横向滚动宽度 */
+  .pricing-table { min-width: 560px; }
+  .pricing-table th, .pricing-table td { padding: 0.75rem 0.85rem; font-size: 0.8125rem; }
 }
 
 @media (max-width: 640px) {
@@ -1935,6 +1959,13 @@ onUnmounted(() => {
   /* 超窄屏(≤640px)进一步压缩顶部栏,保证 320px 机型也不溢出 */
   .home-header__logo { width: 6.5rem; height: 1.75rem; }
   .home-header__cta { padding: 0 0.9rem; font-size: 0.8125rem; }
+  /* 超窄屏(≤640px):Hero 按钮纵向堆叠占满宽度,统计数字再降档,合作伙伴 chip 收紧 */
+  .hero-section__actions { flex-direction: column; align-items: stretch; gap: 0.75rem; }
+  .hero-section__btn { width: 100%; }
+  .stat-num { font-size: 2.25rem; }
+  .stat-num--xl { font-size: 2.75rem; }
+  .partner-chip { padding: 8px 14px; }
+  .transfer-experience__card { padding: 1.5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
