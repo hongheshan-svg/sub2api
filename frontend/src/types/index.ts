@@ -233,6 +233,8 @@ export interface PublicSettings {
   channel_monitor_default_interval_seconds: number
   available_channels_enabled: boolean
   affiliate_enabled: boolean
+  invoice_vat_special_fee_rate: number
+  invoice_service_category: string
 }
 
 export interface AuthResponse {

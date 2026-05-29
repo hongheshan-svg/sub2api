@@ -761,6 +761,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyAvailableChannelsEnabled,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
+		SettingKeyInvoiceVATSpecialFeeRate,
+		SettingKeyInvoiceServiceCategory,
 	}
 
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
@@ -873,6 +875,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
+
+		InvoiceVATSpecialFeeRate: parseInvoiceVATSpecialFeeRate(settings[SettingKeyInvoiceVATSpecialFeeRate]),
+		InvoiceServiceCategory:   parseInvoiceServiceCategory(settings[SettingKeyInvoiceServiceCategory]),
 	}, nil
 }
 
@@ -1175,6 +1180,9 @@ type PublicSettingsInjectionPayload struct {
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
+
+	InvoiceVATSpecialFeeRate float64 `json:"invoice_vat_special_fee_rate"`
+	InvoiceServiceCategory   string  `json:"invoice_service_category"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1237,6 +1245,9 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
+
+		InvoiceVATSpecialFeeRate: settings.InvoiceVATSpecialFeeRate,
+		InvoiceServiceCategory:   settings.InvoiceServiceCategory,
 	}, nil
 }
 
@@ -2392,6 +2403,45 @@ func (s *SettingService) GetAffiliateRebateRatePercent(ctx context.Context) floa
 		return AffiliateRebateRateDefault
 	}
 	return clampAffiliateRebateRate(rate)
+}
+
+// parseInvoiceVATSpecialFeeRate parses a raw setting string into a fee rate.
+// Applies the same clamping logic as GetInvoiceVATSpecialFeeRate for use when
+// the value has already been batch-fetched via GetMultiple.
+func parseInvoiceVATSpecialFeeRate(raw string) float64 {
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate >= 1 {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	return rate
+}
+
+// parseInvoiceServiceCategory parses a raw setting string into a service category.
+// Applies the same fallback logic as GetInvoiceServiceCategory for use when
+// the value has already been batch-fetched via GetMultiple.
+func parseInvoiceServiceCategory(raw string) string {
+	if v := strings.TrimSpace(raw); v != "" {
+		return v
+	}
+	return InvoiceServiceCategoryDefault
+}
+
+// GetInvoiceVATSpecialFeeRate 返回专票开票费率(小数,0<=rate<1);非法或未配置回退默认 0.06。
+func (s *SettingService) GetInvoiceVATSpecialFeeRate(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceVATSpecialFeeRate)
+	if err != nil {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	return parseInvoiceVATSpecialFeeRate(raw)
+}
+
+// GetInvoiceServiceCategory 返回开票类目;空或未配置回退默认「技术服务费」。
+func (s *SettingService) GetInvoiceServiceCategory(ctx context.Context) string {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceServiceCategory)
+	if err != nil {
+		return InvoiceServiceCategoryDefault
+	}
+	return parseInvoiceServiceCategory(raw)
 }
 
 // GetAffiliateRebateFreezeHours 返回返利冻结期（小时）。

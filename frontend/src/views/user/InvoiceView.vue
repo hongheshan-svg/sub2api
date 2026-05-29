@@ -135,7 +135,11 @@
                   </div>
                 </div>
                 <div class="shrink-0 text-left lg:text-right">
-                  <div class="text-lg font-semibold text-gray-900 dark:text-white">{{ formatCurrency(request.total_amount) }}</div>
+                  <div class="text-lg font-semibold text-gray-900 dark:text-white">{{ formatCurrency(request.invoice_amount) }}</div>
+                  <div v-if="request.fee_amount > 0" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('invoice.fields.baseAmount') }} {{ formatCurrency(request.base_amount) }} ·
+                    {{ t('invoice.fields.invoiceFee') }} -{{ formatCurrency(request.fee_amount) }}
+                  </div>
                   <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('invoice.requests.orderCount', { count: request.orders?.length || 0 }) }}</div>
                 </div>
               </div>
@@ -310,6 +314,41 @@
               >
                 {{ t('invoice.actions.clearSelection') }}
               </button>
+            </div>
+
+            <!-- 专票开票费显著提示 -->
+            <div
+              v-if="isVatSpecialSelected"
+              class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200"
+            >
+              <div class="font-semibold">⚠ {{ t('invoice.fee.noticeTitle') }}</div>
+              <div class="mt-1">
+                {{ t('invoice.fee.notice', {
+                  rate: previewFeePercent,
+                  net: previewNetPercent,
+                  category: appStore.invoiceServiceCategory,
+                }) }}
+              </div>
+            </div>
+
+            <!-- 金额拆分 -->
+            <div class="mt-3 space-y-1 text-sm">
+              <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('invoice.fields.baseAmount') }}</span>
+                <span>{{ formatCurrency(selectedTotal) }}</span>
+              </div>
+              <div v-if="isVatSpecialSelected" class="flex justify-between text-amber-700 dark:text-amber-300">
+                <span>{{ t('invoice.fields.invoiceFee') }} ({{ previewFeePercent }}%)</span>
+                <span>-{{ formatCurrency(previewFeeAmount) }}</span>
+              </div>
+              <div class="flex justify-between font-semibold border-t border-gray-200 dark:border-dark-700 pt-1">
+                <span>{{ t('invoice.fields.invoiceAmount') }}</span>
+                <span>{{ formatCurrency(previewInvoiceAmount) }}</span>
+              </div>
+              <div class="flex justify-between text-gray-500 dark:text-gray-400">
+                <span>{{ t('invoice.fields.serviceCategory') }}</span>
+                <span>{{ appStore.invoiceServiceCategory }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -623,6 +662,16 @@ const selectedOrders = computed(() =>
 const selectedTotal = computed(() =>
   selectedOrders.value.reduce((sum, order) => sum + (Number(order.pay_amount) || 0), 0)
 )
+
+const selectedProfile = computed(() =>
+  profiles.value.find((p) => p.id === selectedProfileId.value) || null
+)
+const isVatSpecialSelected = computed(() => selectedProfile.value?.invoice_type === 'vat_special')
+const previewFeeRate = computed(() => (isVatSpecialSelected.value ? appStore.invoiceVatSpecialFeeRate : 0))
+const previewFeeAmount = computed(() => Math.round(selectedTotal.value * previewFeeRate.value * 100) / 100)
+const previewInvoiceAmount = computed(() => Math.round((selectedTotal.value - previewFeeAmount.value) * 100) / 100)
+const previewFeePercent = computed(() => Math.round(previewFeeRate.value * 1000) / 10)
+const previewNetPercent = computed(() => Math.round((1 - previewFeeRate.value) * 1000) / 10)
 
 const currentPageAllSelected = computed(() =>
   invoiceableOrders.value.length > 0 &&

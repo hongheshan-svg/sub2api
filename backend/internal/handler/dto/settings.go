@@ -316,6 +316,9 @@ type PublicSettings struct {
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 
 	RiskControlEnabled bool `json:"risk_control_enabled"`
+
+	InvoiceVATSpecialFeeRate float64 `json:"invoice_vat_special_fee_rate"`
+	InvoiceServiceCategory   string  `json:"invoice_service_category"`
 }
 
 type LoginAgreementDocument struct {

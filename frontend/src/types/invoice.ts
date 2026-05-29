@@ -56,6 +56,11 @@ export interface InvoiceRequest {
   status: InvoiceStatus
   profile_snapshot: InvoiceProfileSnapshot
   total_amount: number
+  base_amount: number
+  fee_rate: number
+  fee_amount: number
+  invoice_amount: number
+  service_category: string
   reject_reason?: string | null
   created_at: string
   updated_at: string
