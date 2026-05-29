@@ -678,6 +678,8 @@ onUnmounted(() => {
   font-size: 0.875rem;
   font-weight: 500;
   text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.2s ease;
 }
 .dark .home-header__cta { color: #e6edf3; border-color: rgba(255,255,255,0.3); }
@@ -1914,6 +1916,11 @@ onUnmounted(() => {
   .hero-section__main { font-size: 2.5rem; }
   .hero-section__kicker { font-size: 1.5rem; padding: 0.4rem 1.25rem; }
   .home-header__menu { display: none; }
+  /* 移动端顶部栏:收窄边距、缩小 logo 与 CTA,避免 logo + 主题键 + 登录/控制台 挤出一行导致文字溢出 */
+  .home-header__inner { width: min(100% - 2rem, 1400px); gap: 0.75rem; padding: 0.875rem 0; }
+  .home-header__logo { width: 7.5rem; height: 1.875rem; }
+  .home-header__theme { width: 1.9rem; height: 1.9rem; }
+  .home-header__cta { height: 2.25rem; padding: 0 1.1rem; }
   .model-section__grid { grid-template-columns: 1fr; }
   .stats-list { flex-wrap: wrap; gap: 2rem; }
   .stat-item { padding: 0 2rem; }
@@ -1925,6 +1932,9 @@ onUnmounted(() => {
 @media (max-width: 640px) {
   .why-choose__grid { grid-template-columns: 1fr; }
   .home-footer__bottom { flex-direction: column; gap: 0.5rem; text-align: center; }
+  /* 超窄屏(≤640px)进一步压缩顶部栏,保证 320px 机型也不溢出 */
+  .home-header__logo { width: 6.5rem; height: 1.75rem; }
+  .home-header__cta { padding: 0 0.9rem; font-size: 0.8125rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
