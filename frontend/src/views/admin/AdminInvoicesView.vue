@@ -116,7 +116,12 @@
                 </div>
               </div>
               <div class="shrink-0 text-left lg:text-right">
-                <div class="text-lg font-semibold text-gray-900 dark:text-white">{{ formatCurrency(item.total_amount) }}</div>
+                <div class="text-lg font-semibold text-gray-900 dark:text-white">{{ formatCurrency(item.invoice_amount) }}</div>
+                <div v-if="item.fee_amount > 0" class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('invoice.fields.baseAmount') }} {{ formatCurrency(item.base_amount) }} ·
+                  {{ t('invoice.fields.invoiceFee') }} -{{ formatCurrency(item.fee_amount) }} ·
+                  {{ t('invoice.fields.serviceCategory') }} {{ item.service_category }}
+                </div>
                 <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('invoice.requests.orderCount', { count: item.orders?.length || 0 }) }}</div>
               </div>
             </div>
@@ -177,6 +182,12 @@
       @close="closeCompleteDialog"
     >
       <form class="space-y-4" @submit.prevent="submitComplete">
+        <div class="mb-3 rounded-lg border border-blue-300 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-700/60 dark:bg-blue-900/20 dark:text-blue-200">
+          {{ t('invoice.admin.completeAmountNotice', {
+            amount: formatCurrency(activeRequest?.invoice_amount ?? 0),
+            category: activeRequest?.service_category || t('invoice.fields.serviceCategory'),
+          }) }}
+        </div>
         <div>
           <label class="input-label">{{ t('invoice.admin.summaryLabel') }}</label>
           <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
