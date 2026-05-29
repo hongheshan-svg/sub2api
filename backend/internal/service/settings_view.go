@@ -293,6 +293,10 @@ type PublicSettings struct {
 
 	// 风控中心功能开关
 	RiskControlEnabled bool `json:"risk_control_enabled"`
+
+	// 发票:专票开票费率与开票类目
+	InvoiceVATSpecialFeeRate float64 `json:"invoice_vat_special_fee_rate"`
+	InvoiceServiceCategory   string  `json:"invoice_service_category"`
 }
 
 type LoginAgreementDocument struct {
