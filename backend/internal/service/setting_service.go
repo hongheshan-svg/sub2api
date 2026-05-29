@@ -2394,6 +2394,31 @@ func (s *SettingService) GetAffiliateRebateRatePercent(ctx context.Context) floa
 	return clampAffiliateRebateRate(rate)
 }
 
+// GetInvoiceVATSpecialFeeRate 返回专票开票费率(小数,0<=rate<1);非法或未配置回退默认 0.06。
+func (s *SettingService) GetInvoiceVATSpecialFeeRate(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceVATSpecialFeeRate)
+	if err != nil {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate >= 1 {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	return rate
+}
+
+// GetInvoiceServiceCategory 返回开票类目;空或未配置回退默认「技术服务费」。
+func (s *SettingService) GetInvoiceServiceCategory(ctx context.Context) string {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceServiceCategory)
+	if err != nil {
+		return InvoiceServiceCategoryDefault
+	}
+	if v := strings.TrimSpace(raw); v != "" {
+		return v
+	}
+	return InvoiceServiceCategoryDefault
+}
+
 // GetAffiliateRebateFreezeHours 返回返利冻结期（小时）。
 // 返回 0 表示不冻结（向后兼容）。
 func (s *SettingService) GetAffiliateRebateFreezeHours(ctx context.Context) int {

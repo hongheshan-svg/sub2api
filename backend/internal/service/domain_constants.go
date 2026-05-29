@@ -449,6 +449,10 @@ const (
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
+
+	// 发票设置
+	SettingKeyInvoiceVATSpecialFeeRate = "invoice_vat_special_fee_rate" // 专票开票费率(0-1 小数,默认 0.06)
+	SettingKeyInvoiceServiceCategory   = "invoice_service_category"     // 开票类目(默认 技术服务费)
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。
