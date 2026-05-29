@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,4 +36,16 @@ func TestComputeInvoiceAmounts(t *testing.T) {
 	fee, inv = computeInvoiceAmounts(0, 0.06)
 	require.Equal(t, 0.00, fee)
 	require.Equal(t, 0.00, inv)
+}
+
+func TestResolveInvoiceFeeConfig_DefaultsWhenNoSettingService(t *testing.T) {
+	s := &PaymentService{} // invoiceSettingService 为 nil → 回退默认
+
+	rate, category := s.resolveInvoiceFeeConfig(context.Background(), InvoiceTypeVATSpecial)
+	require.Equal(t, InvoiceVATSpecialFeeRateDefault, rate)
+	require.Equal(t, InvoiceServiceCategoryDefault, category)
+
+	rate, category = s.resolveInvoiceFeeConfig(context.Background(), InvoiceTypeGeneral)
+	require.Equal(t, 0.0, rate) // 普票费率恒为 0
+	require.Equal(t, InvoiceServiceCategoryDefault, category)
 }

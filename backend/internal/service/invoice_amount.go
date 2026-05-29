@@ -1,6 +1,9 @@
 package service
 
-import "math"
+import (
+	"context"
+	"math"
+)
 
 // 发票计算默认值;管理员未配置或配置非法时回退到这些值。
 const (
@@ -24,4 +27,19 @@ func computeInvoiceAmounts(base, feeRate float64) (feeAmount, invoiceAmount floa
 	feeAmount = round2(base * feeRate)
 	invoiceAmount = round2(base) - feeAmount
 	return feeAmount, invoiceAmount
+}
+
+// resolveInvoiceFeeConfig 解析本次申请适用的费率与类目。
+// 仅专票适用费率;普票费率恒为 0。无 SettingService(如单测)时回退默认值。
+func (s *PaymentService) resolveInvoiceFeeConfig(ctx context.Context, invoiceType string) (feeRate float64, category string) {
+	rate := InvoiceVATSpecialFeeRateDefault
+	category = InvoiceServiceCategoryDefault
+	if s != nil && s.invoiceSettingService != nil {
+		rate = s.invoiceSettingService.GetInvoiceVATSpecialFeeRate(ctx)
+		category = s.invoiceSettingService.GetInvoiceServiceCategory(ctx)
+	}
+	if invoiceType == InvoiceTypeVATSpecial {
+		feeRate = rate
+	}
+	return feeRate, category
 }

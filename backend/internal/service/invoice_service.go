@@ -492,13 +492,17 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	for _, order := range orders {
 		totalAmount += order.PayAmount
 	}
+	totalAmount = round2(totalAmount)
+	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
+	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
 	serialNo := generateInvoiceSerialNo()
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 		RETURNING `+invoiceRequestColumns,
-		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes), totalAmount)
+		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes),
+		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory)
 	req, err := scanInvoiceRequest(row)
 	if err != nil {
 		return nil, err
