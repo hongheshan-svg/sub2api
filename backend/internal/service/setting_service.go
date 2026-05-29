@@ -2533,6 +2533,19 @@ func (s *SettingService) GetSiteName(ctx context.Context) string {
 	return value
 }
 
+func (s *SettingService) GetSiteSubtitle(ctx context.Context) string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteSubtitle)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return "Subscription to API Conversion Platform"
+	}
+	return value
+}
+
+func (s *SettingService) GetDocURL(ctx context.Context) string {
+	value, _ := s.settingRepo.GetValue(ctx, SettingKeyDocURL)
+	return strings.TrimSpace(value)
+}
+
 // GetDefaultConcurrency 获取默认并发量
 func (s *SettingService) GetDefaultConcurrency(ctx context.Context) int {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultConcurrency)
