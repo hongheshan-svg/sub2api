@@ -16,7 +16,8 @@ func resolveBaseURL(c *gin.Context, settingService *service.SettingService) stri
 	}
 	scheme := "https"
 	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
+		// Chained proxies may send "https, http"; take the first value.
+		scheme = strings.TrimSpace(strings.Split(proto, ",")[0])
 	} else if c.Request.TLS == nil {
 		scheme = "http"
 	}
