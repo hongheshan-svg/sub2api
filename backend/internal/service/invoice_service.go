@@ -85,6 +85,13 @@ type InvoiceRequest struct {
 	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
 	Orders          []InvoiceRequestOrder  `json:"orders"`
 
+	// 金额拆分与类目(创建时快照)
+	BaseAmount      float64 `json:"base_amount"`
+	FeeRate         float64 `json:"fee_rate"`
+	FeeAmount       float64 `json:"fee_amount"`
+	InvoiceAmount   float64 `json:"invoice_amount"`
+	ServiceCategory string  `json:"service_category"`
+
 	// Admin-processing fields
 	InvoiceNo       *string    `json:"invoice_no,omitempty"`
 	InvoiceFileName *string    `json:"invoice_file_name,omitempty"`
@@ -612,7 +619,7 @@ func (s *PaymentService) ListInvoiceableOrders(ctx context.Context, userID int64
 }
 
 // invoiceRequestColumns is the canonical SELECT list for invoice_requests.
-const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason`
+const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason, base_amount::float8, fee_rate::float8, fee_amount::float8, invoice_amount::float8, service_category`
 
 func scanInvoiceRequest(scanner interface {
 	Scan(dest ...any) error
@@ -642,6 +649,11 @@ func scanInvoiceRequest(scanner interface {
 		&req.HasRefundedOrders,
 		&req.VoidedAt,
 		&req.VoidedReason,
+		&req.BaseAmount,
+		&req.FeeRate,
+		&req.FeeAmount,
+		&req.InvoiceAmount,
+		&req.ServiceCategory,
 	); err != nil {
 		return InvoiceRequest{}, infraerrors.InternalServer("INVOICE_REQUEST_SCAN_FAILED", "failed to scan invoice request").WithCause(err)
 	}
