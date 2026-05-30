@@ -49,6 +49,8 @@ export const useAppStore = defineStore('app', () => {
 
   const hasActiveToasts = computed(() => toasts.value.length > 0)
   const backendModeEnabled = computed(() => cachedPublicSettings.value?.backend_mode_enabled ?? false)
+  const invoiceVatSpecialFeeRate = computed(() => cachedPublicSettings.value?.invoice_vat_special_fee_rate ?? 0.06)
+  const invoiceServiceCategory = computed(() => cachedPublicSettings.value?.invoice_service_category ?? '技术服务费')
 
   const loadingCount = ref<number>(0)
 
@@ -359,6 +361,8 @@ export const useAppStore = defineStore('app', () => {
         available_channels_enabled: false,
         risk_control_enabled: false,
         affiliate_enabled: false,
+        invoice_vat_special_fee_rate: 0.06,
+        invoice_service_category: '技术服务费',
       }
     }
 
@@ -432,6 +436,8 @@ export const useAppStore = defineStore('app', () => {
     // Computed
     hasActiveToasts,
     backendModeEnabled,
+    invoiceVatSpecialFeeRate,
+    invoiceServiceCategory,
 
     // Actions
     toggleSidebar,

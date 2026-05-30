@@ -85,6 +85,13 @@ type InvoiceRequest struct {
 	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
 	Orders          []InvoiceRequestOrder  `json:"orders"`
 
+	// 金额拆分与类目(创建时快照)
+	BaseAmount      float64 `json:"base_amount"`
+	FeeRate         float64 `json:"fee_rate"`
+	FeeAmount       float64 `json:"fee_amount"`
+	InvoiceAmount   float64 `json:"invoice_amount"`
+	ServiceCategory string  `json:"service_category"`
+
 	// Admin-processing fields
 	InvoiceNo       *string    `json:"invoice_no,omitempty"`
 	InvoiceFileName *string    `json:"invoice_file_name,omitempty"`
@@ -260,7 +267,7 @@ func (s *PaymentService) ListInvoiceProfiles(ctx context.Context, userID int64) 
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_PROFILE_LIST_FAILED", "failed to list invoice profiles").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	profiles := make([]InvoiceProfile, 0)
 	for rows.Next() {
@@ -485,13 +492,17 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	for _, order := range orders {
 		totalAmount += order.PayAmount
 	}
+	totalAmount = round2(totalAmount)
+	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
+	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
 	serialNo := generateInvoiceSerialNo()
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 		RETURNING `+invoiceRequestColumns,
-		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes), totalAmount)
+		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes),
+		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory)
 	req, err := scanInvoiceRequest(row)
 	if err != nil {
 		return nil, err
@@ -538,7 +549,7 @@ func (s *PaymentService) ListInvoiceRequests(ctx context.Context, userID int64, 
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("INVOICE_REQUEST_LIST_FAILED", "failed to list invoice requests").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	requests := make([]InvoiceRequest, 0)
 	requestIDs := make([]int64, 0)
@@ -595,7 +606,7 @@ func (s *PaymentService) ListInvoiceableOrders(ctx context.Context, userID int64
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("INVOICE_ORDER_LIST_FAILED", "failed to list invoiceable orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	orders := make([]InvoiceRequestOrder, 0)
 	for rows.Next() {
@@ -612,7 +623,7 @@ func (s *PaymentService) ListInvoiceableOrders(ctx context.Context, userID int64
 }
 
 // invoiceRequestColumns is the canonical SELECT list for invoice_requests.
-const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason`
+const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason, base_amount::float8, fee_rate::float8, fee_amount::float8, invoice_amount::float8, service_category`
 
 func scanInvoiceRequest(scanner interface {
 	Scan(dest ...any) error
@@ -642,6 +653,11 @@ func scanInvoiceRequest(scanner interface {
 		&req.HasRefundedOrders,
 		&req.VoidedAt,
 		&req.VoidedReason,
+		&req.BaseAmount,
+		&req.FeeRate,
+		&req.FeeAmount,
+		&req.InvoiceAmount,
+		&req.ServiceCategory,
 	); err != nil {
 		return InvoiceRequest{}, infraerrors.InternalServer("INVOICE_REQUEST_SCAN_FAILED", "failed to scan invoice request").WithCause(err)
 	}
@@ -664,7 +680,7 @@ func queryInvoiceableOrdersByIDs(ctx context.Context, tx *sql.Tx, userID int64, 
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_ORDER_LOAD_FAILED", "failed to load invoice orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	orders := make([]InvoiceRequestOrder, 0)
 	for rows.Next() {
@@ -691,7 +707,7 @@ func queryInvoiceRequestOrders(ctx context.Context, db *sql.DB, requestIDs []int
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_REQUEST_ORDER_LIST_FAILED", "failed to list invoice request orders").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make(map[int64][]InvoiceRequestOrder, len(requestIDs))
 	for rows.Next() {

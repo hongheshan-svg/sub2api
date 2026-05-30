@@ -36,7 +36,8 @@ func buildInvoiceAttachmentEmailBody(req *InvoiceRequest, invoiceNo, siteName st
   <tr><td style="color:#666;">申请单号 / Serial</td><td><strong>` + serial + `</strong></td></tr>
   <tr><td style="color:#666;">发票抬头 / Title</td><td>` + title + `</td></tr>
   <tr><td style="color:#666;">发票号码 / Invoice No.</td><td><strong>` + invoiceNoHTML + `</strong></td></tr>
-  <tr><td style="color:#666;">开票金额 / Amount</td><td>` + fmt.Sprintf("%.2f", req.TotalAmount) + `</td></tr>
+  <tr><td style="color:#666;">开票金额 / Amount</td><td>` + fmt.Sprintf("%.2f", req.InvoiceAmount) + `</td></tr>
+  <tr><td style="color:#666;">开票类目 / Category</td><td>` + html.EscapeString(req.ServiceCategory) + `</td></tr>
 </table>
 <p>如未看到附件，请检查邮件客户端的附件区域或垃圾邮件文件夹。</p>
 <p>Your invoice has been issued and is attached to this email. If you do not see the attachment, please check your spam folder.</p>

@@ -165,7 +165,7 @@ func (s *NotificationService) ListForUser(ctx context.Context, userID int64, par
 	if err != nil {
 		return nil, 0, infraerrors.InternalServer("NOTIFICATION_LIST_FAILED", "failed to list notifications").WithCause(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]UserNotification, 0, params.PageSize)
 	for rows.Next() {

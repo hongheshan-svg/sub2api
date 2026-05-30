@@ -203,4 +203,3 @@ func (h *PaymentHandler) CancelInvoiceRequest(c *gin.Context) {
 	}
 	response.Success(c, gin.H{"message": "invoice request cancelled"})
 }
-

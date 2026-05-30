@@ -137,9 +137,31 @@ type cachedOpenAICodexUserAgent struct {
 	expiresAt int64 // unix nano
 }
 
+type cachedOpenAIQuotaAutoPauseSettings struct {
+	settings  OpsOpenAIAccountQuotaAutoPauseSettings
+	expiresAt int64
+}
+
 const openAICodexUserAgentCacheTTL = 60 * time.Second
 const openAICodexUserAgentErrorTTL = 5 * time.Second
 const openAICodexUserAgentDBTimeout = 5 * time.Second
+
+// cachedOpenAIAllowCodexPlugin Codex 插件放行开关缓存（进程内缓存，60s TTL）。
+// IsOpenAIAllowClaudeCodeCodexPluginEnabled 在每个 codex_cli_only 账号的网关请求热路径上被调用，避免每次访问 DB。
+type cachedOpenAIAllowCodexPlugin struct {
+	value     bool
+	expiresAt int64 // unix nano
+}
+
+const openAIAllowCodexPluginCacheTTL = 60 * time.Second
+const openAIAllowCodexPluginErrorTTL = 5 * time.Second
+const openAIAllowCodexPluginDBTimeout = 5 * time.Second
+
+const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
+const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
+const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
+
+const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
 
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
@@ -152,17 +174,35 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo               SettingRepository
-	defaultSubGroupReader     DefaultSubscriptionGroupReader
-	proxyRepo                 ProxyRepository // for resolving websearch provider proxy URLs
-	cfg                       *config.Config
-	onUpdate                  func() // Callback when settings are updated (for cache invalidation)
-	version                   string // Application version
-	webSearchManagerBuilder   WebSearchManagerBuilder
-	antigravityUAVersionCache atomic.Value // *cachedAntigravityUserAgentVersion
-	antigravityUAVersionSF    singleflight.Group
-	openAICodexUACache        atomic.Value // *cachedOpenAICodexUserAgent
-	openAICodexUASF           singleflight.Group
+	settingRepo                 SettingRepository
+	defaultSubGroupReader       DefaultSubscriptionGroupReader
+	proxyRepo                   ProxyRepository // for resolving websearch provider proxy URLs
+	cfg                         *config.Config
+	onUpdate                    func() // Callback when settings are updated (for cache invalidation)
+	version                     string // Application version
+	webSearchManagerBuilder     WebSearchManagerBuilder
+	antigravityUAVersionCache   atomic.Value // *cachedAntigravityUserAgentVersion
+	antigravityUAVersionSF      singleflight.Group
+	openAICodexUACache          atomic.Value // *cachedOpenAICodexUserAgent
+	openAICodexUASF             singleflight.Group
+	openAIAllowCodexPluginCache atomic.Value // *cachedOpenAIAllowCodexPlugin
+	openAIAllowCodexPluginSF    singleflight.Group
+
+	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
+	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
+	// path without ever blocking on the DB; when the cached entry expires, a background
+	// goroutine refreshes it via openAIQuotaAutoPauseSettingsSF (stale-while-revalidate).
+	// This per-service field also gives tests natural isolation — each SettingService
+	// instance owns its own cache, no shared package-level state.
+	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
+	openAIQuotaAutoPauseSettingsSF    singleflight.Group
+}
+
+// DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）
+type DefaultPlatformQuotaSetting struct {
+	DailyLimitUSD   *float64 `json:"daily"`
+	WeeklyLimitUSD  *float64 `json:"weekly"`
+	MonthlyLimitUSD *float64 `json:"monthly"`
 }
 
 type ProviderDefaultGrantSettings struct {
@@ -171,6 +211,7 @@ type ProviderDefaultGrantSettings struct {
 	Subscriptions    []DefaultSubscriptionSetting
 	GrantOnSignup    bool
 	GrantOnFirstBind bool
+	PlatformQuotas   map[string]*DefaultPlatformQuotaSetting // key = platform name
 }
 
 type AuthSourceDefaultSettings struct {
@@ -185,62 +226,80 @@ type AuthSourceDefaultSettings struct {
 }
 
 type authSourceDefaultKeySet struct {
+	// source 是 auth source 标识（如 "email"、"github"），仅用于 parse 时
+	// slog.Warn 诊断输出，不再参与 key 拼接（platformQuotas 字段已存完整 key）。
+	source           string
 	balance          string
 	concurrency      string
 	subscriptions    string
 	grantOnSignup    string
 	grantOnFirstBind string
+	platformQuotas   string // SettingKeyAuthSourcePlatformQuotas(source)
 }
 
 var (
 	emailAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "email",
 		balance:          SettingKeyAuthSourceDefaultEmailBalance,
 		concurrency:      SettingKeyAuthSourceDefaultEmailConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultEmailSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultEmailGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultEmailGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("email"),
 	}
 	linuxDoAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "linuxdo",
 		balance:          SettingKeyAuthSourceDefaultLinuxDoBalance,
 		concurrency:      SettingKeyAuthSourceDefaultLinuxDoConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultLinuxDoSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultLinuxDoGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultLinuxDoGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("linuxdo"),
 	}
 	oidcAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "oidc",
 		balance:          SettingKeyAuthSourceDefaultOIDCBalance,
 		concurrency:      SettingKeyAuthSourceDefaultOIDCConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultOIDCSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultOIDCGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultOIDCGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("oidc"),
 	}
 	weChatAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "wechat",
 		balance:          SettingKeyAuthSourceDefaultWeChatBalance,
 		concurrency:      SettingKeyAuthSourceDefaultWeChatConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultWeChatSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultWeChatGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultWeChatGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("wechat"),
 	}
 	gitHubAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "github",
 		balance:          SettingKeyAuthSourceDefaultGitHubBalance,
 		concurrency:      SettingKeyAuthSourceDefaultGitHubConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultGitHubSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultGitHubGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultGitHubGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("github"),
 	}
 	googleAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "google",
 		balance:          SettingKeyAuthSourceDefaultGoogleBalance,
 		concurrency:      SettingKeyAuthSourceDefaultGoogleConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultGoogleSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultGoogleGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultGoogleGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("google"),
 	}
 	dingTalkAuthSourceDefaultKeys = authSourceDefaultKeySet{
+		source:           "dingtalk",
 		balance:          SettingKeyAuthSourceDefaultDingTalkBalance,
 		concurrency:      SettingKeyAuthSourceDefaultDingTalkConcurrency,
 		subscriptions:    SettingKeyAuthSourceDefaultDingTalkSubscriptions,
 		grantOnSignup:    SettingKeyAuthSourceDefaultDingTalkGrantOnSignup,
 		grantOnFirstBind: SettingKeyAuthSourceDefaultDingTalkGrantOnFirstBind,
+		platformQuotas:   SettingKeyAuthSourcePlatformQuotas("dingtalk"),
 	}
 )
 
@@ -702,6 +761,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyAvailableChannelsEnabled,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
+		SettingKeyInvoiceVATSpecialFeeRate,
+		SettingKeyInvoiceServiceCategory,
 	}
 
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
@@ -814,6 +875,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
+
+		InvoiceVATSpecialFeeRate: parseInvoiceVATSpecialFeeRate(settings[SettingKeyInvoiceVATSpecialFeeRate]),
+		InvoiceServiceCategory:   parseInvoiceServiceCategory(settings[SettingKeyInvoiceServiceCategory]),
 	}, nil
 }
 
@@ -989,6 +1053,54 @@ func (s *SettingService) GetOpenAICodexUserAgent(ctx context.Context) string {
 	return fallback
 }
 
+// IsOpenAIAllowClaudeCodeCodexPluginEnabled 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认关闭）。
+// 仅在调用方已确认账号 codex_cli_only 开启时读取，避免对非受限账号产生无谓查询。
+// 使用进程内 atomic.Value 缓存（60s TTL），避免在每个网关请求热路径上访问 DB。
+func (s *SettingService) IsOpenAIAllowClaudeCodeCodexPluginEnabled(ctx context.Context) bool {
+	if cached, ok := s.openAIAllowCodexPluginCache.Load().(*cachedOpenAIAllowCodexPlugin); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.value
+		}
+	}
+	result, _, _ := s.openAIAllowCodexPluginSF.Do("openai_allow_codex_plugin_enabled", func() (any, error) {
+		if cached, ok := s.openAIAllowCodexPluginCache.Load().(*cachedOpenAIAllowCodexPlugin); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.value, nil
+			}
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIAllowCodexPluginDBTimeout)
+		defer cancel()
+		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpenAIAllowClaudeCodeCodexPlugin)
+		if err != nil {
+			if errors.Is(err, ErrSettingNotFound) {
+				// 设置不存在 → 默认关闭，正常 TTL 缓存
+				s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
+					value:     false,
+					expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
+				})
+				return false, nil
+			}
+			slog.Warn("failed to get openai_allow_claude_code_codex_plugin setting", "error", err)
+			// DB 错误 → 安全默认关闭，短 TTL 快速重试
+			s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
+				value:     false,
+				expiresAt: time.Now().Add(openAIAllowCodexPluginErrorTTL).UnixNano(),
+			})
+			return false, nil
+		}
+		enabled := value == "true"
+		s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
+			value:     enabled,
+			expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
+		})
+		return enabled, nil
+	})
+	if val, ok := result.(bool); ok {
+		return val
+	}
+	return false
+}
+
 // SetOnUpdateCallback sets a callback function to be called when settings are updated
 // This is used for cache invalidation (e.g., HTML cache in frontend server)
 func (s *SettingService) SetOnUpdateCallback(callback func()) {
@@ -1068,6 +1180,11 @@ type PublicSettingsInjectionPayload struct {
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
+
+	InvoiceVATSpecialFeeRate float64 `json:"invoice_vat_special_fee_rate"`
+	InvoiceServiceCategory   string  `json:"invoice_service_category"`
+
+	FrontendURL string `json:"frontend_url"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1096,6 +1213,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		SiteName:                         settings.SiteName,
 		SiteLogo:                         settings.SiteLogo,
 		SiteSubtitle:                     settings.SiteSubtitle,
+		FrontendURL:                      s.GetFrontendURL(ctx),
 		APIBaseURL:                       settings.APIBaseURL,
 		ContactInfo:                      settings.ContactInfo,
 		DocURL:                           settings.DocURL,
@@ -1130,6 +1248,9 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
+
+		InvoiceVATSpecialFeeRate: settings.InvoiceVATSpecialFeeRate,
+		InvoiceServiceCategory:   settings.InvoiceServiceCategory,
 	}, nil
 }
 
@@ -1790,6 +1911,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyRewriteMessageCacheControl] = strconv.FormatBool(settings.RewriteMessageCacheControl)
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
+	updates[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] = strconv.FormatBool(settings.OpenAIAllowClaudeCodeCodexPlugin)
 	updates[SettingPaymentVisibleMethodAlipaySource] = settings.PaymentVisibleMethodAlipaySource
 	updates[SettingPaymentVisibleMethodWxpaySource] = settings.PaymentVisibleMethodWxpaySource
 	updates[SettingPaymentVisibleMethodAlipayEnabled] = strconv.FormatBool(settings.PaymentVisibleMethodAlipayEnabled)
@@ -1804,7 +1926,39 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAccountQuotaNotifyEnabled] = strconv.FormatBool(settings.AccountQuotaNotifyEnabled)
 	updates[SettingKeyAccountQuotaNotifyEmails] = MarshalNotifyEmails(settings.AccountQuotaNotifyEmails)
 
+	// 系统全局 platform quota：整体替换语义（null/缺省 = 不限制）。
+	if settings.DefaultPlatformQuotas != nil {
+		if err := validateDefaultPlatformQuotaMap(settings.DefaultPlatformQuotas); err != nil {
+			return nil, err
+		}
+		blob, err := json.Marshal(settings.DefaultPlatformQuotas)
+		if err != nil {
+			return nil, fmt.Errorf("marshal default platform quotas: %w", err)
+		}
+		updates[SettingKeyDefaultPlatformQuotas] = string(blob)
+	}
+
 	return updates, nil
+}
+
+// validateDefaultPlatformQuotaMap 校验 platform quota map 的合法性：
+// 平台名须在 AllowedQuotaPlatforms 白名单内，每个非 nil 上限须 finite 且 >= 0。
+// 系统层和 auth-source 层共用此 helper。
+func validateDefaultPlatformQuotaMap(m map[string]*DefaultPlatformQuotaSetting) error {
+	for platform, pq := range m {
+		if !IsAllowedQuotaPlatform(platform) {
+			return infraerrors.BadRequest("INVALID_DEFAULT_PLATFORM_QUOTA", fmt.Sprintf("unknown platform %q", platform))
+		}
+		if pq == nil {
+			continue
+		}
+		for _, v := range []*float64{pq.DailyLimitUSD, pq.WeeklyLimitUSD, pq.MonthlyLimitUSD} {
+			if v != nil && (*v < 0 || math.IsNaN(*v) || math.IsInf(*v, 0)) {
+				return infraerrors.BadRequest("INVALID_DEFAULT_PLATFORM_QUOTA", "platform quota limit must be a finite non-negative number")
+			}
+		}
+	}
+	return nil
 }
 
 func (s *SettingService) buildAuthSourceDefaultUpdates(ctx context.Context, settings *AuthSourceDefaultSettings) (map[string]string, error) {
@@ -1823,6 +1977,26 @@ func (s *SettingService) buildAuthSourceDefaultUpdates(ctx context.Context, sett
 	} {
 		if err := s.validateDefaultSubscriptionGroups(ctx, subscriptions); err != nil {
 			return nil, err
+		}
+	}
+
+	// 校验各 auth source 的 platform quota map（改动 C：对等系统层校验）
+	for _, pgs := range []struct {
+		name string
+		pq   map[string]*DefaultPlatformQuotaSetting
+	}{
+		{"email", settings.Email.PlatformQuotas},
+		{"linuxdo", settings.LinuxDo.PlatformQuotas},
+		{"oidc", settings.OIDC.PlatformQuotas},
+		{"wechat", settings.WeChat.PlatformQuotas},
+		{"github", settings.GitHub.PlatformQuotas},
+		{"google", settings.Google.PlatformQuotas},
+		{"dingtalk", settings.DingTalk.PlatformQuotas},
+	} {
+		if pgs.pq != nil {
+			if err := validateDefaultPlatformQuotaMap(pgs.pq); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1887,9 +2061,25 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		enabled:   settings.OpenAIAdvancedSchedulerEnabled,
 		expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
 	})
+	// Invalidate the quota auto-pause cache and let the next read trigger a fresh load.
+	// We can't know from here whether ops_advanced_settings was also touched, so be
+	// defensive: store an expired entry — GetOpenAIQuotaAutoPauseSettings will serve
+	// stale and kick off an async refresh, never blocking the request that follows.
+	s.openAIQuotaAutoPauseSettingsSF.Forget(openAIQuotaAutoPauseSettingsRefreshKey)
+	if cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings); cached != nil {
+		s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+			settings:  cached.settings,
+			expiresAt: 0,
+		})
+	}
 	if s.cfg != nil {
 		s.cfg.SetTrustForwardedIPForAPIKeyACL(settings.APIKeyACLTrustForwardedIP)
 	}
+	s.openAIAllowCodexPluginSF.Forget("openai_allow_codex_plugin_enabled")
+	s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
+		value:     settings.OpenAIAllowClaudeCodeCodexPlugin,
+		expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
+	})
 	if s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
 	}
@@ -2218,6 +2408,45 @@ func (s *SettingService) GetAffiliateRebateRatePercent(ctx context.Context) floa
 	return clampAffiliateRebateRate(rate)
 }
 
+// parseInvoiceVATSpecialFeeRate parses a raw setting string into a fee rate.
+// Applies the same clamping logic as GetInvoiceVATSpecialFeeRate for use when
+// the value has already been batch-fetched via GetMultiple.
+func parseInvoiceVATSpecialFeeRate(raw string) float64 {
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate >= 1 {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	return rate
+}
+
+// parseInvoiceServiceCategory parses a raw setting string into a service category.
+// Applies the same fallback logic as GetInvoiceServiceCategory for use when
+// the value has already been batch-fetched via GetMultiple.
+func parseInvoiceServiceCategory(raw string) string {
+	if v := strings.TrimSpace(raw); v != "" {
+		return v
+	}
+	return InvoiceServiceCategoryDefault
+}
+
+// GetInvoiceVATSpecialFeeRate 返回专票开票费率(小数,0<=rate<1);非法或未配置回退默认 0.06。
+func (s *SettingService) GetInvoiceVATSpecialFeeRate(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceVATSpecialFeeRate)
+	if err != nil {
+		return InvoiceVATSpecialFeeRateDefault
+	}
+	return parseInvoiceVATSpecialFeeRate(raw)
+}
+
+// GetInvoiceServiceCategory 返回开票类目;空或未配置回退默认「技术服务费」。
+func (s *SettingService) GetInvoiceServiceCategory(ctx context.Context) string {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyInvoiceServiceCategory)
+	if err != nil {
+		return InvoiceServiceCategoryDefault
+	}
+	return parseInvoiceServiceCategory(raw)
+}
+
 // GetAffiliateRebateFreezeHours 返回返利冻结期（小时）。
 // 返回 0 表示不冻结（向后兼容）。
 func (s *SettingService) GetAffiliateRebateFreezeHours(ctx context.Context) int {
@@ -2304,6 +2533,19 @@ func (s *SettingService) GetSiteName(ctx context.Context) string {
 	return value
 }
 
+func (s *SettingService) GetSiteSubtitle(ctx context.Context) string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteSubtitle)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return "Subscription to API Conversion Platform"
+	}
+	return value
+}
+
+func (s *SettingService) GetDocURL(ctx context.Context) string {
+	value, _ := s.settingRepo.GetValue(ctx, SettingKeyDocURL)
+	return strings.TrimSpace(value)
+}
+
 // GetDefaultConcurrency 获取默认并发量
 func (s *SettingService) GetDefaultConcurrency(ctx context.Context) int {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultConcurrency)
@@ -2386,6 +2628,13 @@ func (s *SettingService) GetAuthSourceDefaultSettings(ctx context.Context) (*Aut
 		SettingKeyAuthSourceDefaultDingTalkSubscriptions,
 		SettingKeyAuthSourceDefaultDingTalkGrantOnSignup,
 		SettingKeyAuthSourceDefaultDingTalkGrantOnFirstBind,
+		SettingKeyAuthSourcePlatformQuotas("email"),
+		SettingKeyAuthSourcePlatformQuotas("linuxdo"),
+		SettingKeyAuthSourcePlatformQuotas("oidc"),
+		SettingKeyAuthSourcePlatformQuotas("wechat"),
+		SettingKeyAuthSourcePlatformQuotas("github"),
+		SettingKeyAuthSourcePlatformQuotas("google"),
+		SettingKeyAuthSourcePlatformQuotas("dingtalk"),
 		SettingKeyForceEmailOnThirdPartySignup,
 	}
 
@@ -3148,6 +3397,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
+	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"
 
 	// Web search emulation: quick enabled check from the JSON config
 	if raw := settings[SettingKeyWebSearchEmulationConfig]; raw != "" {
@@ -3177,6 +3427,16 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	if result.AccountQuotaNotifyEmails == nil {
 		result.AccountQuotaNotifyEmails = []NotifyEmailEntry{}
+	}
+
+	// 系统层默认 platform quota（修复 Bug B：parseSettings 不填充导致回显恒为 nil）
+	if raw := settings[SettingKeyDefaultPlatformQuotas]; raw != "" {
+		parsed := map[string]*DefaultPlatformQuotaSetting{}
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			slog.Warn("[Setting] parseSettings: unmarshal default_platform_quotas failed", "error", err)
+		} else {
+			result.DefaultPlatformQuotas = parsed
+		}
 	}
 
 	return result
@@ -3271,6 +3531,15 @@ func parseProviderDefaultGrantSettings(settings map[string]string, keys authSour
 		result.GrantOnFirstBind = raw == "true"
 	}
 
+	if raw := settings[keys.platformQuotas]; raw != "" {
+		parsed := map[string]*DefaultPlatformQuotaSetting{}
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			slog.Warn("[Setting] parseProviderDefaultGrantSettings: unmarshal auth source platform quotas failed", "source", keys.source, "error", err)
+		} else {
+			result.PlatformQuotas = parsed
+		}
+	}
+
 	return result
 }
 
@@ -3289,6 +3558,17 @@ func writeProviderDefaultGrantUpdates(updates map[string]string, keys authSource
 	updates[keys.subscriptions] = string(raw)
 	updates[keys.grantOnSignup] = strconv.FormatBool(settings.GrantOnSignup)
 	updates[keys.grantOnFirstBind] = strconv.FormatBool(settings.GrantOnFirstBind)
+
+	// auth source platform quota：整体替换语义。
+	// nil = 请求未携带该字段，跳过写入以保留既有配置（与系统层 buildSystemSettingsUpdates 的
+	// DefaultPlatformQuotas nil 守卫一致）；非 nil（含空 map）才整体替换。二者语义不可混同。
+	if keys.platformQuotas != "" && settings.PlatformQuotas != nil {
+		blob, err := json.Marshal(settings.PlatformQuotas)
+		if err != nil {
+			blob = []byte("{}")
+		}
+		updates[keys.platformQuotas] = string(blob)
+	}
 }
 
 func mergeProviderDefaultGrantSettings(globalDefaults ProviderDefaultGrantSettings, providerDefaults ProviderDefaultGrantSettings) ProviderDefaultGrantSettings {
@@ -4265,6 +4545,106 @@ func (s *SettingService) GetClaudeCodeVersionBounds(ctx context.Context) (min, m
 	return b.min, b.max
 }
 
+// GetOpenAIQuotaAutoPauseSettings returns the current global default quota auto-pause
+// settings. It is invoked on the OpenAI scheduling hot path (once per request) and is
+// therefore designed to never block on the DB:
+//
+//   - Fresh cached value → returned immediately.
+//   - Stale or empty cache → the last known value is returned, and a background
+//     goroutine refreshes the cache via singleflight (stale-while-revalidate).
+//   - First call with no cache yet → zero defaults are returned and the same async
+//     refresh is kicked off; the next call gets the freshly populated value.
+//
+// Callers that need the freshly persisted value synchronously (tests, post-update
+// confirmation, optional startup warm-up) should call WarmOpenAIQuotaAutoPauseSettings.
+func (s *SettingService) GetOpenAIQuotaAutoPauseSettings(ctx context.Context) OpsOpenAIAccountQuotaAutoPauseSettings {
+	if s == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings)
+	now := time.Now().UnixNano()
+	if cached != nil && now < cached.expiresAt {
+		return cached.settings
+	}
+	// Stale or unset: trigger background refresh without blocking this request.
+	// singleflight.DoChan dedupes concurrent refreshes; we deliberately ignore the
+	// returned channel — the result is observable via the atomic cache.
+	s.openAIQuotaAutoPauseSettingsSF.DoChan(openAIQuotaAutoPauseSettingsRefreshKey, func() (any, error) {
+		s.refreshOpenAIQuotaAutoPauseSettings(context.Background())
+		return nil, nil
+	})
+	if cached != nil {
+		return cached.settings // serve stale value while revalidating
+	}
+	return OpsOpenAIAccountQuotaAutoPauseSettings{}
+}
+
+// WarmOpenAIQuotaAutoPauseSettings synchronously loads the quota auto-pause settings
+// into the in-memory cache. Useful for application startup (so the first request hits
+// a warm cache) and for tests that need deterministic reads immediately after
+// constructing the service.
+func (s *SettingService) WarmOpenAIQuotaAutoPauseSettings(ctx context.Context) OpsOpenAIAccountQuotaAutoPauseSettings {
+	if s == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	s.refreshOpenAIQuotaAutoPauseSettings(ctx)
+	cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings)
+	if cached == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	return cached.settings
+}
+
+// refreshOpenAIQuotaAutoPauseSettings reads the latest settings from the DB and stores
+// them into the in-memory cache. On error it stores the prior value (or zero defaults
+// if nothing is cached yet) with the shorter error TTL so the next refresh comes
+// sooner. Always uses its own timeout-bounded context to keep refresh latency
+// predictable regardless of the caller.
+func (s *SettingService) refreshOpenAIQuotaAutoPauseSettings(ctx context.Context) {
+	if s == nil || s.settingRepo == nil {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIQuotaAutoPauseSettingsDBTimeout)
+	defer cancel()
+
+	settings := OpsOpenAIAccountQuotaAutoPauseSettings{}
+	ttl := openAIQuotaAutoPauseSettingsCacheTTL
+	raw, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpsAdvancedSettings)
+	if err == nil {
+		cfg := defaultOpsAdvancedSettings()
+		if strings.TrimSpace(raw) != "" {
+			if jsonErr := json.Unmarshal([]byte(raw), cfg); jsonErr == nil {
+				normalizeOpsAdvancedSettings(cfg)
+			}
+		}
+		settings = cfg.OpenAIAccountQuotaAutoPause
+	} else if !errors.Is(err, ErrSettingNotFound) {
+		// Real error: keep serving prior value but refresh sooner.
+		if prior, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings); prior != nil {
+			settings = prior.settings
+		}
+		ttl = openAIQuotaAutoPauseSettingsErrorTTL
+	}
+
+	s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+		settings:  settings,
+		expiresAt: time.Now().Add(ttl).UnixNano(),
+	})
+}
+
+// SetOpenAIQuotaAutoPauseSettings writes the given settings directly into the in-memory
+// cache. Called from settings-write code paths so that the next read reflects the new
+// value immediately, without waiting for the background refresh.
+func (s *SettingService) SetOpenAIQuotaAutoPauseSettings(settings OpsOpenAIAccountQuotaAutoPauseSettings) {
+	if s == nil {
+		return
+	}
+	s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+		settings:  settings,
+		expiresAt: time.Now().Add(openAIQuotaAutoPauseSettingsCacheTTL).UnixNano(),
+	})
+}
+
 // GetRectifierSettings 获取请求整流器配置
 func (s *SettingService) GetRectifierSettings(ctx context.Context) (*RectifierSettings, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyRectifierSettings)
@@ -4492,4 +4872,64 @@ func (s *SettingService) SetStreamTimeoutSettings(ctx context.Context, settings 
 	}
 
 	return s.settingRepo.Set(ctx, SettingKeyStreamTimeoutSettings, string(data))
+}
+
+// GetDefaultPlatformQuotas 读取系统全局 platform quota JSON key，返回 4 platform x 3 window 的设置。
+// 永远返回包含全部 4 platform key 的 map（值可能为零值/nil 字段，表示"上层未配置 = 不限制"）。
+//
+// 使用单个 JSON key（default_platform_quotas），一次 DB roundtrip，消除旧 12-KV 格式的 N+1 问题。
+// 容错语义：取值失败或 unmarshal 失败 → 返回补齐 4 key 的空 map（fail-open，注册不被阻断）。
+func (s *SettingService) GetDefaultPlatformQuotas(ctx context.Context) (map[string]*DefaultPlatformQuotaSetting, error) {
+	out := map[string]*DefaultPlatformQuotaSetting{
+		"anthropic":   {},
+		"openai":      {},
+		"gemini":      {},
+		"antigravity": {},
+	}
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultPlatformQuotas)
+	if err != nil || raw == "" {
+		return out, nil // 无配置 = 全部不限制
+	}
+	parsed := map[string]*DefaultPlatformQuotaSetting{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		slog.Warn("[Setting] unmarshal default_platform_quotas failed (fail-open)", "error", err)
+		return out, nil
+	}
+	for _, platform := range AllowedQuotaPlatforms {
+		if v := parsed[platform]; v != nil {
+			out[platform] = v
+		}
+	}
+	return out, nil // 补齐 4 platform key，保持与旧实现一致的下游契约
+}
+
+// GetAuthSourcePlatformQuotas 读取指定 auth source 的 platform quota 覆盖（仅返回有配置的平台，override 语义）。
+func (s *SettingService) GetAuthSourcePlatformQuotas(ctx context.Context, source string) map[string]*DefaultPlatformQuotaSetting {
+	out := map[string]*DefaultPlatformQuotaSetting{}
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAuthSourcePlatformQuotas(source))
+	if err != nil || raw == "" {
+		return out // 无 override
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Warn("[Setting] unmarshal auth source platform quotas failed (fail-open)", "source", source, "error", err)
+		return map[string]*DefaultPlatformQuotaSetting{}
+	}
+	return out // 仅含已配置平台，保持 override 语义
+}
+
+// mergePlatformQuotaDefaults 按字段级 patch：src 中非 nil 字段覆盖 dst。
+// 区分 nil（"未配置"，保留 dst）vs &0.0（"显式禁用"，覆盖 dst 为 0）
+func mergePlatformQuotaDefaults(dst, src *DefaultPlatformQuotaSetting) {
+	if src == nil || dst == nil {
+		return
+	}
+	if src.DailyLimitUSD != nil {
+		dst.DailyLimitUSD = src.DailyLimitUSD
+	}
+	if src.WeeklyLimitUSD != nil {
+		dst.WeeklyLimitUSD = src.WeeklyLimitUSD
+	}
+	if src.MonthlyLimitUSD != nil {
+		dst.MonthlyLimitUSD = src.MonthlyLimitUSD
+	}
 }

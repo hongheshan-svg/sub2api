@@ -41,6 +41,9 @@ var (
 		"UPDATE_NO_UPDATE_AVAILABLE",
 		"no update available",
 	)
+	// ErrNoUpdateAvailable is returned by PerformUpdate when the current
+	// version is already the latest; the admin handler maps it to a 409.
+	ErrNoUpdateAvailable = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 )
 
 const (
@@ -176,7 +179,7 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	}
 
 	if !info.HasUpdate {
-		return ErrUpdateNoUpdateAvailable
+		return ErrNoUpdateAvailable
 	}
 
 	// Find matching archive and checksum for current platform
@@ -229,8 +232,8 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	// rather than after downloading hundreds of MB.
 	if err := checkDirWritable(exeDir); err != nil {
 		return ErrUpdateExeDirNotWritable.WithMetadata(map[string]string{
-			"exe_dir":   exeDir,
-			"exe_path":  exePath,
+			"exe_dir":    exeDir,
+			"exe_path":   exePath,
 			"underlying": err.Error(),
 		})
 	}

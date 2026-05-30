@@ -74,7 +74,7 @@ func buildMultipartMessage(from, to, subject, body string, attachments []EmailAt
 			fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
 		}
 	}
-	buf.WriteString("\r\n")
+	_, _ = buf.WriteString("\r\n")
 
 	// HTML body part.
 	bodyHeader := make(textproto.MIMEHeader)
@@ -144,9 +144,9 @@ func asciiFallbackFilename(name string) string {
 	var b strings.Builder
 	for _, r := range name {
 		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' {
-			b.WriteByte('_')
+			_ = b.WriteByte('_')
 		} else {
-			b.WriteRune(r)
+			_, _ = b.WriteRune(r)
 		}
 	}
 	out := b.String()
