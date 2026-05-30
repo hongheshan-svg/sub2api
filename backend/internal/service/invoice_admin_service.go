@@ -453,6 +453,11 @@ func scanAdminInvoiceRequest(scanner interface {
 		&req.HasRefundedOrders,
 		&req.VoidedAt,
 		&req.VoidedReason,
+		&req.BaseAmount,
+		&req.FeeRate,
+		&req.FeeAmount,
+		&req.InvoiceAmount,
+		&req.ServiceCategory,
 		&username,
 		&email,
 	); err != nil {
