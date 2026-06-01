@@ -14,6 +14,20 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
+// InvoiceEmailSend 是一条对公直发记录。
+type InvoiceEmailSend struct {
+	ID              int64     `json:"id"`
+	RecipientEmail  string    `json:"recipient_email"`
+	Subject         string    `json:"subject"`
+	Note            *string   `json:"note,omitempty"`
+	AttachmentCount int       `json:"attachment_count"`
+	AttachmentNames []string  `json:"attachment_names"`
+	Status          string    `json:"status"`
+	ErrorMessage    *string   `json:"error_message,omitempty"`
+	SentBy          *int64    `json:"sent_by,omitempty"`
+	SentAt          time.Time `json:"sent_at"`
+}
+
 // SendInvoiceEmailInput 是对公直发发票邮件的入参。
 type SendInvoiceEmailInput struct {
 	RecipientEmail string
@@ -85,6 +99,54 @@ func (s *PaymentService) recordInvoiceEmailSend(ctx context.Context, adminID int
 		slog.Warn("failed to record invoice email send", "recipient", to, "error", err)
 		return
 	}
+}
+
+// ListInvoiceEmailSends 分页返回对公直发记录(按发送时间倒序)。
+func (s *PaymentService) ListInvoiceEmailSends(ctx context.Context, page, pageSize int) ([]InvoiceEmailSend, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	db, err := s.invoiceDB()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoice_email_sends`).Scan(&total); err != nil {
+		return nil, 0, infraerrors.InternalServer("INVOICE_EMAIL_LIST_FAILED", "failed to count invoice email sends").WithCause(err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, recipient_email, subject, note, attachment_count, attachment_names, status, error_message, sent_by, sent_at
+		FROM invoice_email_sends
+		ORDER BY sent_at DESC, id DESC
+		LIMIT $1 OFFSET $2
+	`, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, infraerrors.InternalServer("INVOICE_EMAIL_LIST_FAILED", "failed to list invoice email sends").WithCause(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]InvoiceEmailSend, 0)
+	for rows.Next() {
+		var it InvoiceEmailSend
+		var namesRaw []byte
+		if err := rows.Scan(&it.ID, &it.RecipientEmail, &it.Subject, &it.Note, &it.AttachmentCount, &namesRaw, &it.Status, &it.ErrorMessage, &it.SentBy, &it.SentAt); err != nil {
+			return nil, 0, infraerrors.InternalServer("INVOICE_EMAIL_LIST_FAILED", "failed to scan invoice email send").WithCause(err)
+		}
+		it.AttachmentNames = make([]string, 0)
+		if len(namesRaw) > 0 {
+			_ = json.Unmarshal(namesRaw, &it.AttachmentNames)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, infraerrors.InternalServer("INVOICE_EMAIL_LIST_FAILED", "failed to list invoice email sends").WithCause(err)
+	}
+	return items, total, nil
 }
 
 func buildDirectInvoiceEmailBody(note, siteName string) string {

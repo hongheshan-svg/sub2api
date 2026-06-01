@@ -103,6 +103,7 @@ func RegisterPaymentRoutes(
 			adminInvoices.POST("/:id/complete", adminInvoiceHandler.CompleteInvoiceRequest)
 			adminInvoices.POST("/:id/reject", adminInvoiceHandler.RejectInvoiceRequest)
 			adminInvoices.POST("/send-email", adminInvoiceHandler.SendInvoiceEmail)
+			adminInvoices.GET("/email-sends", adminInvoiceHandler.ListInvoiceEmailSends)
 		}
 
 		// Dashboard

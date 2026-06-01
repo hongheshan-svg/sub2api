@@ -188,6 +188,18 @@ func (h *InvoiceHandler) SendInvoiceEmail(c *gin.Context) {
 	response.Success(c, gin.H{"message": "invoice email sent"})
 }
 
+// ListInvoiceEmailSends returns paginated direct-send invoice-email records.
+// GET /api/v1/admin/payment/invoices/email-sends
+func (h *InvoiceHandler) ListInvoiceEmailSends(c *gin.Context) {
+	page, pageSize := response.ParsePagination(c)
+	items, total, err := h.paymentService.ListInvoiceEmailSends(c.Request.Context(), page, pageSize)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Paginated(c, items, int64(total), page, pageSize)
+}
+
 // writeUserNotification persists an in-app notification for the requester.
 // Best-effort — failures are logged but not surfaced to the admin caller.
 func (h *InvoiceHandler) writeUserNotification(req *service.InvoiceRequest, completed bool) {
