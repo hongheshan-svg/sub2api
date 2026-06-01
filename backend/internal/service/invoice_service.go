@@ -27,12 +27,6 @@ const (
 	InvoiceTypeVATSpecial = "vat_special" // 增值税专用发票
 )
 
-// validInvoiceTypes lists all allowed invoice_type values.
-// 普票已移除:仅专票为合法输入(InvoiceTypeGeneral 常量保留,仅用于读历史快照)。
-var validInvoiceTypes = map[string]bool{
-	InvoiceTypeVATSpecial: true,
-}
-
 type InvoiceProfile struct {
 	ID          int64     `json:"id"`
 	UserID      int64     `json:"user_id,omitempty"`
