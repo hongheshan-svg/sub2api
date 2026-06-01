@@ -222,11 +222,11 @@
                   <span v-if="profile.is_default" class="rounded-full bg-primary-50 px-2 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
                     {{ t('invoice.profiles.default') }}
                   </span>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-xs font-medium"
-                    :class="profile.invoice_type === 'vat_special' ? 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' : 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300'"
-                  >
-                    {{ t(`invoice.invoiceTypes.${profile.invoice_type || 'general'}`) }}
+                  <span class="rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+                    {{ t('invoice.invoiceTypes.vat_special') }}
+                  </span>
+                  <span v-if="isProfileIncomplete(profile)" class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    {{ t('invoice.fee.incompleteBadge') }}
                   </span>
                 </div>
                 <p class="mt-1 break-all font-mono text-sm text-gray-600 dark:text-gray-300">{{ profile.tax_number }}</p>
@@ -318,16 +318,19 @@
 
             <!-- 专票开票费显著提示 -->
             <div
-              v-if="isVatSpecialSelected"
+              v-if="isVatSpecialSelected && selectedTotal > 0"
               class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200"
             >
               <div class="font-semibold">⚠ {{ t('invoice.fee.noticeTitle') }}</div>
               <div class="mt-1">
-                {{ t('invoice.fee.notice', {
-                  rate: previewFeePercent,
-                  net: previewNetPercent,
-                  category: appStore.invoiceServiceCategory,
-                }) }}
+                {{ t('invoice.fee.notice', { rate: previewFeePercent, fee: formatCurrency(previewFeeAmount), category: appStore.invoiceServiceCategory }) }}
+              </div>
+              <div class="mt-1">
+                {{ t('invoice.fee.balanceLine', { balance: formatCurrency(userBalance), after: formatCurrency(previewBalanceAfter) }) }}
+              </div>
+              <div v-if="balanceInsufficient" class="mt-2 font-semibold text-red-600 dark:text-red-400">
+                {{ t('invoice.fee.insufficient', { fee: formatCurrency(previewFeeAmount), balance: formatCurrency(userBalance), shortfall: formatCurrency(feeShortfall) }) }}
+                <RouterLink to="/purchase" class="underline">{{ t('common.recharge') }}</RouterLink>
               </div>
             </div>
 
@@ -337,17 +340,13 @@
                 <span class="text-gray-500 dark:text-gray-400">{{ t('invoice.fields.baseAmount') }}</span>
                 <span>{{ formatCurrency(selectedTotal) }}</span>
               </div>
-              <div v-if="isVatSpecialSelected" class="flex justify-between text-amber-700 dark:text-amber-300">
-                <span>{{ t('invoice.fields.invoiceFee') }} ({{ previewFeePercent }}%)</span>
-                <span>-{{ formatCurrency(previewFeeAmount) }}</span>
-              </div>
               <div class="flex justify-between font-semibold border-t border-gray-200 dark:border-dark-700 pt-1">
                 <span>{{ t('invoice.fields.invoiceAmount') }}</span>
                 <span>{{ formatCurrency(previewInvoiceAmount) }}</span>
               </div>
-              <div class="flex justify-between text-gray-500 dark:text-gray-400">
-                <span>{{ t('invoice.fields.serviceCategory') }}</span>
-                <span>{{ appStore.invoiceServiceCategory }}</span>
+              <div class="flex justify-between text-amber-700 dark:text-amber-300">
+                <span>{{ t('invoice.fields.invoiceFee') }} ({{ previewFeePercent }}%)</span>
+                <span>-{{ formatCurrency(previewFeeAmount) }}</span>
               </div>
             </div>
           </div>
@@ -436,25 +435,8 @@
       <form class="grid gap-4 md:grid-cols-2" @submit.prevent="submitProfile">
         <div class="md:col-span-2">
           <label class="input-label">{{ t('invoice.fields.invoiceType') }}</label>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <label
-              v-for="opt in invoiceTypeOptions"
-              :key="opt.value"
-              class="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm transition-colors hover:border-primary-300 dark:border-dark-700 dark:hover:border-primary-700"
-              :class="profileForm.invoice_type === opt.value ? 'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-500 dark:bg-primary-900/20 dark:text-primary-300' : 'text-gray-600 dark:text-gray-300'"
-            >
-              <input
-                v-model="profileForm.invoice_type"
-                type="radio"
-                class="h-4 w-4"
-                :value="opt.value"
-              />
-              <span>{{ opt.label }}</span>
-            </label>
-          </div>
-          <p v-if="isVATSpecial" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
-            {{ t('invoice.profiles.vatRequiredHint') }}
-          </p>
+          <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">{{ t('invoice.invoiceTypes.vat_special') }}</p>
+          <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">{{ t('invoice.profiles.vatRequiredHint') }}</p>
         </div>
         <div>
           <label class="input-label">
@@ -541,8 +523,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { RouterLink } from 'vue-router'
 import { invoiceAPI } from '@/api/invoice'
 import { useAppStore } from '@/stores'
+import { useAuthStore } from '@/stores/auth'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatCurrency, formatDateTime } from '@/utils/format'
 import type { SelectOption } from '@/types'
@@ -572,11 +556,13 @@ interface ProfileForm {
   phone: string
   bank_name: string
   bank_account: string
-  invoice_type: 'general' | 'vat_special'
+  invoice_type: 'vat_special'
 }
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
+const userBalance = computed(() => authStore.user?.balance ?? 0)
 
 const activeTab = ref<InvoiceTab>('requests')
 const requestsLoading = ref(false)
@@ -617,15 +603,10 @@ const profileForm = reactive<ProfileForm>({
   phone: '',
   bank_name: '',
   bank_account: '',
-  invoice_type: 'general'
+  invoice_type: 'vat_special'
 })
 
-const invoiceTypeOptions = computed(() => [
-  { value: 'general' as const, label: t('invoice.invoiceTypes.general') },
-  { value: 'vat_special' as const, label: t('invoice.invoiceTypes.vat_special') }
-])
-
-const isVATSpecial = computed(() => profileForm.invoice_type === 'vat_special')
+const isVATSpecial = computed(() => true)
 
 const tabs = computed<Array<{ value: InvoiceTab; label: string; icon: TabIcon }>>(() => [
   { value: 'requests', label: t('invoice.tabs.requests'), icon: 'document' },
@@ -666,12 +647,14 @@ const selectedTotal = computed(() =>
 const selectedProfile = computed(() =>
   profiles.value.find((p) => p.id === selectedProfileId.value) || null
 )
-const isVatSpecialSelected = computed(() => selectedProfile.value?.invoice_type === 'vat_special')
-const previewFeeRate = computed(() => (isVatSpecialSelected.value ? appStore.invoiceVatSpecialFeeRate : 0))
+const isVatSpecialSelected = computed(() => !!selectedProfile.value) // 所有档案均为专票
+const previewFeeRate = computed(() => appStore.invoiceVatSpecialFeeRate)
 const previewFeeAmount = computed(() => Math.round(selectedTotal.value * previewFeeRate.value * 100) / 100)
-const previewInvoiceAmount = computed(() => Math.round((selectedTotal.value - previewFeeAmount.value) * 100) / 100)
+const previewInvoiceAmount = computed(() => Math.round(selectedTotal.value * 100) / 100) // 全额
 const previewFeePercent = computed(() => Math.round(previewFeeRate.value * 1000) / 10)
-const previewNetPercent = computed(() => Math.round((1 - previewFeeRate.value) * 1000) / 10)
+const previewBalanceAfter = computed(() => Math.round((userBalance.value - previewFeeAmount.value) * 100) / 100)
+const feeShortfall = computed(() => Math.max(0, Math.round((previewFeeAmount.value - userBalance.value) * 100) / 100))
+const balanceInsufficient = computed(() => previewFeeAmount.value > 0 && userBalance.value < previewFeeAmount.value)
 
 const currentPageAllSelected = computed(() =>
   invoiceableOrders.value.length > 0 &&
@@ -842,6 +825,10 @@ function clearSelection() {
   selectedOrderMap.value = new Map()
 }
 
+async function refreshBalance() {
+  try { await authStore.refreshUser?.() } catch { /* ignore */ }
+}
+
 async function submitInvoiceRequest() {
   if (!selectedProfileId.value) {
     appStore.showError(t('invoice.messages.profileRequired'))
@@ -852,18 +839,36 @@ async function submitInvoiceRequest() {
     appStore.showError(t('invoice.messages.orderRequired'))
     return
   }
+  if (selectedProfile.value && isProfileIncomplete(selectedProfile.value)) {
+    appStore.showError(t('invoice.fee.incompleteProfile'))
+    return
+  }
+  if (balanceInsufficient.value) {
+    appStore.showError(t('invoice.fee.insufficient', {
+      fee: formatCurrency(previewFeeAmount.value),
+      balance: formatCurrency(userBalance.value),
+      shortfall: formatCurrency(feeShortfall.value),
+    }))
+    return
+  }
+  if (previewFeeAmount.value > 0) {
+    const ok = window.confirm(t('invoice.fee.confirmBody', {
+      rate: previewFeePercent.value,
+      fee: formatCurrency(previewFeeAmount.value),
+      balance: formatCurrency(userBalance.value),
+      after: formatCurrency(previewBalanceAfter.value),
+    }))
+    if (!ok) return
+  }
 
   actionLoading.value = true
   try {
-    await invoiceAPI.createRequest({
-      profile_id: selectedProfileId.value,
-      order_ids: orderIds
-    })
-    appStore.showSuccess(t('invoice.messages.requestSubmitted'))
+    await invoiceAPI.createRequest({ profile_id: selectedProfileId.value, order_ids: orderIds })
+    appStore.showSuccess(t('invoice.fee.deducted', { fee: formatCurrency(previewFeeAmount.value) }))
     clearSelection()
     activeTab.value = 'requests'
     requestPagination.page = 1
-    await Promise.all([fetchRequests(), fetchInvoiceableOrders()])
+    await Promise.all([fetchRequests(), fetchInvoiceableOrders(), refreshBalance()])
   } catch (err: unknown) {
     showInvoiceError(err)
   } finally {
@@ -886,7 +891,7 @@ function openEditProfile(profile: InvoiceProfile) {
   profileForm.phone = profile.phone || ''
   profileForm.bank_name = profile.bank_name || ''
   profileForm.bank_account = profile.bank_account || ''
-  profileForm.invoice_type = profile.invoice_type || 'general'
+  profileForm.invoice_type = 'vat_special'
   profileDialogOpen.value = true
 }
 
@@ -904,7 +909,7 @@ function resetProfileForm() {
   profileForm.phone = ''
   profileForm.bank_name = ''
   profileForm.bank_account = ''
-  profileForm.invoice_type = 'general'
+  profileForm.invoice_type = 'vat_special'
 }
 
 async function submitProfile() {
@@ -988,7 +993,7 @@ function buildProfilePayload(): InvoiceProfilePayload | null {
     phone: trimOrNull(profileForm.phone),
     bank_name: trimOrNull(profileForm.bank_name),
     bank_account: trimOrNull(profileForm.bank_account),
-    invoice_type: profileForm.invoice_type
+    invoice_type: 'vat_special'
   }
 }
 
@@ -1015,6 +1020,10 @@ function orderTypeLabel(type: string): string {
   const key = `invoice.orderTypes.${type}`
   const label = t(key)
   return label === key ? type : label
+}
+
+function isProfileIncomplete(p: InvoiceProfile): boolean {
+  return !p.address || !p.phone || !p.bank_name || !p.bank_account
 }
 
 function showInvoiceError(err: unknown) {

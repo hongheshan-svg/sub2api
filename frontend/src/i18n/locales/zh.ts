@@ -331,6 +331,7 @@ export default {
     today: '今天',
     tomorrow: '明天',
     unknown: '未知',
+    recharge: '去充值',
     minutes: '分钟',
     time: {
       never: '从未',

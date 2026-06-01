@@ -331,6 +331,7 @@ export default {
     today: 'Today',
     tomorrow: 'Tomorrow',
     unknown: 'Unknown',
+    recharge: 'Top up',
     minutes: 'min',
     time: {
       never: 'Never',
