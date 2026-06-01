@@ -1,5 +1,5 @@
 export type InvoiceStatus = 'pending' | 'completed' | 'rejected'
-export type InvoiceType = 'general' | 'vat_special'
+export type InvoiceType = 'vat_special'
 
 export interface InvoiceProfile {
   id: number

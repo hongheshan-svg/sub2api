@@ -6781,12 +6781,19 @@ export default {
       serviceCategory: 'Category',
     },
     invoiceTypes: {
-      general: 'General Invoice',
       vat_special: 'VAT Special Invoice',
     },
     fee: {
       noticeTitle: 'VAT Special Invoice Notice',
-      notice: 'A {rate}% fee applies to VAT special invoices and is deducted from the amount. Invoice amount = requested amount × {net}%; category: {category}.',
+      notice: 'Issued for the full amount; a {rate}% service fee (¥{fee}) is charged from your balance. Category: {category}.',
+      balanceLine: 'Balance ¥{balance}, after ¥{after}.',
+      insufficient: 'Insufficient balance. Fee needs ¥{fee}, balance ¥{balance}, short ¥{shortfall}. Please top up first.',
+      confirmTitle: 'Confirm invoice service fee',
+      confirmBody: 'A {rate}% service fee ¥{fee} will be charged from your balance (¥{balance} → ¥{after}). Submit?',
+      confirmOk: 'Confirm & charge',
+      deducted: 'Invoice request submitted; ¥{fee} service fee charged.',
+      incompleteProfile: 'This title is missing required VAT fields (bank/account/address/phone). Please complete it first.',
+      incompleteBadge: 'Incomplete',
     },
     refundCoupling: {
       badge: 'Refunded',

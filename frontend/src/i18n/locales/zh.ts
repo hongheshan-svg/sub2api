@@ -6961,12 +6961,19 @@ export default {
       serviceCategory: '开票类目',
     },
     invoiceTypes: {
-      general: '普通发票',
       vat_special: '增值税专用发票',
     },
     fee: {
       noticeTitle: '专票须知',
-      notice: '增值税专用发票将收取 {rate}% 开票费,从开票金额中扣除。实际开票金额 = 申请金额 × {net}%,开票类目为{category}。',
+      notice: '增值税专用发票按申请全额开具,需额外支付 {rate}% 开票服务费(¥{fee}),将从账户余额扣除;开票类目为{category}。',
+      balanceLine: '当前余额 ¥{balance},扣后 ¥{after}。',
+      insufficient: '余额不足,开票服务费需 ¥{fee},当前余额 ¥{balance},还差 ¥{shortfall},请先充值。',
+      confirmTitle: '确认支付开票服务费',
+      confirmBody: '开具增值税专用发票需支付 {rate}% 开票服务费 ¥{fee},将从账户余额扣除(余额 ¥{balance} → ¥{after})。确认提交?',
+      confirmOk: '确认并扣费',
+      deducted: '开票申请已提交,已扣除开票服务费 ¥{fee}。',
+      incompleteProfile: '该抬头缺少专票必填信息(开户行/账号/地址/电话),请先补全后再开票。',
+      incompleteBadge: '待补全',
     },
     refundCoupling: {
       badge: '订单已退款',
