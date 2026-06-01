@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 import type { BasePaginationResponse } from '@/types'
-import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceRequest } from '@/types/invoice'
+import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceEmailSend, InvoiceRequest } from '@/types/invoice'
 
 export const adminInvoiceAPI = {
   list(params?: AdminInvoiceListParams) {
@@ -33,5 +33,9 @@ export const adminInvoiceAPI = {
     return apiClient.post<{ message: string }>(`/admin/payment/invoices/send-email`, form, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
+  },
+
+  listEmailSends(params?: { page?: number; page_size?: number }) {
+    return apiClient.get<BasePaginationResponse<InvoiceEmailSend>>('/admin/payment/invoices/email-sends', { params })
   }
 }

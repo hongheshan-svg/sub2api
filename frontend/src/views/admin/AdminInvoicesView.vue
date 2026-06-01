@@ -50,6 +50,9 @@
             <button type="button" class="btn btn-primary" @click="openSendDialog">
               {{ t('invoice.admin.directSendTitle') }}
             </button>
+            <button type="button" class="btn btn-secondary" @click="openHistoryDialog">
+              {{ t('invoice.admin.historyTitle') }}
+            </button>
           </div>
         </div>
       </div>
@@ -313,6 +316,46 @@
         </div>
       </template>
     </BaseDialog>
+
+    <BaseDialog :show="historyDialogOpen" :title="t('invoice.admin.historyTitle')" width="wide" @close="historyDialogOpen = false">
+      <div v-if="historyLoading" class="py-6 text-center text-sm text-gray-500">{{ t('common.loading') }}</div>
+      <div v-else-if="historyItems.length === 0" class="py-6 text-center text-sm text-gray-400">{{ t('invoice.admin.historyEmpty') }}</div>
+      <div v-else class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 dark:text-gray-400">
+              <th class="px-2 py-1">{{ t('invoice.admin.colSentAt') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colRecipient') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colSubject') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colAttachments') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colStatus') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in historyItems" :key="it.id" class="border-t border-gray-100 dark:border-dark-700">
+              <td class="px-2 py-1 whitespace-nowrap">{{ formatDateTime(it.sent_at) }}</td>
+              <td class="px-2 py-1">{{ it.recipient_email }}</td>
+              <td class="px-2 py-1">{{ it.subject }}</td>
+              <td class="px-2 py-1">{{ it.attachment_count }}</td>
+              <td class="px-2 py-1">
+                <span :class="it.status === 'sent' ? 'text-green-600' : 'text-red-600'">
+                  {{ it.status === 'sent' ? t('invoice.admin.statusSent') : t('invoice.admin.statusFailed') }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template #footer>
+        <div class="flex items-center justify-between w-full">
+          <span class="text-xs text-gray-500">{{ historyTotal }}</span>
+          <div class="flex gap-2">
+            <button type="button" class="btn btn-secondary" :disabled="historyPage <= 1 || historyLoading" @click="historyPrevPage">{{ t('pagination.previous') }}</button>
+            <button type="button" class="btn btn-secondary" :disabled="historyPage * historyPageSize >= historyTotal || historyLoading" @click="historyNextPage">{{ t('pagination.next') }}</button>
+          </div>
+        </div>
+      </template>
+    </BaseDialog>
   </AppLayout>
 </template>
 
@@ -324,7 +367,7 @@ import { useAppStore } from '@/stores'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatCurrency, formatDateTime } from '@/utils/format'
 import type { SelectOption } from '@/types'
-import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceStatus } from '@/types/invoice'
+import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceEmailSend, InvoiceStatus } from '@/types/invoice'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -349,6 +392,12 @@ const filters = reactive<{ status: InvoiceStatus | ''; keyword: string; start_ti
 const completeDialogOpen = ref(false)
 const rejectDialogOpen = ref(false)
 const sendDialogOpen = ref(false)
+const historyDialogOpen = ref(false)
+const historyItems = ref<InvoiceEmailSend[]>([])
+const historyLoading = ref(false)
+const historyPage = ref(1)
+const historyPageSize = ref(10)
+const historyTotal = ref(0)
 const activeRequest = ref<AdminInvoiceRequest | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -460,6 +509,37 @@ function openSendDialog() {
 function onSendFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   sendForm.files = input.files ? Array.from(input.files) : []
+}
+
+async function openHistoryDialog() {
+  historyDialogOpen.value = true
+  historyPage.value = 1
+  await fetchHistory()
+}
+
+async function fetchHistory() {
+  historyLoading.value = true
+  try {
+    const res = await adminInvoiceAPI.listEmailSends({ page: historyPage.value, page_size: historyPageSize.value })
+    historyItems.value = res.data.items || []
+    historyTotal.value = res.data.total || 0
+  } catch (err: unknown) {
+    showError(err)
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function historyNextPage() {
+  if (historyPage.value * historyPageSize.value >= historyTotal.value) return
+  historyPage.value++
+  void fetchHistory()
+}
+
+function historyPrevPage() {
+  if (historyPage.value <= 1) return
+  historyPage.value--
+  void fetchHistory()
 }
 
 async function submitSendEmail() {
