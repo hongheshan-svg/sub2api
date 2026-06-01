@@ -19,13 +19,13 @@ func round2(x float64) float64 {
 }
 
 // computeInvoiceAmounts 由申请金额与费率计算开票费与实际开票金额。
-// invoiceAmount 用 base−fee 反推,保证 fee+invoice 始终等于 base(对账平)。
+// 新语义:专票按全额开票(invoiceAmount=base),费用为额外向余额收取的附加项(base*rate)。
 func computeInvoiceAmounts(base, feeRate float64) (feeAmount, invoiceAmount float64) {
+	invoiceAmount = round2(base)
 	if feeRate <= 0 || base <= 0 {
-		return 0, round2(base)
+		return 0, invoiceAmount
 	}
 	feeAmount = round2(base * feeRate)
-	invoiceAmount = round2(base) - feeAmount
 	return feeAmount, invoiceAmount
 }
 
