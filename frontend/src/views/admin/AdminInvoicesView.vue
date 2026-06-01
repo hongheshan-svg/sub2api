@@ -213,10 +213,10 @@
               @click="triggerFilePicker"
             >
               <Icon name="document" size="sm" class="mr-2" />
-              {{ completeForm.file ? t('common.reselect') : t('common.selectFile') }}
+              {{ completeForm.files.length ? t('common.reselect') : t('common.selectFile') }}
             </button>
-            <span v-if="completeForm.file" class="truncate text-sm text-gray-700 dark:text-gray-300">
-              {{ completeForm.file.name }} ({{ formatFileSize(completeForm.file.size) }})
+            <span v-if="completeForm.files.length" class="truncate text-sm text-gray-700 dark:text-gray-300">
+              {{ completeForm.files.map(f => f.name).join('、') }}（{{ completeForm.files.length }}）
             </span>
             <span v-else class="text-sm text-gray-400">{{ t('common.noFileSelected') }}</span>
           </div>
@@ -225,6 +225,7 @@
             type="file"
             class="hidden"
             accept=".pdf,.png,.jpg,.jpeg,.zip,.xls,.xlsx"
+            multiple
             @change="onFileChange"
           />
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('invoice.admin.fileHint') }}</p>
@@ -314,9 +315,9 @@ const rejectDialogOpen = ref(false)
 const activeRequest = ref<AdminInvoiceRequest | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
-const completeForm = reactive<{ invoice_no: string; file: File | null }>({
+const completeForm = reactive<{ invoice_no: string; files: File[] }>({
   invoice_no: '',
-  file: null
+  files: []
 })
 const rejectForm = reactive<{ reason: string }>({ reason: '' })
 
@@ -327,7 +328,7 @@ const statusFilterOptions = computed<SelectOption[]>(() => [
   { value: 'rejected', label: t('invoice.status.rejected') }
 ])
 
-const canSubmitComplete = computed(() => completeForm.invoice_no.trim() !== '' && completeForm.file !== null)
+const canSubmitComplete = computed(() => completeForm.invoice_no.trim() !== '' && completeForm.files.length > 0)
 
 async function fetchList() {
   loading.value = true
@@ -378,7 +379,7 @@ function handlePageSizeChange(size: number) {
 function openCompleteDialog(item: AdminInvoiceRequest) {
   activeRequest.value = item
   completeForm.invoice_no = ''
-  completeForm.file = null
+  completeForm.files = []
   if (fileInputRef.value) fileInputRef.value.value = ''
   completeDialogOpen.value = true
 }
@@ -401,21 +402,16 @@ function closeRejectDialog() {
 
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
-  completeForm.file = input.files && input.files.length > 0 ? input.files[0] : null
+  completeForm.files = input.files ? Array.from(input.files) : []
 }
 
 function triggerFilePicker() {
   fileInputRef.value?.click()
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
 
 async function submitComplete() {
-  if (!activeRequest.value || !completeForm.file) return
+  if (!activeRequest.value || completeForm.files.length === 0) return
   const invoiceNo = completeForm.invoice_no.trim()
   if (!invoiceNo) {
     appStore.showError(t('invoice.admin.invoiceNoRequired'))
@@ -423,7 +419,7 @@ async function submitComplete() {
   }
   actionLoading.value = true
   try {
-    await adminInvoiceAPI.complete(activeRequest.value.id, invoiceNo, completeForm.file)
+    await adminInvoiceAPI.complete(activeRequest.value.id, invoiceNo, completeForm.files)
     appStore.showSuccess(t('invoice.admin.completed'))
     closeCompleteDialog()
     await fetchList()

@@ -15,10 +15,10 @@ export const adminInvoiceAPI = {
     return apiClient.post<InvoiceRequest>(`/admin/payment/invoices/${id}/reject`, { reason })
   },
 
-  complete(id: number, invoiceNo: string, file: File) {
+  complete(id: number, invoiceNo: string, files: File[]) {
     const form = new FormData()
     form.append('invoice_no', invoiceNo)
-    form.append('file', file)
+    files.forEach((f) => form.append('files', f))
     return apiClient.post<InvoiceRequest>(`/admin/payment/invoices/${id}/complete`, form, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
