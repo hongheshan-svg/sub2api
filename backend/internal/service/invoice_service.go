@@ -27,12 +27,6 @@ const (
 	InvoiceTypeVATSpecial = "vat_special" // 增值税专用发票
 )
 
-// validInvoiceTypes lists all allowed invoice_type values.
-var validInvoiceTypes = map[string]bool{
-	InvoiceTypeGeneral:    true,
-	InvoiceTypeVATSpecial: true,
-}
-
 type InvoiceProfile struct {
 	ID          int64     `json:"id"`
 	UserID      int64     `json:"user_id,omitempty"`
@@ -86,11 +80,13 @@ type InvoiceRequest struct {
 	Orders          []InvoiceRequestOrder  `json:"orders"`
 
 	// 金额拆分与类目(创建时快照)
-	BaseAmount      float64 `json:"base_amount"`
-	FeeRate         float64 `json:"fee_rate"`
-	FeeAmount       float64 `json:"fee_amount"`
-	InvoiceAmount   float64 `json:"invoice_amount"`
-	ServiceCategory string  `json:"service_category"`
+	BaseAmount      float64    `json:"base_amount"`
+	FeeRate         float64    `json:"fee_rate"`
+	FeeAmount       float64    `json:"fee_amount"`
+	InvoiceAmount   float64    `json:"invoice_amount"`
+	ServiceCategory string     `json:"service_category"`
+	FeeChargedAt    *time.Time `json:"fee_charged_at,omitempty"`
+	FeeRefundedAt   *time.Time `json:"fee_refunded_at,omitempty"`
 
 	// Admin-processing fields
 	InvoiceNo       *string    `json:"invoice_no,omitempty"`
@@ -158,13 +154,8 @@ func normalizeInvoiceProfileInput(input InvoiceProfileInput) (InvoiceProfileInpu
 	input.BankName = normalizeOptionalString(input.BankName)
 	input.BankAccount = normalizeOptionalString(input.BankAccount)
 
-	input.InvoiceType = strings.TrimSpace(input.InvoiceType)
-	if input.InvoiceType == "" {
-		input.InvoiceType = InvoiceTypeGeneral
-	}
-	if !validInvoiceTypes[input.InvoiceType] {
-		return input, infraerrors.BadRequest("INVOICE_TYPE_INVALID", "invoice type is invalid")
-	}
+	// 普票已移除:忽略传入的 invoice_type,一律按专票处理。
+	input.InvoiceType = InvoiceTypeVATSpecial
 
 	switch {
 	case input.Title == "":
@@ -184,20 +175,18 @@ func normalizeInvoiceProfileInput(input InvoiceProfileInput) (InvoiceProfileInpu
 		return input, infraerrors.BadRequest("INVOICE_EMAIL_INVALID", "invoice email is invalid")
 	}
 
-	// VAT special invoice (增值税专用发票) requires bank info and registered address.
-	if input.InvoiceType == InvoiceTypeVATSpecial {
-		if input.Address == nil || strings.TrimSpace(*input.Address) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_ADDRESS_REQUIRED", "registered address is required for VAT special invoice")
-		}
-		if input.Phone == nil || strings.TrimSpace(*input.Phone) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_PHONE_REQUIRED", "phone is required for VAT special invoice")
-		}
-		if input.BankName == nil || strings.TrimSpace(*input.BankName) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_BANK_NAME_REQUIRED", "bank name is required for VAT special invoice")
-		}
-		if input.BankAccount == nil || strings.TrimSpace(*input.BankAccount) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_BANK_ACCOUNT_REQUIRED", "bank account is required for VAT special invoice")
-		}
+	// 专票必填:开户行、账号、注册地址、电话(所有档案均为专票,故恒校验)。
+	if input.Address == nil || strings.TrimSpace(*input.Address) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_ADDRESS_REQUIRED", "registered address is required for VAT special invoice")
+	}
+	if input.Phone == nil || strings.TrimSpace(*input.Phone) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_PHONE_REQUIRED", "phone is required for VAT special invoice")
+	}
+	if input.BankName == nil || strings.TrimSpace(*input.BankName) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_BANK_NAME_REQUIRED", "bank name is required for VAT special invoice")
+	}
+	if input.BankAccount == nil || strings.TrimSpace(*input.BankAccount) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_BANK_ACCOUNT_REQUIRED", "bank account is required for VAT special invoice")
 	}
 	return input, nil
 }
@@ -496,13 +485,35 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
 	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
+	// 专票服务费从余额扣除:余额不足则拦截要求充值。
+	var feeChargedAt any = nil
+	if feeAmount > 0 {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1
+		`, feeAmount, userID)
+		if err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to charge invoice fee").WithCause(err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			var balance float64
+			_ = tx.QueryRowContext(ctx, `SELECT balance::float8 FROM users WHERE id = $1`, userID).Scan(&balance)
+			_, shortfall := invoiceFeeShortfall(balance, feeAmount)
+			return nil, infraerrors.BadRequest(
+				"INVOICE_BALANCE_INSUFFICIENT",
+				fmt.Sprintf("余额不足以支付开票服务费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for invoice fee", feeAmount, balance, shortfall),
+			)
+		}
+		feeChargedAt = time.Now()
+	}
+
 	serialNo := generateInvoiceSerialNo()
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category, fee_charged_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING `+invoiceRequestColumns,
 		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes),
-		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory)
+		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory, feeChargedAt)
 	req, err := scanInvoiceRequest(row)
 	if err != nil {
 		return nil, err
@@ -517,6 +528,9 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to commit invoice request").WithCause(err)
+	}
+	if feeAmount > 0 && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
 	}
 	req.Orders = orders
 	return &req, nil
@@ -623,7 +637,7 @@ func (s *PaymentService) ListInvoiceableOrders(ctx context.Context, userID int64
 }
 
 // invoiceRequestColumns is the canonical SELECT list for invoice_requests.
-const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason, base_amount::float8, fee_rate::float8, fee_amount::float8, invoice_amount::float8, service_category`
+const invoiceRequestColumns = `id, user_id, profile_id, serial_no, status, profile_snapshot, total_amount::float8, reject_reason, created_at, updated_at, completed_at, invoice_no, invoice_file_path, invoice_file_size, invoice_file_name, invoice_file_mime, processed_by, processed_at, has_refunded_orders, voided_at, voided_reason, base_amount::float8, fee_rate::float8, fee_amount::float8, invoice_amount::float8, service_category, fee_charged_at, fee_refunded_at`
 
 func scanInvoiceRequest(scanner interface {
 	Scan(dest ...any) error
@@ -658,6 +672,8 @@ func scanInvoiceRequest(scanner interface {
 		&req.FeeAmount,
 		&req.InvoiceAmount,
 		&req.ServiceCategory,
+		&req.FeeChargedAt,
+		&req.FeeRefundedAt,
 	); err != nil {
 		return InvoiceRequest{}, infraerrors.InternalServer("INVOICE_REQUEST_SCAN_FAILED", "failed to scan invoice request").WithCause(err)
 	}

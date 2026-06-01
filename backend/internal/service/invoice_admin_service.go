@@ -20,6 +20,7 @@ import (
 const (
 	defaultInvoiceUploadDir = "./data/invoices"
 	maxInvoiceFileBytes     = 10 * 1024 * 1024 // 10 MB
+	maxInvoiceAttachments   = 5                // 单次开票最多附件数
 )
 
 // invoiceNoFormat validates an issued invoice number.
@@ -225,12 +226,14 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	defer rollbackIfActive(tx)
 
 	var status string
+	var feeAmount float64
+	var feeChargedAt, feeRefundedAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status
+		SELECT status, fee_amount::float8, fee_charged_at, fee_refunded_at
 		FROM invoice_requests
 		WHERE id = $1 AND user_id = $2
 		FOR UPDATE
-	`, reqID, userID).Scan(&status); err != nil {
+	`, reqID, userID).Scan(&status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
 		}
@@ -238,6 +241,11 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	}
 	if status != InvoiceStatusPending {
 		return infraerrors.Conflict("INVOICE_REQUEST_NOT_CANCELLABLE", "only pending invoice requests can be cancelled")
+	}
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
+			return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM invoice_request_orders WHERE invoice_request_id = $1`, reqID); err != nil {
@@ -250,6 +258,9 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 		return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to commit invoice cancel").WithCause(err)
 	}
 
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
+	}
 	return nil
 }
 
@@ -267,13 +278,44 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 	if err != nil {
 		return nil, err
 	}
-	row := db.QueryRowContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to begin reject transaction").WithCause(err)
+	}
+	defer rollbackIfActive(tx)
+
+	// 锁定并读取扣费状态
+	var userID int64
+	var feeAmount float64
+	var status string
+	var feeChargedAt, feeRefundedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT user_id, status, fee_amount::float8, fee_charged_at, fee_refunded_at
+		FROM invoice_requests WHERE id = $1 FOR UPDATE
+	`, reqID).Scan(&userID, &status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
+		}
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to load invoice request").WithCause(err)
+	}
+	if status != InvoiceStatusPending {
+		return nil, infraerrors.Conflict("INVOICE_REQUEST_NOT_PENDING", "invoice request is not pending")
+	}
+
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
+	}
+
+	row := tx.QueryRowContext(ctx, `
 		UPDATE invoice_requests
 		SET status = $2,
 		    reject_reason = $3,
 		    processed_by = $4,
 		    processed_at = NOW(),
-		    updated_at = NOW()
+		    updated_at = NOW(),
+		    fee_refunded_at = CASE WHEN fee_charged_at IS NOT NULL AND fee_refunded_at IS NULL THEN NOW() ELSE fee_refunded_at END
 		WHERE id = $1 AND status = $5
 		RETURNING `+invoiceRequestColumns,
 		reqID, InvoiceStatusRejected, reason, adminID, InvoiceStatusPending)
@@ -283,6 +325,12 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 			return nil, invoiceRequestStateError(ctx, db, reqID)
 		}
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to commit reject").WithCause(err)
+	}
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
 	}
 
 	orders, err := queryInvoiceRequestOrders(ctx, db, []int64{req.ID})
@@ -296,7 +344,7 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 // CompleteInvoiceRequestInput is the input for completing an invoice request.
 type CompleteInvoiceRequestInput struct {
 	InvoiceNo string
-	File      *multipart.FileHeader
+	Files     []*multipart.FileHeader
 }
 
 // CompleteInvoiceRequest sends the uploaded invoice file as an email attachment
@@ -314,18 +362,17 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 	if !invoiceNoFormat.MatchString(invoiceNo) {
 		return nil, infraerrors.BadRequest("INVOICE_NO_FORMAT_INVALID", "invoice number must be 6-64 alphanumeric characters or hyphens")
 	}
-	if input.File == nil {
+	if len(input.Files) == 0 {
 		return nil, infraerrors.BadRequest("INVOICE_FILE_REQUIRED", "invoice file is required")
 	}
-	if input.File.Size <= 0 {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_EMPTY", "invoice file is empty")
+	if len(input.Files) > maxInvoiceAttachments {
+		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_MANY", "too many invoice files")
 	}
-	if input.File.Size > maxInvoiceFileBytes {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
-	}
-	mimeType := strings.TrimSpace(input.File.Header.Get("Content-Type"))
-	if mimeType != "" && !allowedInvoiceMimeTypes[mimeType] {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TYPE_INVALID", "invoice file type is not allowed")
+
+	// Validate and read attachments before any DB work (fail fast on bad input).
+	attachments, err := readInvoiceAttachments(input.Files)
+	if err != nil {
+		return nil, err
 	}
 
 	if s.invoiceEmailSender == nil {
@@ -345,32 +392,12 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 		return nil, infraerrors.BadRequest("INVOICE_EMAIL_REQUIRED", "profile email is required")
 	}
 
-	// Read the uploaded file into memory (bounded).
-	src, err := input.File.Open()
-	if err != nil {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_OPEN_FAILED", "failed to read uploaded file")
-	}
-	defer func() { _ = src.Close() }()
-	content, err := io.ReadAll(io.LimitReader(src, maxInvoiceFileBytes+1))
-	if err != nil {
-		return nil, infraerrors.InternalServer("INVOICE_FILE_READ_FAILED", "failed to read invoice file").WithCause(err)
-	}
-	if int64(len(content)) > maxInvoiceFileBytes {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
-	}
-
-	filename := strings.TrimSpace(input.File.Filename)
-	if filename == "" {
-		filename = "invoice.pdf"
-	}
-
 	// Build the email payload.
 	siteName := s.invoiceEmailSiteName(ctx)
 	subject := fmt.Sprintf("[%s] 您的发票 %s / Your Invoice %s", siteName, invoiceNo, invoiceNo)
 	body := buildInvoiceAttachmentEmailBody(loaded, invoiceNo, siteName)
 
-	att := EmailAttachment{Filename: filename, MimeType: mimeType, Content: content}
-	if err := s.invoiceEmailSender.SendEmailWithAttachment(ctx, to, subject, body, []EmailAttachment{att}); err != nil {
+	if err := s.invoiceEmailSender.SendEmailWithAttachment(ctx, to, subject, body, attachments); err != nil {
 		return nil, infraerrors.ServiceUnavailable("INVOICE_EMAIL_SEND_FAILED", "failed to send invoice email").WithCause(err)
 	}
 
@@ -458,6 +485,8 @@ func scanAdminInvoiceRequest(scanner interface {
 		&req.FeeAmount,
 		&req.InvoiceAmount,
 		&req.ServiceCategory,
+		&req.FeeChargedAt,
+		&req.FeeRefundedAt,
 		&username,
 		&email,
 	); err != nil {
@@ -480,4 +509,39 @@ func prefixedInvoiceColumns(alias string) string {
 		out = append(out, alias+"."+c)
 	}
 	return strings.Join(out, ", ")
+}
+
+// readInvoiceAttachments 校验并读取多个上传文件为邮件附件(逐个限大小与 MIME)。
+func readInvoiceAttachments(files []*multipart.FileHeader) ([]EmailAttachment, error) {
+	atts := make([]EmailAttachment, 0, len(files))
+	for _, fh := range files {
+		if fh == nil || fh.Size <= 0 {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_EMPTY", "invoice file is empty")
+		}
+		if fh.Size > maxInvoiceFileBytes {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
+		}
+		mimeType := strings.TrimSpace(fh.Header.Get("Content-Type"))
+		if mimeType != "" && !allowedInvoiceMimeTypes[mimeType] {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TYPE_INVALID", "invoice file type is not allowed")
+		}
+		src, err := fh.Open()
+		if err != nil {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_OPEN_FAILED", "failed to read uploaded file")
+		}
+		content, err := io.ReadAll(io.LimitReader(src, maxInvoiceFileBytes+1))
+		_ = src.Close()
+		if err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_FILE_READ_FAILED", "failed to read invoice file").WithCause(err)
+		}
+		if int64(len(content)) > maxInvoiceFileBytes {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
+		}
+		filename := strings.TrimSpace(fh.Filename)
+		if filename == "" {
+			filename = "invoice.pdf"
+		}
+		atts = append(atts, EmailAttachment{Filename: filename, MimeType: mimeType, Content: content})
+	}
+	return atts, nil
 }

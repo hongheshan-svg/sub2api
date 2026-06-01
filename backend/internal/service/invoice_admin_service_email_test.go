@@ -58,7 +58,7 @@ func TestCompleteInvoiceRequest_NoEmailSender(t *testing.T) {
 	svc := &PaymentService{}
 	fh := newTestFileHeader(t, "x.pdf", "application/pdf", []byte("dummy"))
 
-	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "ABC123", File: fh})
+	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "ABC123", Files: []*multipart.FileHeader{fh}})
 	require.Error(t, err)
 	require.Equal(t, "INVOICE_EMAIL_NOT_CONFIGURED", infraerrors.Reason(err))
 }
@@ -70,7 +70,7 @@ func TestCompleteInvoiceRequest_RejectsInvalidInvoiceNo(t *testing.T) {
 	svc := &PaymentService{invoiceEmailSender: sender}
 
 	fh := newTestFileHeader(t, "x.pdf", "application/pdf", []byte("dummy"))
-	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "bad!", File: fh})
+	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "bad!", Files: []*multipart.FileHeader{fh}})
 	require.Error(t, err)
 	require.Equal(t, "INVOICE_NO_FORMAT_INVALID", infraerrors.Reason(err))
 	require.Equal(t, 0, sender.gotAtts, "sender must not be called when validation fails")
@@ -84,7 +84,7 @@ func TestCompleteInvoiceRequest_RejectsOversizedFile(t *testing.T) {
 
 	fh := newTestFileHeader(t, "x.pdf", "application/pdf", make([]byte, 100))
 	fh.Size = maxInvoiceFileBytes + 1
-	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "ABC123", File: fh})
+	_, err := svc.CompleteInvoiceRequest(context.Background(), 1, 1, CompleteInvoiceRequestInput{InvoiceNo: "ABC123", Files: []*multipart.FileHeader{fh}})
 	require.Error(t, err)
 	require.Equal(t, "INVOICE_FILE_TOO_LARGE", infraerrors.Reason(err))
 	require.Equal(t, 0, sender.gotAtts)

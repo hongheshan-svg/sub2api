@@ -1059,6 +1059,16 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 	if err := s.userRepo.UpdateBalance(ctx, userID, amount); err != nil {
 		return fmt.Errorf("update balance: %w", err)
 	}
+	s.InvalidateBalanceCaches(ctx, userID)
+	return nil
+}
+
+// InvalidateBalanceCaches 失效用户的鉴权缓存与计费余额缓存。
+// 供「在事务外已直接改动 users.balance」的调用方(如发票扣费)复用。
+func (s *UserService) InvalidateBalanceCaches(ctx context.Context, userID int64) {
+	if s == nil {
+		return
+	}
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
@@ -1076,7 +1086,6 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 			}
 		}()
 	}
-	return nil
 }
 
 // UpdateConcurrency 更新用户并发数（管理员功能）

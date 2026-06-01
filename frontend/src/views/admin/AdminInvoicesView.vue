@@ -47,6 +47,12 @@
             <button type="button" class="btn btn-secondary" @click="resetFilters">
               {{ t('common.reset') }}
             </button>
+            <button type="button" class="btn btn-primary" @click="openSendDialog">
+              {{ t('invoice.admin.directSendTitle') }}
+            </button>
+            <button type="button" class="btn btn-secondary" @click="openHistoryDialog">
+              {{ t('invoice.admin.historyTitle') }}
+            </button>
           </div>
         </div>
       </div>
@@ -69,7 +75,6 @@
                     {{ t(`invoice.status.${item.status}`) }}
                   </span>
                   <span
-                    v-if="item.profile_snapshot?.invoice_type === 'vat_special'"
                     class="rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
                   >
                     {{ t('invoice.invoiceTypes.vat_special') }}
@@ -214,10 +219,10 @@
               @click="triggerFilePicker"
             >
               <Icon name="document" size="sm" class="mr-2" />
-              {{ completeForm.file ? t('common.reselect') : t('common.selectFile') }}
+              {{ completeForm.files.length ? t('common.reselect') : t('common.selectFile') }}
             </button>
-            <span v-if="completeForm.file" class="truncate text-sm text-gray-700 dark:text-gray-300">
-              {{ completeForm.file.name }} ({{ formatFileSize(completeForm.file.size) }})
+            <span v-if="completeForm.files.length" class="truncate text-sm text-gray-700 dark:text-gray-300">
+              {{ completeForm.files.map(f => f.name).join('、') }}（{{ completeForm.files.length }}）
             </span>
             <span v-else class="text-sm text-gray-400">{{ t('common.noFileSelected') }}</span>
           </div>
@@ -226,6 +231,7 @@
             type="file"
             class="hidden"
             accept=".pdf,.png,.jpg,.jpeg,.zip,.xls,.xlsx"
+            multiple
             @change="onFileChange"
           />
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('invoice.admin.fileHint') }}</p>
@@ -277,6 +283,79 @@
         </div>
       </template>
     </BaseDialog>
+
+    <BaseDialog
+      :show="sendDialogOpen"
+      :title="t('invoice.admin.directSendTitle')"
+      width="normal"
+      @close="sendDialogOpen = false"
+    >
+      <form class="space-y-4" @submit.prevent="submitSendEmail">
+        <div>
+          <label class="input-label">{{ t('invoice.admin.recipientEmail') }} <span class="text-red-500">*</span></label>
+          <input v-model="sendForm.email" type="email" class="input mt-1 w-full" required />
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.subjectOptional') }}</label>
+          <input v-model="sendForm.subject" type="text" class="input mt-1 w-full" maxlength="200" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.noteOptional') }}</label>
+          <textarea v-model="sendForm.note" class="input mt-1 w-full" rows="2" maxlength="500"></textarea>
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.fileLabel') }} <span class="text-red-500">*</span></label>
+          <input type="file" multiple class="mt-1" accept=".pdf,.png,.jpg,.jpeg,.zip,.xls,.xlsx" @change="onSendFileChange" />
+          <span v-if="sendForm.files.length" class="ml-2 text-sm text-gray-600 dark:text-gray-300">{{ sendForm.files.map(f => f.name).join('、') }}</span>
+        </div>
+      </form>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-secondary" @click="sendDialogOpen = false">{{ t('common.cancel') }}</button>
+          <button type="button" class="btn btn-primary" :disabled="actionLoading" @click="submitSendEmail">{{ t('invoice.admin.sendBtn') }}</button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog :show="historyDialogOpen" :title="t('invoice.admin.historyTitle')" width="wide" @close="historyDialogOpen = false">
+      <div v-if="historyLoading" class="py-6 text-center text-sm text-gray-500">{{ t('common.loading') }}</div>
+      <div v-else-if="historyItems.length === 0" class="py-6 text-center text-sm text-gray-400">{{ t('invoice.admin.historyEmpty') }}</div>
+      <div v-else class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 dark:text-gray-400">
+              <th class="px-2 py-1">{{ t('invoice.admin.colSentAt') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colRecipient') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colSubject') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colAttachments') }}</th>
+              <th class="px-2 py-1">{{ t('invoice.admin.colStatus') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in historyItems" :key="it.id" class="border-t border-gray-100 dark:border-dark-700">
+              <td class="px-2 py-1 whitespace-nowrap">{{ formatDateTime(it.sent_at) }}</td>
+              <td class="px-2 py-1">{{ it.recipient_email }}</td>
+              <td class="px-2 py-1">{{ it.subject }}</td>
+              <td class="px-2 py-1">{{ it.attachment_count }}</td>
+              <td class="px-2 py-1">
+                <span :class="it.status === 'sent' ? 'text-green-600' : 'text-red-600'">
+                  {{ it.status === 'sent' ? t('invoice.admin.statusSent') : t('invoice.admin.statusFailed') }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template #footer>
+        <div class="flex items-center justify-between w-full">
+          <span class="text-xs text-gray-500">{{ historyTotal }}</span>
+          <div class="flex gap-2">
+            <button type="button" class="btn btn-secondary" :disabled="historyPage <= 1 || historyLoading" @click="historyPrevPage">{{ t('pagination.previous') }}</button>
+            <button type="button" class="btn btn-secondary" :disabled="historyPage * historyPageSize >= historyTotal || historyLoading" @click="historyNextPage">{{ t('pagination.next') }}</button>
+          </div>
+        </div>
+      </template>
+    </BaseDialog>
   </AppLayout>
 </template>
 
@@ -288,7 +367,7 @@ import { useAppStore } from '@/stores'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatCurrency, formatDateTime } from '@/utils/format'
 import type { SelectOption } from '@/types'
-import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceStatus } from '@/types/invoice'
+import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceEmailSend, InvoiceStatus } from '@/types/invoice'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -312,14 +391,24 @@ const filters = reactive<{ status: InvoiceStatus | ''; keyword: string; start_ti
 
 const completeDialogOpen = ref(false)
 const rejectDialogOpen = ref(false)
+const sendDialogOpen = ref(false)
+const historyDialogOpen = ref(false)
+const historyItems = ref<InvoiceEmailSend[]>([])
+const historyLoading = ref(false)
+const historyPage = ref(1)
+const historyPageSize = ref(10)
+const historyTotal = ref(0)
 const activeRequest = ref<AdminInvoiceRequest | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
-const completeForm = reactive<{ invoice_no: string; file: File | null }>({
+const completeForm = reactive<{ invoice_no: string; files: File[] }>({
   invoice_no: '',
-  file: null
+  files: []
 })
 const rejectForm = reactive<{ reason: string }>({ reason: '' })
+const sendForm = reactive<{ email: string; subject: string; note: string; files: File[] }>({
+  email: '', subject: '', note: '', files: []
+})
 
 const statusFilterOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('common.all') },
@@ -328,7 +417,7 @@ const statusFilterOptions = computed<SelectOption[]>(() => [
   { value: 'rejected', label: t('invoice.status.rejected') }
 ])
 
-const canSubmitComplete = computed(() => completeForm.invoice_no.trim() !== '' && completeForm.file !== null)
+const canSubmitComplete = computed(() => completeForm.invoice_no.trim() !== '' && completeForm.files.length > 0)
 
 async function fetchList() {
   loading.value = true
@@ -379,7 +468,7 @@ function handlePageSizeChange(size: number) {
 function openCompleteDialog(item: AdminInvoiceRequest) {
   activeRequest.value = item
   completeForm.invoice_no = ''
-  completeForm.file = null
+  completeForm.files = []
   if (fileInputRef.value) fileInputRef.value.value = ''
   completeDialogOpen.value = true
 }
@@ -402,21 +491,74 @@ function closeRejectDialog() {
 
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
-  completeForm.file = input.files && input.files.length > 0 ? input.files[0] : null
+  completeForm.files = input.files ? Array.from(input.files) : []
 }
 
 function triggerFilePicker() {
   fileInputRef.value?.click()
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+function openSendDialog() {
+  sendForm.email = ''
+  sendForm.subject = ''
+  sendForm.note = ''
+  sendForm.files = []
+  sendDialogOpen.value = true
+}
+
+function onSendFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  sendForm.files = input.files ? Array.from(input.files) : []
+}
+
+async function openHistoryDialog() {
+  historyDialogOpen.value = true
+  historyPage.value = 1
+  await fetchHistory()
+}
+
+async function fetchHistory() {
+  historyLoading.value = true
+  try {
+    const res = await adminInvoiceAPI.listEmailSends({ page: historyPage.value, page_size: historyPageSize.value })
+    historyItems.value = res.data.items || []
+    historyTotal.value = res.data.total || 0
+  } catch (err: unknown) {
+    showError(err)
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function historyNextPage() {
+  if (historyPage.value * historyPageSize.value >= historyTotal.value) return
+  historyPage.value++
+  void fetchHistory()
+}
+
+function historyPrevPage() {
+  if (historyPage.value <= 1) return
+  historyPage.value--
+  void fetchHistory()
+}
+
+async function submitSendEmail() {
+  if (!sendForm.email.trim()) { appStore.showError(t('invoice.admin.recipientRequired')); return }
+  if (sendForm.files.length === 0) { appStore.showError(t('common.noFileSelected')); return }
+  actionLoading.value = true
+  try {
+    await adminInvoiceAPI.sendEmail(sendForm.email.trim(), sendForm.files, sendForm.subject.trim(), sendForm.note.trim())
+    appStore.showSuccess(t('invoice.admin.emailSent'))
+    sendDialogOpen.value = false
+  } catch (err: unknown) {
+    showError(err)
+  } finally {
+    actionLoading.value = false
+  }
 }
 
 async function submitComplete() {
-  if (!activeRequest.value || !completeForm.file) return
+  if (!activeRequest.value || completeForm.files.length === 0) return
   const invoiceNo = completeForm.invoice_no.trim()
   if (!invoiceNo) {
     appStore.showError(t('invoice.admin.invoiceNoRequired'))
@@ -424,7 +566,7 @@ async function submitComplete() {
   }
   actionLoading.value = true
   try {
-    await adminInvoiceAPI.complete(activeRequest.value.id, invoiceNo, completeForm.file)
+    await adminInvoiceAPI.complete(activeRequest.value.id, invoiceNo, completeForm.files)
     appStore.showSuccess(t('invoice.admin.completed'))
     closeCompleteDialog()
     await fetchList()

@@ -16,26 +16,26 @@ func TestRound2(t *testing.T) {
 }
 
 func TestComputeInvoiceAmounts(t *testing.T) {
-	// 专票 6%
-	fee, inv := computeInvoiceAmounts(1000.0, 0.06)
-	require.Equal(t, 60.00, fee)
-	require.Equal(t, 940.00, inv)
+	// 专票 6%:全额开票,费用为额外项
+	fee, invoice := computeInvoiceAmounts(1000.0, 0.06)
+	if fee != 60.0 {
+		t.Fatalf("fee: want 60.00, got %.2f", fee)
+	}
+	if invoice != 1000.0 {
+		t.Fatalf("invoice: want 1000.00 (full amount), got %.2f", invoice)
+	}
 
-	// 普票(费率 0)
-	fee, inv = computeInvoiceAmounts(1000.0, 0)
-	require.Equal(t, 0.00, fee)
-	require.Equal(t, 1000.00, inv)
+	// rate=0:不收费,全额开票
+	fee, invoice = computeInvoiceAmounts(1000.0, 0)
+	if fee != 0.0 || invoice != 1000.0 {
+		t.Fatalf("rate0: want fee=0 invoice=1000, got fee=%.2f invoice=%.2f", fee, invoice)
+	}
 
-	// 舍入自洽:fee+invoice 必须等于 base
-	fee, inv = computeInvoiceAmounts(333.33, 0.06)
-	require.Equal(t, 20.00, fee)
-	require.Equal(t, 313.33, inv)
-	require.Equal(t, 333.33, round2(fee+inv))
-
-	// 零金额
-	fee, inv = computeInvoiceAmounts(0, 0.06)
-	require.Equal(t, 0.00, fee)
-	require.Equal(t, 0.00, inv)
+	// base<=0:零值
+	fee, invoice = computeInvoiceAmounts(0, 0.06)
+	if fee != 0.0 || invoice != 0.0 {
+		t.Fatalf("zero base: want 0/0, got %.2f/%.2f", fee, invoice)
+	}
 }
 
 func TestResolveInvoiceFeeConfig_DefaultsWhenNoSettingService(t *testing.T) {
