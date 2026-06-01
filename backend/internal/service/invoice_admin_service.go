@@ -240,6 +240,21 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 		return infraerrors.Conflict("INVOICE_REQUEST_NOT_CANCELLABLE", "only pending invoice requests can be cancelled")
 	}
 
+	// 提交时已扣的专票服务费需退回(幂等:仅当已扣未退)。
+	var feeAmount float64
+	var feeChargedAt, feeRefundedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT fee_amount::float8, fee_charged_at, fee_refunded_at
+		FROM invoice_requests WHERE id = $1 FOR UPDATE
+	`, reqID).Scan(&feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+		return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to load invoice fee").WithCause(err)
+	}
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
+			return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM invoice_request_orders WHERE invoice_request_id = $1`, reqID); err != nil {
 		return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to detach invoice orders").WithCause(err)
 	}
@@ -250,6 +265,9 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 		return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to commit invoice cancel").WithCause(err)
 	}
 
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
+	}
 	return nil
 }
 
@@ -267,13 +285,44 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 	if err != nil {
 		return nil, err
 	}
-	row := db.QueryRowContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to begin reject transaction").WithCause(err)
+	}
+	defer rollbackIfActive(tx)
+
+	// 锁定并读取扣费状态
+	var userID int64
+	var feeAmount float64
+	var status string
+	var feeChargedAt, feeRefundedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT user_id, status, fee_amount::float8, fee_charged_at, fee_refunded_at
+		FROM invoice_requests WHERE id = $1 FOR UPDATE
+	`, reqID).Scan(&userID, &status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
+		}
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to load invoice request").WithCause(err)
+	}
+	if status != InvoiceStatusPending {
+		return nil, infraerrors.Conflict("INVOICE_REQUEST_NOT_PENDING", "invoice request is not pending")
+	}
+
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
+	}
+
+	row := tx.QueryRowContext(ctx, `
 		UPDATE invoice_requests
 		SET status = $2,
 		    reject_reason = $3,
 		    processed_by = $4,
 		    processed_at = NOW(),
-		    updated_at = NOW()
+		    updated_at = NOW(),
+		    fee_refunded_at = CASE WHEN fee_charged_at IS NOT NULL AND fee_refunded_at IS NULL THEN NOW() ELSE fee_refunded_at END
 		WHERE id = $1 AND status = $5
 		RETURNING `+invoiceRequestColumns,
 		reqID, InvoiceStatusRejected, reason, adminID, InvoiceStatusPending)
@@ -283,6 +332,12 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 			return nil, invoiceRequestStateError(ctx, db, reqID)
 		}
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to commit reject").WithCause(err)
+	}
+	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
 	}
 
 	orders, err := queryInvoiceRequestOrders(ctx, db, []int64{req.ID})
