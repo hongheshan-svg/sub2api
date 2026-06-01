@@ -86,7 +86,7 @@ func (s *PaymentService) recordInvoiceEmailSend(ctx context.Context, adminID int
 		return
 	}
 	status := "sent"
-	var errMsg interface{} = nil
+	var errMsg any = nil
 	if sendErr != nil {
 		status = "failed"
 		errMsg = sendErr.Error()

@@ -486,7 +486,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
 	// 专票服务费从余额扣除:余额不足则拦截要求充值。
-	var feeChargedAt interface{} = nil
+	var feeChargedAt any = nil
 	if feeAmount > 0 {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1
