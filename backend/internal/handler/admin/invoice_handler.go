@@ -130,15 +130,23 @@ func (h *InvoiceHandler) CompleteInvoiceRequest(c *gin.Context) {
 	}
 
 	invoiceNo := strings.TrimSpace(c.PostForm("invoice_no"))
-	fileHeader, err := c.FormFile("file")
+	form, err := c.MultipartForm()
 	if err != nil {
+		response.BadRequest(c, "Invoice file is required")
+		return
+	}
+	files := form.File["files"]
+	if len(files) == 0 {
+		files = form.File["file"] // 向后兼容单文件字段
+	}
+	if len(files) == 0 {
 		response.BadRequest(c, "Invoice file is required")
 		return
 	}
 
 	req, err := h.paymentService.CompleteInvoiceRequest(c.Request.Context(), subject.UserID, id, service.CompleteInvoiceRequestInput{
 		InvoiceNo: invoiceNo,
-		File:      fileHeader,
+		Files:     files,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
