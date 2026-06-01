@@ -156,6 +156,38 @@ func (h *InvoiceHandler) CompleteInvoiceRequest(c *gin.Context) {
 	response.Success(c, req)
 }
 
+// SendInvoiceEmail directly emails uploaded invoice files to a recipient (对公直发).
+// POST /api/v1/admin/payment/invoices/send-email
+// Multipart fields: recipient_email, subject(optional), note(optional), files[] (1..N)
+func (h *InvoiceHandler) SendInvoiceEmail(c *gin.Context) {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "unauthorized")
+		return
+	}
+	form, err := c.MultipartForm()
+	if err != nil {
+		response.BadRequest(c, "files are required")
+		return
+	}
+	files := form.File["files"]
+	if len(files) == 0 {
+		response.BadRequest(c, "at least one attachment is required")
+		return
+	}
+	err = h.paymentService.SendInvoiceEmail(c.Request.Context(), subject.UserID, service.SendInvoiceEmailInput{
+		RecipientEmail: strings.TrimSpace(c.PostForm("recipient_email")),
+		Subject:        strings.TrimSpace(c.PostForm("subject")),
+		Note:           strings.TrimSpace(c.PostForm("note")),
+		Files:          files,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "invoice email sent"})
+}
+
 // writeUserNotification persists an in-app notification for the requester.
 // Best-effort — failures are logged but not surfaced to the admin caller.
 func (h *InvoiceHandler) writeUserNotification(req *service.InvoiceRequest, completed bool) {
