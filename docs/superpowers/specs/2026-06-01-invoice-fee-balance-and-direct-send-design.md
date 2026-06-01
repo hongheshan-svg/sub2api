@@ -18,6 +18,7 @@
 1. 专票按**全额**开票（开 1000），额外向客户收取 6% 服务费，**从用户余额扣除**；余额不足则拦截并提示充值。扣费前明确提醒用户。
 2. 提供管理员**独立的「发送发票邮件」**工具，用于对公打款等无系统记录的场景，支持**多个附件**，并保留发送记录。
 3. 普通订单开票完成时也支持**上传多个发票文件**。
+4. **彻底移除普票（普通发票）**，只保留专票：从产品界面拿掉普票选项，所有开票一律专票、一律收 6%。
 
 ## 非目标（本期不做）
 
@@ -37,6 +38,9 @@
 | 二次确认 | **专票提交时弹框确认才扣**；普票不弹 |
 | 对公发邮件 | 独立工具，**发送并留记录** |
 | 普通开票完成 | **也支持多附件** |
+| 普票 | **彻底移除**，只留专票 |
+| 历史普票档案 | 转为专票 + 缺字段标「待补全」，不删数据 |
+| invoice_type 列 | **保留列**、后端恒为 vat_special，仅前端移除选项 |
 
 ---
 
@@ -173,22 +177,61 @@ func computeInvoiceAmounts(base, feeRate float64) (feeAmount, invoiceAmount floa
 
 ---
 
+## Part 4：彻底移除普票，只留专票
+
+移除策略 = **从产品界面与新建校验中拿掉普票；保留 `invoice_type` 列、后端恒为 `vat_special`；历史普票档案转专票并标「待补全」**。因此「专票 6% + 余额扣费 + 二次确认 + 余额不足拦截」现在对**所有开票**生效，不再有普票这条免费通道。
+
+### 4.1 后端
+
+- `invoice_service.go`
+  - `validInvoiceTypes` 只保留 `vat_special`（移除 `InvoiceTypeGeneral` 项）；`InvoiceTypeGeneral` 常量**保留定义**（仅用于读历史快照），不再作为合法输入。
+  - `normalizeInvoiceProfileInput`：**忽略传入的 `invoice_type`，一律写入 `vat_special`**（前端已不再发送类型，后端强制专票）。专票必填字段（开户行 `bank_name`、账号 `bank_account`、地址 `address`、电话 `phone`）的校验**对所有新建/编辑生效**（不再按类型分支）。
+- `invoice_amount.go::resolveInvoiceFeeConfig`：因 `invoice_type` 恒为 `vat_special`，新建开票一律返回配置费率。保留对 rate=0 / 历史 general 快照的安全处理（`computeInvoiceAmounts` 在 rate=0 时不收费）。
+- **历史 invoice_requests 行不动**（其 `profile_snapshot.invoice_type` 可能仍是 general，属历史快照，正确）。
+
+### 4.2 迁移（migration 146，与 Part 1 同一迁移）
+
+- `invoice_profiles.invoice_type` 列默认值由 `'general'` 改为 `'vat_special'`。
+- 回填：`UPDATE invoice_profiles SET invoice_type='vat_special' WHERE invoice_type<>'vat_special'`。
+- 加约束：`CHECK (invoice_type = 'vat_special')`（回填后所有行满足）。
+- **不删任何档案**。转换后可能存在“缺专票必填字段”的档案，由前端「待补全」处理（4.3）。
+
+### 4.3 前端
+
+- `types/invoice.ts`：`InvoiceType` 收窄为 `'vat_special'`。
+- 档案新建/编辑表单（`InvoiceView.vue`）：移除普票/专票单选，固定为专票；开户行/账号/地址/电话**始终必填**（去掉 `isVATSpecial` 条件）。移除 `isVATSpecial` 相关分支与按类型变色的样式。
+- **「待补全」标记**：对缺 `bank_name/bank_account/address/phone` 任一的历史档案，档案卡片显示「待补全」徽标；在开票 Tab 选择该档案时**禁止提交**并提示「请先补全开票信息（开户行/账号/地址/电话）」。
+- 费用预览/二次确认：因所有档案都是专票，预览与二次确认弹窗对所有开票生效（不再有 `isVatSpecialSelected` 分支，恒为真）。
+- `i18n zh.ts/en.ts`：移除 `invoiceTypes.general`；`fee.notice` 文案改为按全额开票 + 额外收费的新口径（不再是「从开票金额中扣除 × net%」）。
+- 管理员视图（`AdminInvoicesView.vue`）：专票徽标可保留或省略（全部都是专票，可简化为不显类型）。
+
+### 4.4 测试
+
+- `invoice_amount_test.go`：移除/改写普票（rate=0 经 general 类型）用例；保留 rate=0 的数值边界用例。
+- 新建档案校验：缺必填字段被拒；非 `vat_special` 输入被拒/改写。
+- 迁移回填：general 档案被转为 vat_special；CHECK 约束生效。
+- 前端「待补全」：缺字段档案不可提交开票。
+
+---
+
 ## 受影响文件清单
 
 **后端**
-- `migrations/146_invoice_fee_balance.sql`（新增 `fee_charged_at`/`fee_refunded_at`）
+- `migrations/146_invoice_fee_balance.sql`（新增 `fee_charged_at`/`fee_refunded_at`；`invoice_profiles.invoice_type` 默认值改 `vat_special` + 回填 + CHECK 约束）
 - `migrations/147_invoice_email_sends.sql`（新表）
-- `internal/service/invoice_amount.go`（`computeInvoiceAmounts` 语义）
-- `internal/service/invoice_service.go`（`CreateInvoiceRequest` 扣费 + 余额不足拦截）
+- `internal/service/invoice_amount.go`（`computeInvoiceAmounts` 语义；`resolveInvoiceFeeConfig` 恒专票）
+- `internal/service/invoice_service.go`（`CreateInvoiceRequest` 扣费 + 余额不足拦截；`validInvoiceTypes` 只留专票；`normalizeInvoiceProfileInput` 默认/校验改为专票、必填字段始终生效）
 - `internal/service/invoice_admin_service.go`（`Reject`/`Cancel` 退费；`Complete` 多附件；新增 `SendInvoiceEmail`）
 - `internal/handler/invoice_handler.go` / `internal/handler/admin/invoice_handler.go`（多文件、新接口、config 接口）
 - `internal/server/routes/payment.go`（路由注册）
 - PaymentService 余额缓存失效接线（注入 UserService/缓存失效）
+- `internal/service/invoice_amount_test.go`（移除/改写普票用例）
 
 **前端**
-- `frontend/src/views/user/InvoiceView.vue`（费用预览、二次确认、余额不足拦截、成功/退费提示）
-- `frontend/src/views/admin/AdminInvoicesView.vue`（直发表单 + 历史、完成开票多文件）
-- `frontend/src/api/invoice.ts`、`frontend/src/types/invoice.ts`（新接口、多文件、config、新增字段）
+- `frontend/src/views/user/InvoiceView.vue`（移除普票选项、必填字段始终生效、「待补全」标记、费用预览、二次确认、余额不足拦截、成功/退费提示）
+- `frontend/src/views/admin/AdminInvoicesView.vue`（直发表单 + 历史、完成开票多文件、类型徽标简化）
+- `frontend/src/api/invoice.ts`、`frontend/src/types/invoice.ts`（`InvoiceType` 收窄为专票、新接口、多文件、config、新增字段）
+- `frontend/src/i18n/locales/zh.ts`、`en.ts`（移除 `invoiceTypes.general`、改 `fee.notice` 口径）
 
 ## 错误码
 
@@ -199,9 +242,9 @@ func computeInvoiceAmounts(base, feeRate float64) (feeAmount, invoiceAmount floa
 
 - 专票提交：余额足→扣费成功、`fee_charged_at` 写入、`invoice_amount==base`、`fee_amount==base×rate`。
 - 专票提交：余额不足→拦截、不创建申请、余额不变。
-- 普票提交：不扣费、行为不变。
 - 驳回/取消：已扣费的退回、余额复原、幂等（重复不double退）；未扣费的不退。
 - 扣/退后余额缓存一致。
+- 普票移除：新建档案非 `vat_special` 输入被拒/改写；缺必填字段被拒；迁移把 general 档案转 vat_special；前端缺字段档案不可提交开票。
 - 对公发邮件：多附件发送成功写 `sent`、失败写 `failed`；附件校验。
 - 完成开票多附件：多文件一封邮件、`invoice_no` 不变、各文件校验。
 
@@ -209,3 +252,4 @@ func computeInvoiceAmounts(base, feeRate float64) (feeAmount, invoiceAmount floa
 
 - migration 146 上线后，**新开专票的发票金额变为全额**（金额变大），属预期正确行为；需同步知会运营/财务。
 - 历史 pending 专票（若有）按旧语义存的 `invoice_amount=base−fee` 且未扣费——这些若继续完成会开 940 且未收 6%。建议上线前清掉历史 pending 专票或单独处理，规模应很小（实现期确认数量）。
+- 普票移除后，**所有开票一律专票、一律收 6%**，不再有免费开票通道；历史 general 档案被转为专票，缺银行/地址/电话的档案需用户补全后才能开票——需同步知会用户/运营。
