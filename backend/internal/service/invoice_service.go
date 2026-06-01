@@ -28,8 +28,8 @@ const (
 )
 
 // validInvoiceTypes lists all allowed invoice_type values.
+// 普票已移除:仅专票为合法输入(InvoiceTypeGeneral 常量保留,仅用于读历史快照)。
 var validInvoiceTypes = map[string]bool{
-	InvoiceTypeGeneral:    true,
 	InvoiceTypeVATSpecial: true,
 }
 
@@ -158,13 +158,8 @@ func normalizeInvoiceProfileInput(input InvoiceProfileInput) (InvoiceProfileInpu
 	input.BankName = normalizeOptionalString(input.BankName)
 	input.BankAccount = normalizeOptionalString(input.BankAccount)
 
-	input.InvoiceType = strings.TrimSpace(input.InvoiceType)
-	if input.InvoiceType == "" {
-		input.InvoiceType = InvoiceTypeGeneral
-	}
-	if !validInvoiceTypes[input.InvoiceType] {
-		return input, infraerrors.BadRequest("INVOICE_TYPE_INVALID", "invoice type is invalid")
-	}
+	// 普票已移除:忽略传入的 invoice_type,一律按专票处理。
+	input.InvoiceType = InvoiceTypeVATSpecial
 
 	switch {
 	case input.Title == "":
@@ -184,20 +179,18 @@ func normalizeInvoiceProfileInput(input InvoiceProfileInput) (InvoiceProfileInpu
 		return input, infraerrors.BadRequest("INVOICE_EMAIL_INVALID", "invoice email is invalid")
 	}
 
-	// VAT special invoice (增值税专用发票) requires bank info and registered address.
-	if input.InvoiceType == InvoiceTypeVATSpecial {
-		if input.Address == nil || strings.TrimSpace(*input.Address) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_ADDRESS_REQUIRED", "registered address is required for VAT special invoice")
-		}
-		if input.Phone == nil || strings.TrimSpace(*input.Phone) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_PHONE_REQUIRED", "phone is required for VAT special invoice")
-		}
-		if input.BankName == nil || strings.TrimSpace(*input.BankName) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_BANK_NAME_REQUIRED", "bank name is required for VAT special invoice")
-		}
-		if input.BankAccount == nil || strings.TrimSpace(*input.BankAccount) == "" {
-			return input, infraerrors.BadRequest("INVOICE_VAT_BANK_ACCOUNT_REQUIRED", "bank account is required for VAT special invoice")
-		}
+	// 专票必填:开户行、账号、注册地址、电话(所有档案均为专票,故恒校验)。
+	if input.Address == nil || strings.TrimSpace(*input.Address) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_ADDRESS_REQUIRED", "registered address is required for VAT special invoice")
+	}
+	if input.Phone == nil || strings.TrimSpace(*input.Phone) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_PHONE_REQUIRED", "phone is required for VAT special invoice")
+	}
+	if input.BankName == nil || strings.TrimSpace(*input.BankName) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_BANK_NAME_REQUIRED", "bank name is required for VAT special invoice")
+	}
+	if input.BankAccount == nil || strings.TrimSpace(*input.BankAccount) == "" {
+		return input, infraerrors.BadRequest("INVOICE_VAT_BANK_ACCOUNT_REQUIRED", "bank account is required for VAT special invoice")
 	}
 	return input, nil
 }
