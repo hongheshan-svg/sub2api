@@ -47,6 +47,9 @@
             <button type="button" class="btn btn-secondary" @click="resetFilters">
               {{ t('common.reset') }}
             </button>
+            <button type="button" class="btn btn-primary" @click="openSendDialog">
+              {{ t('invoice.admin.directSendTitle') }}
+            </button>
           </div>
         </div>
       </div>
@@ -277,6 +280,39 @@
         </div>
       </template>
     </BaseDialog>
+
+    <BaseDialog
+      :show="sendDialogOpen"
+      :title="t('invoice.admin.directSendTitle')"
+      width="normal"
+      @close="sendDialogOpen = false"
+    >
+      <form class="space-y-4" @submit.prevent="submitSendEmail">
+        <div>
+          <label class="input-label">{{ t('invoice.admin.recipientEmail') }} <span class="text-red-500">*</span></label>
+          <input v-model="sendForm.email" type="email" class="input mt-1 w-full" required />
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.subjectOptional') }}</label>
+          <input v-model="sendForm.subject" type="text" class="input mt-1 w-full" maxlength="200" />
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.noteOptional') }}</label>
+          <textarea v-model="sendForm.note" class="input mt-1 w-full" rows="2" maxlength="500"></textarea>
+        </div>
+        <div>
+          <label class="input-label">{{ t('invoice.admin.fileLabel') }} <span class="text-red-500">*</span></label>
+          <input type="file" multiple class="mt-1" accept=".pdf,.png,.jpg,.jpeg,.zip,.xls,.xlsx" @change="onSendFileChange" />
+          <span v-if="sendForm.files.length" class="ml-2 text-sm text-gray-600 dark:text-gray-300">{{ sendForm.files.map(f => f.name).join('、') }}</span>
+        </div>
+      </form>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-secondary" @click="sendDialogOpen = false">{{ t('common.cancel') }}</button>
+          <button type="button" class="btn btn-primary" :disabled="actionLoading" @click="submitSendEmail">{{ t('invoice.admin.sendBtn') }}</button>
+        </div>
+      </template>
+    </BaseDialog>
   </AppLayout>
 </template>
 
@@ -312,6 +348,7 @@ const filters = reactive<{ status: InvoiceStatus | ''; keyword: string; start_ti
 
 const completeDialogOpen = ref(false)
 const rejectDialogOpen = ref(false)
+const sendDialogOpen = ref(false)
 const activeRequest = ref<AdminInvoiceRequest | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -320,6 +357,9 @@ const completeForm = reactive<{ invoice_no: string; files: File[] }>({
   files: []
 })
 const rejectForm = reactive<{ reason: string }>({ reason: '' })
+const sendForm = reactive<{ email: string; subject: string; note: string; files: File[] }>({
+  email: '', subject: '', note: '', files: []
+})
 
 const statusFilterOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('common.all') },
@@ -409,6 +449,33 @@ function triggerFilePicker() {
   fileInputRef.value?.click()
 }
 
+function openSendDialog() {
+  sendForm.email = ''
+  sendForm.subject = ''
+  sendForm.note = ''
+  sendForm.files = []
+  sendDialogOpen.value = true
+}
+
+function onSendFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  sendForm.files = input.files ? Array.from(input.files) : []
+}
+
+async function submitSendEmail() {
+  if (!sendForm.email.trim()) { appStore.showError(t('invoice.admin.recipientRequired')); return }
+  if (sendForm.files.length === 0) { appStore.showError(t('common.noFileSelected')); return }
+  actionLoading.value = true
+  try {
+    await adminInvoiceAPI.sendEmail(sendForm.email.trim(), sendForm.files, sendForm.subject.trim(), sendForm.note.trim())
+    appStore.showSuccess(t('invoice.admin.emailSent'))
+    sendDialogOpen.value = false
+  } catch (err: unknown) {
+    showError(err)
+  } finally {
+    actionLoading.value = false
+  }
+}
 
 async function submitComplete() {
   if (!activeRequest.value || completeForm.files.length === 0) return

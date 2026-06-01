@@ -113,3 +113,16 @@ export interface InvoiceOrderListParams {
   page?: number
   page_size?: number
 }
+
+export interface InvoiceEmailSend {
+  id: number
+  recipient_email: string
+  subject: string
+  note?: string | null
+  attachment_count: number
+  attachment_names?: string[] | null
+  status: 'sent' | 'failed'
+  error_message?: string | null
+  sent_by: number
+  sent_at: string
+}

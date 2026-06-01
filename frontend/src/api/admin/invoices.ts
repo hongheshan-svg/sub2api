@@ -22,5 +22,16 @@ export const adminInvoiceAPI = {
     return apiClient.post<InvoiceRequest>(`/admin/payment/invoices/${id}/complete`, form, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
+  },
+
+  sendEmail(recipientEmail: string, files: File[], subject?: string, note?: string) {
+    const form = new FormData()
+    form.append('recipient_email', recipientEmail)
+    if (subject) form.append('subject', subject)
+    if (note) form.append('note', note)
+    files.forEach((f) => form.append('files', f))
+    return apiClient.post<{ message: string }>(`/admin/payment/invoices/send-email`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
   }
 }

@@ -7030,6 +7030,13 @@ export default {
       completed: '发票邮件已发送至客户邮箱',
       rejected: '已拒绝，通知邮件已发送',
       completeAmountNotice: '请按实际开票金额 {amount}、类目「{category}」开具增值税专用发票。',
+      directSendTitle: '直接发送发票（对公）',
+      recipientEmail: '收件邮箱',
+      recipientRequired: '请填写收件邮箱',
+      subjectOptional: '主题（选填）',
+      noteOptional: '备注（选填）',
+      sendBtn: '发送',
+      emailSent: '发票邮件已发送',
     },
     empty: {
       requests: '暂无开票记录',

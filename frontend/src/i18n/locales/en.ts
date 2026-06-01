@@ -6850,6 +6850,13 @@ export default {
       completed: 'Invoice email sent to customer.',
       rejected: 'Request rejected. Notification email sent.',
       completeAmountNotice: 'Please issue the VAT special invoice for {amount}, category "{category}".',
+      directSendTitle: 'Send Invoice Directly',
+      recipientEmail: 'Recipient Email',
+      recipientRequired: 'Recipient email is required',
+      subjectOptional: 'Subject (optional)',
+      noteOptional: 'Note (optional)',
+      sendBtn: 'Send',
+      emailSent: 'Invoice email sent',
     },
     empty: {
       requests: 'No invoice requests',
