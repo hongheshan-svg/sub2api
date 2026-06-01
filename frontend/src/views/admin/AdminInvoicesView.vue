@@ -69,7 +69,6 @@
                     {{ t(`invoice.status.${item.status}`) }}
                   </span>
                   <span
-                    v-if="item.profile_snapshot?.invoice_type === 'vat_special'"
                     class="rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
                   >
                     {{ t('invoice.invoiceTypes.vat_special') }}
