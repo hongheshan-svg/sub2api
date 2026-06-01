@@ -20,6 +20,7 @@ import (
 const (
 	defaultInvoiceUploadDir = "./data/invoices"
 	maxInvoiceFileBytes     = 10 * 1024 * 1024 // 10 MB
+	maxInvoiceAttachments   = 5                 // 单次开票最多附件数
 )
 
 // invoiceNoFormat validates an issued invoice number.
@@ -351,7 +352,7 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 // CompleteInvoiceRequestInput is the input for completing an invoice request.
 type CompleteInvoiceRequestInput struct {
 	InvoiceNo string
-	File      *multipart.FileHeader
+	Files     []*multipart.FileHeader
 }
 
 // CompleteInvoiceRequest sends the uploaded invoice file as an email attachment
@@ -369,18 +370,11 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 	if !invoiceNoFormat.MatchString(invoiceNo) {
 		return nil, infraerrors.BadRequest("INVOICE_NO_FORMAT_INVALID", "invoice number must be 6-64 alphanumeric characters or hyphens")
 	}
-	if input.File == nil {
+	if len(input.Files) == 0 {
 		return nil, infraerrors.BadRequest("INVOICE_FILE_REQUIRED", "invoice file is required")
 	}
-	if input.File.Size <= 0 {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_EMPTY", "invoice file is empty")
-	}
-	if input.File.Size > maxInvoiceFileBytes {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
-	}
-	mimeType := strings.TrimSpace(input.File.Header.Get("Content-Type"))
-	if mimeType != "" && !allowedInvoiceMimeTypes[mimeType] {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TYPE_INVALID", "invoice file type is not allowed")
+	if len(input.Files) > maxInvoiceAttachments {
+		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_MANY", "too many invoice files")
 	}
 
 	if s.invoiceEmailSender == nil {
@@ -400,23 +394,9 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 		return nil, infraerrors.BadRequest("INVOICE_EMAIL_REQUIRED", "profile email is required")
 	}
 
-	// Read the uploaded file into memory (bounded).
-	src, err := input.File.Open()
+	attachments, err := readInvoiceAttachments(input.Files)
 	if err != nil {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_OPEN_FAILED", "failed to read uploaded file")
-	}
-	defer func() { _ = src.Close() }()
-	content, err := io.ReadAll(io.LimitReader(src, maxInvoiceFileBytes+1))
-	if err != nil {
-		return nil, infraerrors.InternalServer("INVOICE_FILE_READ_FAILED", "failed to read invoice file").WithCause(err)
-	}
-	if int64(len(content)) > maxInvoiceFileBytes {
-		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
-	}
-
-	filename := strings.TrimSpace(input.File.Filename)
-	if filename == "" {
-		filename = "invoice.pdf"
+		return nil, err
 	}
 
 	// Build the email payload.
@@ -424,8 +404,7 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 	subject := fmt.Sprintf("[%s] 您的发票 %s / Your Invoice %s", siteName, invoiceNo, invoiceNo)
 	body := buildInvoiceAttachmentEmailBody(loaded, invoiceNo, siteName)
 
-	att := EmailAttachment{Filename: filename, MimeType: mimeType, Content: content}
-	if err := s.invoiceEmailSender.SendEmailWithAttachment(ctx, to, subject, body, []EmailAttachment{att}); err != nil {
+	if err := s.invoiceEmailSender.SendEmailWithAttachment(ctx, to, subject, body, attachments); err != nil {
 		return nil, infraerrors.ServiceUnavailable("INVOICE_EMAIL_SEND_FAILED", "failed to send invoice email").WithCause(err)
 	}
 
@@ -535,4 +514,39 @@ func prefixedInvoiceColumns(alias string) string {
 		out = append(out, alias+"."+c)
 	}
 	return strings.Join(out, ", ")
+}
+
+// readInvoiceAttachments 校验并读取多个上传文件为邮件附件(逐个限大小与 MIME)。
+func readInvoiceAttachments(files []*multipart.FileHeader) ([]EmailAttachment, error) {
+	atts := make([]EmailAttachment, 0, len(files))
+	for _, fh := range files {
+		if fh == nil || fh.Size <= 0 {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_EMPTY", "invoice file is empty")
+		}
+		if fh.Size > maxInvoiceFileBytes {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
+		}
+		mimeType := strings.TrimSpace(fh.Header.Get("Content-Type"))
+		if mimeType != "" && !allowedInvoiceMimeTypes[mimeType] {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TYPE_INVALID", "invoice file type is not allowed")
+		}
+		src, err := fh.Open()
+		if err != nil {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_OPEN_FAILED", "failed to read uploaded file")
+		}
+		content, err := io.ReadAll(io.LimitReader(src, maxInvoiceFileBytes+1))
+		_ = src.Close()
+		if err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_FILE_READ_FAILED", "failed to read invoice file").WithCause(err)
+		}
+		if int64(len(content)) > maxInvoiceFileBytes {
+			return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_LARGE", "invoice file exceeds 10 MB")
+		}
+		filename := strings.TrimSpace(fh.Filename)
+		if filename == "" {
+			filename = "invoice.pdf"
+		}
+		atts = append(atts, EmailAttachment{Filename: filename, MimeType: mimeType, Content: content})
+	}
+	return atts, nil
 }
