@@ -523,6 +523,15 @@
       @confirm="confirmCancelRequest"
       @cancel="cancelTarget = null"
     />
+
+    <ConfirmDialog
+      :show="feeConfirmOpen"
+      :title="t('invoice.fee.confirmTitle')"
+      :message="feeConfirmMessage"
+      :confirm-text="t('invoice.fee.confirmOk')"
+      @confirm="confirmFeeAndSubmit"
+      @cancel="feeConfirmOpen = false"
+    />
   </AppLayout>
 </template>
 
@@ -835,13 +844,21 @@ async function refreshBalance() {
   try { await authStore.refreshUser?.() } catch { /* ignore */ }
 }
 
-async function submitInvoiceRequest() {
+const feeConfirmOpen = ref(false)
+
+const feeConfirmMessage = computed(() => t('invoice.fee.confirmBody', {
+  rate: previewFeePercent.value,
+  fee: formatCurrency(previewFeeAmount.value),
+  balance: formatCurrency(userBalance.value),
+  after: formatCurrency(previewBalanceAfter.value),
+}))
+
+function submitInvoiceRequest() {
   if (!selectedProfileId.value) {
     appStore.showError(t('invoice.messages.profileRequired'))
     return
   }
-  const orderIds = Array.from(selectedOrderIds.value)
-  if (orderIds.length === 0) {
+  if (selectedOrderIds.value.size === 0) {
     appStore.showError(t('invoice.messages.orderRequired'))
     return
   }
@@ -858,15 +875,21 @@ async function submitInvoiceRequest() {
     return
   }
   if (previewFeeAmount.value > 0) {
-    const ok = window.confirm(t('invoice.fee.confirmBody', {
-      rate: previewFeePercent.value,
-      fee: formatCurrency(previewFeeAmount.value),
-      balance: formatCurrency(userBalance.value),
-      after: formatCurrency(previewBalanceAfter.value),
-    }))
-    if (!ok) return
+    feeConfirmOpen.value = true
+    return
   }
+  void doCreateInvoiceRequest()
+}
 
+async function confirmFeeAndSubmit() {
+  feeConfirmOpen.value = false
+  await doCreateInvoiceRequest()
+}
+
+async function doCreateInvoiceRequest() {
+  if (!selectedProfileId.value) return
+  const orderIds = Array.from(selectedOrderIds.value)
+  if (orderIds.length === 0) return
   actionLoading.value = true
   try {
     await invoiceAPI.createRequest({ profile_id: selectedProfileId.value, order_ids: orderIds })
