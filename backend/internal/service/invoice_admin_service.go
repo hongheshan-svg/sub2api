@@ -226,12 +226,14 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	defer rollbackIfActive(tx)
 
 	var status string
+	var feeAmount float64
+	var feeChargedAt, feeRefundedAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status
+		SELECT status, fee_amount::float8, fee_charged_at, fee_refunded_at
 		FROM invoice_requests
 		WHERE id = $1 AND user_id = $2
 		FOR UPDATE
-	`, reqID, userID).Scan(&status); err != nil {
+	`, reqID, userID).Scan(&status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
 		}
@@ -239,16 +241,6 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	}
 	if status != InvoiceStatusPending {
 		return infraerrors.Conflict("INVOICE_REQUEST_NOT_CANCELLABLE", "only pending invoice requests can be cancelled")
-	}
-
-	// 提交时已扣的专票服务费需退回(幂等:仅当已扣未退)。
-	var feeAmount float64
-	var feeChargedAt, feeRefundedAt sql.NullTime
-	if err := tx.QueryRowContext(ctx, `
-		SELECT fee_amount::float8, fee_charged_at, fee_refunded_at
-		FROM invoice_requests WHERE id = $1 FOR UPDATE
-	`, reqID).Scan(&feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
-		return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to load invoice fee").WithCause(err)
 	}
 	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
@@ -492,6 +484,8 @@ func scanAdminInvoiceRequest(scanner interface {
 		&req.FeeAmount,
 		&req.InvoiceAmount,
 		&req.ServiceCategory,
+		&req.FeeChargedAt,
+		&req.FeeRefundedAt,
 		&username,
 		&email,
 	); err != nil {

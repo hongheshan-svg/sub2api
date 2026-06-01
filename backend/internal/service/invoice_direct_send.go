@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"mime/multipart"
 	"net/mail"
 	"strings"
@@ -81,7 +82,7 @@ func (s *PaymentService) recordInvoiceEmailSend(ctx context.Context, adminID int
 		INSERT INTO invoice_email_sends (recipient_email, subject, note, attachment_count, attachment_names, status, error_message, sent_by, sent_at)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 	`, to, subject, note, len(names), string(namesJSON), status, errMsg, adminID, time.Now()); err != nil {
-		// 记录失败不影响主流程
+		slog.Warn("failed to record invoice email send", "recipient", to, "error", err)
 		return
 	}
 }

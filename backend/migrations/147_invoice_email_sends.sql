@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS invoice_email_sends (
     attachment_names JSONB,
     status           VARCHAR(16) NOT NULL,
     error_message    TEXT,
-    sent_by          BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sent_by          BIGINT REFERENCES users(id) ON DELETE SET NULL,
     sent_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
