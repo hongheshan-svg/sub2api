@@ -44,7 +44,7 @@
               v-if="activeTab === 'orders'"
               type="button"
               class="btn btn-primary"
-              :disabled="actionLoading || selectedOrderIds.size === 0 || !selectedProfileId"
+              :disabled="actionLoading || selectedOrderIds.size === 0 || !selectedProfileId || balanceInsufficient"
               @click="submitInvoiceRequest"
             >
               <Icon name="check" size="md" class="mr-2" />
@@ -139,6 +139,12 @@
                   <div v-if="request.fee_amount > 0" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                     {{ t('invoice.fields.baseAmount') }} {{ formatCurrency(request.base_amount) }} ·
                     {{ t('invoice.fields.invoiceFee') }} -{{ formatCurrency(request.fee_amount) }}
+                  </div>
+                  <div v-if="request.fee_amount > 0 && request.fee_refunded_at" class="mt-1 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                    {{ t('invoice.fee.feeRefunded', { fee: formatCurrency(request.fee_amount) }) }}
+                  </div>
+                  <div v-else-if="request.fee_amount > 0 && request.fee_charged_at" class="mt-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                    {{ t('invoice.fee.feeCharged', { fee: formatCurrency(request.fee_amount) }) }}
                   </div>
                   <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('invoice.requests.orderCount', { count: request.orders?.length || 0 }) }}</div>
                 </div>

@@ -6795,6 +6795,8 @@ export default {
       deducted: 'Invoice request submitted; ¥{fee} service fee charged.',
       incompleteProfile: 'This title is missing required VAT fields (bank/account/address/phone). Please complete it first.',
       incompleteBadge: 'Incomplete',
+      feeCharged: 'Service fee charged ¥{fee}',
+      feeRefunded: 'Service fee refunded ¥{fee}',
     },
     refundCoupling: {
       badge: 'Refunded',
@@ -6924,6 +6926,8 @@ export default {
       INVOICE_VAT_PHONE_REQUIRED: 'Phone is required for VAT special invoice',
       INVOICE_VAT_BANK_NAME_REQUIRED: 'Bank name is required for VAT special invoice',
       INVOICE_VAT_BANK_ACCOUNT_REQUIRED: 'Bank account is required for VAT special invoice',
+      INVOICE_BALANCE_INSUFFICIENT: 'Insufficient balance to pay the invoice service fee. Please top up first.',
+      INVOICE_FILE_TOO_MANY: 'Too many attachments (max 5).',
     },
   },
 

@@ -6975,6 +6975,8 @@ export default {
       deducted: '开票申请已提交,已扣除开票服务费 ¥{fee}。',
       incompleteProfile: '该抬头缺少专票必填信息(开户行/账号/地址/电话),请先补全后再开票。',
       incompleteBadge: '待补全',
+      feeCharged: '已扣服务费 ¥{fee}',
+      feeRefunded: '已退回服务费 ¥{fee}',
     },
     refundCoupling: {
       badge: '订单已退款',
@@ -7104,6 +7106,8 @@ export default {
       INVOICE_VAT_PHONE_REQUIRED: '增值税专用发票需要填写联系电话',
       INVOICE_VAT_BANK_NAME_REQUIRED: '增值税专用发票需要填写开户银行',
       INVOICE_VAT_BANK_ACCOUNT_REQUIRED: '增值税专用发票需要填写银行账号',
+      INVOICE_BALANCE_INSUFFICIENT: '余额不足以支付开票服务费,请先充值后再提交。',
+      INVOICE_FILE_TOO_MANY: '附件数量过多(最多 5 个)。',
     },
   },
 

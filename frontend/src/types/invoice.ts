@@ -78,6 +78,8 @@ export interface InvoiceRequest {
   has_refunded_orders?: boolean
   voided_at?: string | null
   voided_reason?: string | null
+  fee_charged_at?: string | null
+  fee_refunded_at?: string | null
 }
 
 export interface AdminInvoiceRequest extends InvoiceRequest {
