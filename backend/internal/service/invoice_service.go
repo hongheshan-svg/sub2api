@@ -483,13 +483,35 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
 	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
+	// 专票服务费从余额扣除:余额不足则拦截要求充值。
+	var feeChargedAt interface{} = nil
+	if feeAmount > 0 {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1
+		`, feeAmount, userID)
+		if err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to charge invoice fee").WithCause(err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			var balance float64
+			_ = tx.QueryRowContext(ctx, `SELECT balance::float8 FROM users WHERE id = $1`, userID).Scan(&balance)
+			_, shortfall := invoiceFeeShortfall(balance, feeAmount)
+			return nil, infraerrors.BadRequest(
+				"INVOICE_BALANCE_INSUFFICIENT",
+				fmt.Sprintf("余额不足以支付开票服务费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for invoice fee", feeAmount, balance, shortfall),
+			)
+		}
+		feeChargedAt = time.Now()
+	}
+
 	serialNo := generateInvoiceSerialNo()
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+		INSERT INTO invoice_requests (user_id, profile_id, serial_no, status, profile_snapshot, total_amount, base_amount, fee_rate, fee_amount, invoice_amount, service_category, fee_charged_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING `+invoiceRequestColumns,
 		userID, input.ProfileID, serialNo, InvoiceStatusPending, string(snapshotBytes),
-		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory)
+		totalAmount, totalAmount, feeRate, feeAmount, invoiceAmount, serviceCategory, feeChargedAt)
 	req, err := scanInvoiceRequest(row)
 	if err != nil {
 		return nil, err
@@ -504,6 +526,9 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to commit invoice request").WithCause(err)
+	}
+	if feeAmount > 0 && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
 	}
 	req.Orders = orders
 	return &req, nil
