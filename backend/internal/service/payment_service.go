@@ -191,6 +191,7 @@ type PaymentService struct {
 	invoiceNotifier          *NotificationService
 	invoiceSettingService    *SettingService
 	invoiceEmailSender       InvoiceEmailSender
+	userService              *UserService
 }
 
 func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService) *PaymentService {
@@ -226,6 +227,14 @@ func (s *PaymentService) SetInvoiceEmailSender(sender InvoiceEmailSender) {
 		return
 	}
 	s.invoiceEmailSender = sender
+}
+
+// SetUserService 注入 UserService,供发票扣费后失效余额缓存。
+func (s *PaymentService) SetUserService(us *UserService) {
+	if s == nil {
+		return
+	}
+	s.userService = us
 }
 
 // --- Provider Registry ---
