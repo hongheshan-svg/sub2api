@@ -20,7 +20,7 @@ import (
 const (
 	defaultInvoiceUploadDir = "./data/invoices"
 	maxInvoiceFileBytes     = 10 * 1024 * 1024 // 10 MB
-	maxInvoiceAttachments   = 5                 // 单次开票最多附件数
+	maxInvoiceAttachments   = 5                // 单次开票最多附件数
 )
 
 // invoiceNoFormat validates an issued invoice number.
@@ -369,6 +369,12 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 		return nil, infraerrors.BadRequest("INVOICE_FILE_TOO_MANY", "too many invoice files")
 	}
 
+	// Validate and read attachments before any DB work (fail fast on bad input).
+	attachments, err := readInvoiceAttachments(input.Files)
+	if err != nil {
+		return nil, err
+	}
+
 	if s.invoiceEmailSender == nil {
 		return nil, infraerrors.ServiceUnavailable("INVOICE_EMAIL_NOT_CONFIGURED", "invoice email sender is not configured")
 	}
@@ -384,11 +390,6 @@ func (s *PaymentService) CompleteInvoiceRequest(ctx context.Context, adminID, re
 	to := strings.TrimSpace(loaded.ProfileSnapshot.Email)
 	if to == "" {
 		return nil, infraerrors.BadRequest("INVOICE_EMAIL_REQUIRED", "profile email is required")
-	}
-
-	attachments, err := readInvoiceAttachments(input.Files)
-	if err != nil {
-		return nil, err
 	}
 
 	// Build the email payload.
