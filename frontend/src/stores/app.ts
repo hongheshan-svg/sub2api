@@ -360,9 +360,11 @@ export const useAppStore = defineStore('app', () => {
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
         risk_control_enabled: false,
+        service_quota_enabled: false,
         affiliate_enabled: false,
         invoice_vat_special_fee_rate: 0.06,
         invoice_service_category: '技术服务费',
+        allow_user_view_error_requests: false,
       }
     }
 

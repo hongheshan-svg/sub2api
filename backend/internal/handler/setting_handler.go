@@ -101,6 +101,8 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 
 		InvoiceVATSpecialFeeRate: settings.InvoiceVATSpecialFeeRate,
 		InvoiceServiceCategory:   settings.InvoiceServiceCategory,
+
+		AllowUserViewErrorRequests: settings.AllowUserViewErrorRequests,
 	})
 }
 
