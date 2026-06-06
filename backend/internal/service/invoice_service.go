@@ -526,6 +526,12 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to attach invoice order").WithCause(err)
 		}
 	}
+	// 记录开票服务费余额流水（与扣费同事务，保证账本与余额强一致）。
+	if feeAmount > 0 {
+		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeChargeEntry(userID, feeAmount, serialNo)); err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to record invoice fee ledger").WithCause(err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to commit invoice request").WithCause(err)
 	}
