@@ -48,7 +48,7 @@
 | 写入方式 | 原始 SQL `INSERT INTO redeem_codes`（事务为 `database/sql`，不混用 ent） |
 | 管理员查询 | 兑换码页自动显示 + 筛选项增加 `invoice_fee` |
 | 用户查询 | `/redeem` 余额变动历史自动显示（补类型渲染分支） |
-| `total_recharged` 统计 | **排除** `invoice_fee`，避免退费正数行虚增"累计充值" |
+| `total_recharged` 统计 | **天然排除** `invoice_fee`（`SumPositiveBalanceByUser` 仅白名单 `balance`/`admin_balance`，无需改码；**切勿**把 `invoice_fee` 加入白名单） |
 | 历史数据 | 不补写 |
 | 新迁移 | 无 |
 
@@ -208,7 +208,7 @@ if err := insertInvoiceFeeLedgerTx(ctx, tx, userID, +feeAmount, note); err != ni
 
 - **幂等**：扣费随提交事务一次；退费有 `fee_charged_at/fee_refunded_at` 守卫，各一次，天然不重复写账本。
 - **强一致**：账本 `INSERT` 与余额 `UPDATE` 同事务，失败回滚，不存在"扣了余额没记账"或"记了账没扣余额"。
-- **`total_recharged` 统计**：管理员余额历史（`GetUserBalanceHistory` / `GET /admin/users/:id/balance-history`）的"累计充值"按正值求和。退费的正数 `invoice_fee` 行会被算入 → **需在求和条件中排除 `type='invoice_fee'`**，避免虚增累计充值。
+- **`total_recharged` 统计**：管理员余额历史（`GetUserBalanceHistory` / `GET /admin/users/:id/balance-history`）的"累计充值"由 `redeemCodeRepo.SumPositiveBalanceByUser` 计算，该方法**已用白名单 `TypeIn("balance","admin_balance")`** 求和，因此退费的正数 `invoice_fee` 行**天然不计入**——**无需改码**。实现期唯一要求：**切勿**把 `invoice_fee` 加进该白名单（加注释防误改）。
 - **`code` 唯一冲突**：`GenerateRedeemCode()` 随机，冲突概率极低；沿用现有单次生成方式，冲突即事务失败（扣费场景极罕见地拦截一次提交，可接受；实现期可选加一次重试）。
 - **合成 code 不可被兑换**：写入即 `status='used'`，不会被用户当兑换码再次使用（与 `admin_balance` 一致）。
 - **历史数据**：不补写。
@@ -222,7 +222,7 @@ if err := insertInvoiceFeeLedgerTx(ctx, tx, userID, +feeAmount, note); err != ni
 - `internal/service/invoice_fee.go`（或新增 `invoice_ledger.go`）：新增 `insertInvoiceFeeLedgerTx`。
 - `internal/service/invoice_service.go`：`CreateInvoiceRequest` 扣费成功后同事务写账本（负值）。
 - `internal/service/invoice_admin_service.go`：`RejectInvoiceRequest` / `CancelInvoiceRequest` 退费分支同事务写账本（正值）。
-- `internal/service/admin_service.go`（或 balance-history 求和处）：`total_recharged` 求和排除 `invoice_fee`。
+- `internal/repository/redeem_code_repo.go`：`SumPositiveBalanceByUser` **无需改逻辑**（白名单已排除 `invoice_fee`），仅加一行注释防止后人误把 `invoice_fee` 加入白名单。
 - **无新迁移。**
 
 **前端**
