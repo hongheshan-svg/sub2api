@@ -225,15 +225,15 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	}
 	defer rollbackIfActive(tx)
 
-	var status string
+	var status, serialNo string
 	var feeAmount float64
 	var feeChargedAt, feeRefundedAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status, fee_amount::float8, fee_charged_at, fee_refunded_at
+		SELECT status, serial_no, fee_amount::float8, fee_charged_at, fee_refunded_at
 		FROM invoice_requests
 		WHERE id = $1 AND user_id = $2
 		FOR UPDATE
-	`, reqID, userID).Scan(&status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+	`, reqID, userID).Scan(&status, &serialNo, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
 		}
@@ -245,6 +245,9 @@ func (s *PaymentService) CancelInvoiceRequest(ctx context.Context, userID, reqID
 	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
 			return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
+		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeRefundEntry(userID, feeAmount, serialNo)); err != nil {
+			return infraerrors.InternalServer("INVOICE_REQUEST_CANCEL_FAILED", "failed to record invoice fee refund ledger").WithCause(err)
 		}
 	}
 
