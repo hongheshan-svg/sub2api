@@ -80,6 +80,7 @@ const (
 	RedeemTypeSubscription     = domain.RedeemTypeSubscription
 	RedeemTypeInvitation       = domain.RedeemTypeInvitation
 	RedeemTypeAffiliateBalance = "affiliate_balance"
+	RedeemTypeInvoiceFee       = "invoice_fee" // 开票服务费余额流水（提交扣费为负、驳回/取消退费为正）
 )
 
 // PromoCode status constants
