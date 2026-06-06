@@ -1158,6 +1158,8 @@ export default {
     balanceAddedAffiliate: 'Balance Added (Affiliate Transfer)',
     balanceAddedAdmin: 'Balance Added (Admin)',
     balanceDeductedAdmin: 'Balance Deducted (Admin)',
+    invoiceFeeCharged: 'Invoice Fee Charged',
+    invoiceFeeRefunded: 'Invoice Fee Refunded',
     concurrencyAddedRedeem: 'Concurrency Added (Redeem)',
     concurrencyAddedAdmin: 'Concurrency Added (Admin)',
     concurrencyReducedAdmin: 'Concurrency Reduced (Admin)',

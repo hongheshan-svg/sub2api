@@ -379,7 +379,7 @@ const contactInfo = ref('')
 
 // Helper functions for history display
 const isBalanceType = (type: string) => {
-  return type === 'balance' || type === 'admin_balance'
+  return type === 'balance' || type === 'admin_balance' || type === 'invoice_fee'
 }
 
 const isSubscriptionType = (type: string) => {
@@ -395,6 +395,8 @@ const getHistoryItemTitle = (item: RedeemHistoryItem) => {
     return t('redeem.balanceAddedRedeem')
   } else if (item.type === 'admin_balance') {
     return item.value >= 0 ? t('redeem.balanceAddedAdmin') : t('redeem.balanceDeductedAdmin')
+  } else if (item.type === 'invoice_fee') {
+    return item.value >= 0 ? t('redeem.invoiceFeeRefunded') : t('redeem.invoiceFeeCharged')
   } else if (item.type === 'concurrency') {
     return t('redeem.concurrencyAddedRedeem')
   } else if (item.type === 'admin_concurrency') {
