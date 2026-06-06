@@ -485,7 +485,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
 	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
-	// 专票服务费从余额扣除:余额不足则拦截要求充值。
+	// 增值税专用发票费从余额扣除:余额不足则拦截要求充值。
 	var feeChargedAt any = nil
 	if feeAmount > 0 {
 		res, err := tx.ExecContext(ctx, `
@@ -501,7 +501,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 			_, shortfall := invoiceFeeShortfall(balance, feeAmount)
 			return nil, infraerrors.BadRequest(
 				"INVOICE_BALANCE_INSUFFICIENT",
-				fmt.Sprintf("余额不足以支付开票服务费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for invoice fee", feeAmount, balance, shortfall),
+				fmt.Sprintf("余额不足以支付增值税专用发票费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for VAT-special invoice fee", feeAmount, balance, shortfall),
 			)
 		}
 		feeChargedAt = time.Now()
@@ -524,6 +524,12 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 			VALUES ($1, $2)
 		`, req.ID, order.ID); err != nil {
 			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to attach invoice order").WithCause(err)
+		}
+	}
+	// 记录增值税专用发票费余额流水（与扣费同事务，保证账本与余额强一致）。
+	if feeAmount > 0 {
+		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeChargeEntry(userID, feeAmount, serialNo)); err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to record invoice fee ledger").WithCause(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

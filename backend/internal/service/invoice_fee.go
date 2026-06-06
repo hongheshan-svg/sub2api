@@ -1,6 +1,6 @@
 package service
 
-// invoiceFeeShortfall 判断余额能否覆盖开票服务费。
+// invoiceFeeShortfall 判断余额能否覆盖增值税专用发票费。
 // 返回 ok=true 表示足够;否则返回还差多少(shortfall,保留 2 位)。
 func invoiceFeeShortfall(balance, fee float64) (ok bool, shortfall float64) {
 	if fee <= 0 {
