@@ -387,6 +387,10 @@ func (r *redeemCodeRepository) ListByUserPaginated(ctx context.Context, userID i
 }
 
 // SumPositiveBalanceByUser returns total recharged amount (sum of value > 0 where type is balance/admin_balance).
+//
+// NOTE: the type whitelist below intentionally excludes "invoice_fee". Invoice-fee
+// refunds are positive ledger rows but are NOT recharges — do NOT add "invoice_fee"
+// here, or refunds would inflate the user's total recharged figure.
 func (r *redeemCodeRepository) SumPositiveBalanceByUser(ctx context.Context, userID int64) (float64, error) {
 	var result []struct {
 		Sum float64 `json:"sum"`
