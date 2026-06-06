@@ -485,7 +485,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 	feeRate, serviceCategory := s.resolveInvoiceFeeConfig(ctx, snapshot.InvoiceType)
 	feeAmount, invoiceAmount := computeInvoiceAmounts(totalAmount, feeRate)
 
-	// 专票服务费从余额扣除:余额不足则拦截要求充值。
+	// 增值税专用发票费从余额扣除:余额不足则拦截要求充值。
 	var feeChargedAt any = nil
 	if feeAmount > 0 {
 		res, err := tx.ExecContext(ctx, `
@@ -526,7 +526,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to attach invoice order").WithCause(err)
 		}
 	}
-	// 记录开票服务费余额流水（与扣费同事务，保证账本与余额强一致）。
+	// 记录增值税专用发票费余额流水（与扣费同事务，保证账本与余额强一致）。
 	if feeAmount > 0 {
 		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeChargeEntry(userID, feeAmount, serialNo)); err != nil {
 			return nil, infraerrors.InternalServer("INVOICE_REQUEST_CREATE_FAILED", "failed to record invoice fee ledger").WithCause(err)
