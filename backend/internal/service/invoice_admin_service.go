@@ -287,12 +287,12 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 	// 锁定并读取扣费状态
 	var userID int64
 	var feeAmount float64
-	var status string
+	var status, serialNo string
 	var feeChargedAt, feeRefundedAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT user_id, status, fee_amount::float8, fee_charged_at, fee_refunded_at
+		SELECT user_id, status, serial_no, fee_amount::float8, fee_charged_at, fee_refunded_at
 		FROM invoice_requests WHERE id = $1 FOR UPDATE
-	`, reqID).Scan(&userID, &status, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+	`, reqID).Scan(&userID, &status, &serialNo, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, infraerrors.NotFound("INVOICE_REQUEST_NOT_FOUND", "invoice request not found")
 		}
@@ -305,6 +305,9 @@ func (s *PaymentService) RejectInvoiceRequest(ctx context.Context, adminID, reqI
 	if feeAmount > 0 && feeChargedAt.Valid && !feeRefundedAt.Valid {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeAmount, userID); err != nil {
 			return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to refund invoice fee").WithCause(err)
+		}
+		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeRefundEntry(userID, feeAmount, serialNo)); err != nil {
+			return nil, infraerrors.InternalServer("INVOICE_REQUEST_REJECT_FAILED", "failed to record invoice fee refund ledger").WithCause(err)
 		}
 	}
 
