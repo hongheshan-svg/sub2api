@@ -501,7 +501,7 @@ func (s *PaymentService) CreateInvoiceRequest(ctx context.Context, userID int64,
 			_, shortfall := invoiceFeeShortfall(balance, feeAmount)
 			return nil, infraerrors.BadRequest(
 				"INVOICE_BALANCE_INSUFFICIENT",
-				fmt.Sprintf("余额不足以支付开票服务费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for invoice fee", feeAmount, balance, shortfall),
+				fmt.Sprintf("余额不足以支付增值税专用发票费:需 ¥%.2f,当前余额 ¥%.2f,还差 ¥%.2f,请先充值后再提交。 / insufficient balance for VAT-special invoice fee", feeAmount, balance, shortfall),
 			)
 		}
 		feeChargedAt = time.Now()

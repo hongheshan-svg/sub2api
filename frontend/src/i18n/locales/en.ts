@@ -1158,8 +1158,8 @@ export default {
     balanceAddedAffiliate: 'Balance Added (Affiliate Transfer)',
     balanceAddedAdmin: 'Balance Added (Admin)',
     balanceDeductedAdmin: 'Balance Deducted (Admin)',
-    invoiceFeeCharged: 'Invoice Fee Charged',
-    invoiceFeeRefunded: 'Invoice Fee Refunded',
+    invoiceFeeCharged: 'VAT-Special Fee Charged',
+    invoiceFeeRefunded: 'VAT-Special Fee Refunded',
     concurrencyAddedRedeem: 'Concurrency Added (Redeem)',
     concurrencyAddedAdmin: 'Concurrency Added (Admin)',
     concurrencyReducedAdmin: 'Concurrency Reduced (Admin)',
@@ -4366,8 +4366,8 @@ export default {
         // Admin adjustment types (created when admin modifies user balance/concurrency)
         admin_balance: 'Balance (Admin)',
         admin_concurrency: 'Concurrency (Admin)',
-        // Invoice service fee ledger (charged on submit, refunded on reject/cancel)
-        invoice_fee: 'Invoice Fee'
+        // VAT-special invoice fee ledger (charged on submit, refunded on reject/cancel)
+        invoice_fee: 'VAT-Special Fee'
       },
       selectGroup: 'Select Group',
       selectGroupPlaceholder: 'Choose a subscription group',
@@ -6828,17 +6828,17 @@ export default {
     },
     fee: {
       noticeTitle: 'VAT Special Invoice Notice',
-      notice: 'Issued for the full amount; a {rate}% service fee (¥{fee}) is charged from your balance. Category: {category}.',
+      notice: 'Issued for the full amount; a {rate}% VAT-Special Fee (¥{fee}) is charged from your balance. Category: {category}.',
       balanceLine: 'Balance ¥{balance}, after ¥{after}.',
-      insufficient: 'Insufficient balance. Fee needs ¥{fee}, balance ¥{balance}, short ¥{shortfall}. Please top up first.',
-      confirmTitle: 'Confirm invoice service fee',
-      confirmBody: 'A {rate}% service fee ¥{fee} will be charged from your balance (¥{balance} → ¥{after}). Submit?',
+      insufficient: 'Insufficient balance. VAT-Special Fee needs ¥{fee}, balance ¥{balance}, short ¥{shortfall}. Please top up first.',
+      confirmTitle: 'Confirm VAT-Special Fee',
+      confirmBody: 'A {rate}% VAT-Special Fee ¥{fee} will be charged from your balance (¥{balance} → ¥{after}). Submit?',
       confirmOk: 'Confirm & charge',
-      deducted: 'Invoice request submitted; ¥{fee} service fee charged.',
+      deducted: 'Invoice request submitted; ¥{fee} VAT-Special Fee charged.',
       incompleteProfile: 'This title is missing required VAT fields (bank/account/address/phone). Please complete it first.',
       incompleteBadge: 'Incomplete',
-      feeCharged: 'Service fee charged ¥{fee}',
-      feeRefunded: 'Service fee refunded ¥{fee}',
+      feeCharged: 'VAT-Special Fee charged ¥{fee}',
+      feeRefunded: 'VAT-Special Fee refunded ¥{fee}',
     },
     refundCoupling: {
       badge: 'Refunded',
@@ -6977,7 +6977,7 @@ export default {
       INVOICE_VAT_PHONE_REQUIRED: 'Phone is required for VAT special invoice',
       INVOICE_VAT_BANK_NAME_REQUIRED: 'Bank name is required for VAT special invoice',
       INVOICE_VAT_BANK_ACCOUNT_REQUIRED: 'Bank account is required for VAT special invoice',
-      INVOICE_BALANCE_INSUFFICIENT: 'Insufficient balance to pay the invoice service fee. Please top up first.',
+      INVOICE_BALANCE_INSUFFICIENT: 'Insufficient balance to pay the VAT-Special Fee. Please top up first.',
       INVOICE_FILE_TOO_MANY: 'Too many attachments (max 5).',
     },
   },

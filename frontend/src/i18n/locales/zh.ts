@@ -1162,8 +1162,8 @@ export default {
     balanceAddedAffiliate: '余额充值（返利转入）',
     balanceAddedAdmin: '余额充值（管理员）',
     balanceDeductedAdmin: '余额扣除（管理员）',
-    invoiceFeeCharged: '开票服务费扣除',
-    invoiceFeeRefunded: '开票服务费退回',
+    invoiceFeeCharged: '增值税专用发票费扣除',
+    invoiceFeeRefunded: '增值税专用发票费退回',
     concurrencyAddedRedeem: '并发增加（兑换）',
     concurrencyAddedAdmin: '并发增加（管理员）',
     concurrencyReducedAdmin: '并发减少（管理员）',
@@ -4431,8 +4431,8 @@ export default {
         // 管理员在用户管理页面调整余额/并发时产生的记录
         admin_balance: '余额（管理员）',
         admin_concurrency: '并发数（管理员）',
-        // 提交/驳回/取消发票时的开票服务费余额流水
-        invoice_fee: '发票服务费'
+        // 提交/驳回/取消发票时的增值税专用发票费余额流水
+        invoice_fee: '增值税专用发票费'
       },
       // 用于选择器和筛选器的直接键
       balance: '余额',
@@ -6999,7 +6999,7 @@ export default {
       processedAt: '处理时间',
       invoiceType: '发票类型',
       baseAmount: '申请金额',
-      invoiceFee: '专票开票费',
+      invoiceFee: '增值税专用发票费',
       invoiceAmount: '实际开票金额',
       serviceCategory: '开票类目',
     },
@@ -7008,17 +7008,17 @@ export default {
     },
     fee: {
       noticeTitle: '专票须知',
-      notice: '增值税专用发票按申请全额开具,需额外支付 {rate}% 开票服务费(¥{fee}),将从账户余额扣除;开票类目为{category}。',
+      notice: '增值税专用发票按申请全额开具,需额外支付 {rate}% 增值税专用发票费(¥{fee}),将从账户余额扣除;开票类目为{category}。',
       balanceLine: '当前余额 ¥{balance},扣后 ¥{after}。',
-      insufficient: '余额不足,开票服务费需 ¥{fee},当前余额 ¥{balance},还差 ¥{shortfall},请先充值。',
-      confirmTitle: '确认支付开票服务费',
-      confirmBody: '开具增值税专用发票需支付 {rate}% 开票服务费 ¥{fee},将从账户余额扣除(余额 ¥{balance} → ¥{after})。确认提交?',
+      insufficient: '余额不足,增值税专用发票费需 ¥{fee},当前余额 ¥{balance},还差 ¥{shortfall},请先充值。',
+      confirmTitle: '确认支付增值税专用发票费',
+      confirmBody: '开具增值税专用发票需支付 {rate}% 增值税专用发票费 ¥{fee},将从账户余额扣除(余额 ¥{balance} → ¥{after})。确认提交?',
       confirmOk: '确认并扣费',
-      deducted: '开票申请已提交,已扣除开票服务费 ¥{fee}。',
+      deducted: '开票申请已提交,已扣除增值税专用发票费 ¥{fee}。',
       incompleteProfile: '该抬头缺少专票必填信息(开户行/账号/地址/电话),请先补全后再开票。',
       incompleteBadge: '待补全',
-      feeCharged: '已扣服务费 ¥{fee}',
-      feeRefunded: '已退回服务费 ¥{fee}',
+      feeCharged: '已扣增值税专用发票费 ¥{fee}',
+      feeRefunded: '已退回增值税专用发票费 ¥{fee}',
     },
     refundCoupling: {
       badge: '订单已退款',
@@ -7157,7 +7157,7 @@ export default {
       INVOICE_VAT_PHONE_REQUIRED: '增值税专用发票需要填写联系电话',
       INVOICE_VAT_BANK_NAME_REQUIRED: '增值税专用发票需要填写开户银行',
       INVOICE_VAT_BANK_ACCOUNT_REQUIRED: '增值税专用发票需要填写银行账号',
-      INVOICE_BALANCE_INSUFFICIENT: '余额不足以支付开票服务费,请先充值后再提交。',
+      INVOICE_BALANCE_INSUFFICIENT: '余额不足以支付增值税专用发票费,请先充值后再提交。',
       INVOICE_FILE_TOO_MANY: '附件数量过多(最多 5 个)。',
     },
   },

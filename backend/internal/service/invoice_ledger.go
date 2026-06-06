@@ -19,7 +19,7 @@ func newInvoiceFeeChargeEntry(userID int64, feeAmount float64, serialNo string) 
 	return invoiceFeeLedgerEntry{
 		UserID: userID,
 		Value:  -feeAmount,
-		Note:   fmt.Sprintf("发票服务费 · 申请 %s", serialNo),
+		Note:   fmt.Sprintf("增值税专用发票费 · 申请 %s", serialNo),
 	}
 }
 
@@ -28,7 +28,7 @@ func newInvoiceFeeRefundEntry(userID int64, feeAmount float64, serialNo string) 
 	return invoiceFeeLedgerEntry{
 		UserID: userID,
 		Value:  feeAmount,
-		Note:   fmt.Sprintf("发票服务费退回 · 申请 %s", serialNo),
+		Note:   fmt.Sprintf("增值税专用发票费退回 · 申请 %s", serialNo),
 	}
 }
 
