@@ -174,6 +174,72 @@ const routes: RouteRecordRaw[] = [
       title: 'Legal Document'
     }
   },
+  {
+    path: '/claude-code-api-gateway',
+    name: 'ClaudeCodeApiGateway',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'Claude Code API Gateway' }
+  },
+  {
+    path: '/claude-code-base-url',
+    name: 'ClaudeCodeBaseUrl',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'Claude Code base_url' }
+  },
+  {
+    path: '/codex-api-gateway',
+    name: 'CodexApiGateway',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'Codex API Gateway' }
+  },
+  {
+    path: '/gemini-cli-api-gateway',
+    name: 'GeminiCliApiGateway',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'Gemini CLI API Gateway' }
+  },
+  {
+    path: '/openai-compatible-api-gateway',
+    name: 'OpenAICompatibleApiGateway',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'OpenAI Compatible API Gateway' }
+  },
+  {
+    path: '/gpt-image-2-api',
+    name: 'GptImage2Api',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'GPT-Image-2 API' }
+  },
+  {
+    path: '/cc-switch-provider-config',
+    name: 'CcSwitchProviderConfig',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'CC Switch Provider Config' }
+  },
+  {
+    path: '/compare/claude-code-vs-codex',
+    name: 'ClaudeCodeVsCodex',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'Claude Code vs Codex' }
+  },
+  {
+    path: '/docs/quick-start',
+    name: 'DocsQuickStart',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'gw-link Quick Start' }
+  },
+  {
+    path: '/docs/troubleshooting',
+    name: 'DocsTroubleshooting',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'gw-link Troubleshooting' }
+  },
+  {
+    path: '/pricing',
+    name: 'Pricing',
+    component: () => import('@/views/SeoLandingView.vue'),
+    meta: { requiresAuth: false, title: 'gw-link Pricing' }
+  },
 
   // ==================== User Routes ====================
   {

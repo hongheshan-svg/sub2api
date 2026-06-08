@@ -12,7 +12,8 @@
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "seo:check": "python3 scripts/validate-seo.py"
   },
   "dependencies": {
     "@airwallex/components-sdk": "^1.30.2",

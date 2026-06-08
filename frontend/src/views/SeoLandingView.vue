@@ -1,0 +1,359 @@
+<template>
+  <main class="seo-page">
+    <section class="seo-hero">
+      <router-link to="/home" class="seo-brand">gw-link</router-link>
+      <p class="seo-kicker">{{ page.kicker }}</p>
+      <h1>{{ page.h1 }}</h1>
+      <p class="seo-lead">{{ page.lead }}</p>
+      <div class="seo-actions">
+        <router-link to="/login" class="seo-btn seo-btn--primary">立即体验</router-link>
+        <router-link to="/home#pricing" class="seo-btn">查看定价</router-link>
+      </div>
+    </section>
+
+    <section class="seo-grid" aria-label="核心价值">
+      <article v-for="item in page.benefits" :key="item.title" class="seo-card">
+        <h2>{{ item.title }}</h2>
+        <p>{{ item.text }}</p>
+      </article>
+    </section>
+
+    <section class="seo-section">
+      <h2>{{ page.guideTitle }}</h2>
+      <ol class="seo-steps">
+        <li v-for="step in page.steps" :key="step">{{ step }}</li>
+      </ol>
+    </section>
+
+    <section class="seo-section seo-faq">
+      <h2>常见问题</h2>
+      <details v-for="faq in page.faq" :key="faq.q" open>
+        <summary>{{ faq.q }}</summary>
+        <p>{{ faq.a }}</p>
+      </details>
+    </section>
+  </main>
+</template>
+
+<script setup lang="ts">
+import { computed, watchEffect } from 'vue'
+import { useRoute } from 'vue-router'
+
+type Page = {
+  title: string
+  description: string
+  kicker: string
+  h1: string
+  lead: string
+  guideTitle: string
+  benefits: Array<{ title: string; text: string }>
+  steps: string[]
+  faq: Array<{ q: string; a: string }>
+}
+
+const route = useRoute()
+
+const pages: Record<string, Page> = {
+  '/claude-code-api-gateway': {
+    title: 'Claude Code API Gateway - gw-link',
+    description: 'gw-link 为 Claude Code 提供 OpenAI 兼容 API Gateway，只需配置 base_url 和 API Key，即可稳定接入 Claude、GPT、Gemini 等模型。',
+    kicker: 'Claude Code API Gateway',
+    h1: 'Claude Code API Gateway：统一模型、Key 与 base_url',
+    lead: '用 gw-link 把 Claude Code 接入统一 AI API Gateway，集中管理模型路由、API Key、计费与稳定线路。',
+    guideTitle: 'Claude Code 接入步骤',
+    benefits: [
+      { title: 'OpenAI 兼容', text: '沿用熟悉的 base_url 与 API Key 配置方式，降低 Claude Code 迁移成本。' },
+      { title: '统一模型入口', text: '在同一入口使用 Claude、GPT、Gemini 等模型，减少多平台配置碎片。' },
+      { title: '适合团队管理', text: '统一分发 Key、观察用量、控制成本，适合开发团队与 AI 编码场景。' }
+    ],
+    steps: ['登录 gw-link 控制台并创建 API Key。', '在 Claude Code 中配置 gw-link base_url。', '选择目标模型并进行一次最小请求验证。'],
+    faq: [
+      { q: 'Claude Code 可以使用 gw-link 吗？', a: '可以。gw-link 提供 OpenAI 兼容 API Gateway，适合 Claude Code 的 base_url/API Key 接入。' },
+      { q: '是否需要改代码？', a: '通常只需要替换 base_url 和 API Key，具体取决于你的 Claude Code 配置方式。' }
+    ]
+  },
+  '/claude-code-base-url': {
+    title: 'Claude Code base_url 配置指南 - gw-link',
+    description: '了解如何用 gw-link 配置 Claude Code base_url，通过 OpenAI 兼容 API Gateway 统一接入 AI 编程模型。',
+    kicker: 'Claude Code base_url',
+    h1: 'Claude Code base_url 配置指南',
+    lead: 'gw-link 让 Claude Code 使用统一 base_url，避免在多个 Provider、Key 和模型之间反复切换。',
+    guideTitle: '推荐配置流程',
+    benefits: [
+      { title: '配置简单', text: '核心就是 base_url、API Key 和模型名三项配置。' },
+      { title: '降低切换成本', text: '不同模型统一从 gw-link 网关接入，工具侧配置保持稳定。' },
+      { title: '便于排障', text: '集中观察请求、错误与用量，定位问题更直接。' }
+    ],
+    steps: ['复制 gw-link 的 OpenAI-compatible endpoint。', '把 Claude Code 的 base_url 指向 gw-link。', '保存 API Key 后运行一次测试。'],
+    faq: [{ q: 'base_url 应该填什么？', a: '部署后以控制台展示为准，通常是 gw-link 的 OpenAI 兼容 /v1 入口。' }]
+  },
+  '/codex-api-gateway': {
+    title: 'Codex API Gateway - gw-link',
+    description: 'gw-link 为 Codex CLI 和 AI 编程工作流提供 OpenAI 兼容 API Gateway，统一管理 API Key、模型和成本。',
+    kicker: 'Codex API Gateway',
+    h1: 'Codex API Gateway for CLI and IDE Workflows',
+    lead: '把 Codex CLI、IDE 插件和自动化脚本接入 gw-link，用统一 API 网关管理模型与调用。',
+    guideTitle: 'Codex 接入步骤',
+    benefits: [
+      { title: 'CLI 友好', text: '适合 Codex CLI、脚本和自动化任务的环境变量/API Key 配置方式。' },
+      { title: '多模型路由', text: '根据任务选择不同模型，同时保持工具侧接入方式一致。' },
+      { title: '成本透明', text: '集中跟踪调用量与费用，便于团队控制预算。' }
+    ],
+    steps: ['在 gw-link 创建 Key。', '把 Codex 的 API endpoint 指向 gw-link。', '运行一次简单 prompt 验证响应。'],
+    faq: [{ q: 'Codex 能和 Claude Code 共用 gw-link 吗？', a: '可以。两者都可以通过统一 OpenAI 兼容入口接入。' }]
+  },
+  '/gemini-cli-api-gateway': {
+    title: 'Gemini CLI API Gateway - gw-link',
+    description: '用 gw-link 统一 Gemini CLI、Claude Code、Codex 等 AI 编程工具的 API 接入与模型管理。',
+    kicker: 'Gemini CLI API Gateway',
+    h1: 'Gemini CLI API Gateway：统一接入与模型管理',
+    lead: '通过 gw-link 管理 Gemini CLI 的 API 入口，同时与 Claude Code、Codex 共用统一网关。',
+    guideTitle: 'Gemini CLI 接入步骤',
+    benefits: [
+      { title: '统一入口', text: '把 Gemini CLI 纳入同一 AI API Gateway，减少配置分散。' },
+      { title: '跨工具一致', text: 'Claude Code、Codex、Gemini CLI 可以使用同一套接入策略。' },
+      { title: '团队可控', text: '统一 Key、额度和模型选择。' }
+    ],
+    steps: ['创建 gw-link API Key。', '配置 Gemini CLI endpoint。', '执行测试请求并检查模型响应。'],
+    faq: [{ q: 'Gemini CLI 是否适合接入 API Gateway？', a: '适合，尤其是团队需要统一 Key、模型和成本管理时。' }]
+  },
+  '/openai-compatible-api-gateway': {
+    title: 'OpenAI Compatible API Gateway for AI Coding - gw-link',
+    description: 'gw-link 提供 OpenAI-compatible API Gateway，支持 Claude Code、Codex、Gemini CLI、VS Code 与自动化脚本统一接入。',
+    kicker: 'OpenAI Compatible API Gateway',
+    h1: 'OpenAI Compatible API Gateway for AI Coding',
+    lead: '用 OpenAI 兼容协议统一接入 Claude、GPT、Gemini 等模型，让 CLI、IDE 插件和脚本保持一致配置。',
+    guideTitle: '适用场景',
+    benefits: [
+      { title: '兼容生态', text: '大量 AI 工具支持 OpenAI 风格 endpoint，迁移成本低。' },
+      { title: '统一治理', text: '集中管理 Key、模型、计费、错误与访问策略。' },
+      { title: '面向开发者', text: '重点服务 Claude Code、Codex、VS Code 和自动化编码工作流。' }
+    ],
+    steps: ['确认工具支持 OpenAI-compatible endpoint。', '替换 base_url 与 API Key。', '设置模型名并完成测试。'],
+    faq: [{ q: 'OpenAI compatible 是什么意思？', a: '指工具可以用类似 OpenAI API 的 endpoint、Key 和请求格式接入网关。' }]
+  },
+  '/gpt-image-2-api': {
+    title: 'GPT-Image-2 API 使用指南 - gw-link',
+    description: '通过 gw-link 使用 GPT-Image-2 API，支持文生图、图生图和自动化内容生成工作流。',
+    kicker: 'GPT-Image-2 API',
+    h1: 'GPT-Image-2 API：文生图与图生图接入指南',
+    lead: 'gw-link 可作为图像生成 API 的统一入口，服务产品图、教程图、社交媒体图和自动化内容生产。',
+    guideTitle: '图像 API 接入步骤',
+    benefits: [
+      { title: '文生图', text: '通过 prompt 生成产品图、教程配图和营销素材。' },
+      { title: '图生图', text: '基于参考图进行风格化、重绘或局部编辑。' },
+      { title: '自动化友好', text: '适合脚本、工作流和内容生产管线调用。' }
+    ],
+    steps: ['创建支持图像模型的 API Key。', '调用 images generations 或 edits endpoint。', '保存生成图并接入发布流程。'],
+    faq: [{ q: 'GPT-Image-2 可以自动化调用吗？', a: '可以，适合通过脚本或服务端工作流批量生成图片。' }]
+  },
+  '/cc-switch-provider-config': {
+    title: 'CC Switch 多 Provider/Key/模型配置指南 - gw-link',
+    description: '用 CC Switch 和 gw-link 管理多个 Provider、API Key 与模型配置，让 Claude Code 和 Codex 共用统一模型配置中心。',
+    kicker: 'CC Switch Provider Config',
+    h1: 'CC Switch：多 Provider、Key 与模型配置中心',
+    lead: '结合 gw-link，把 Claude Code、Codex 等工具的 Provider、API Key 和模型选择集中管理。',
+    guideTitle: '配置建议',
+    benefits: [
+      { title: '多 Provider', text: '把不同模型服务抽象成可切换配置。' },
+      { title: '多 Key 管理', text: '减少手动切换环境变量和本地配置文件。' },
+      { title: 'Claude/Codex 共用', text: '让常用 AI 编程工具共享一致的模型配置策略。' }
+    ],
+    steps: ['在 gw-link 创建统一 API Key。', '在 CC Switch 中添加 Provider 配置。', '为 Claude Code 和 Codex 选择对应模型。'],
+    faq: [{ q: 'CC Switch 是单独模型吗？', a: '不是。它更适合作为多 Provider、Key 和模型配置中心。' }]
+  },
+  '/compare/claude-code-vs-codex': {
+    title: 'Claude Code vs Codex：API 与工作流对比 - gw-link',
+    description: '对比 Claude Code 与 Codex 在 API Gateway、CLI、IDE、模型选择和团队管理方面的差异，并说明如何用 gw-link 统一接入。',
+    kicker: 'Claude Code vs Codex',
+    h1: 'Claude Code vs Codex：AI 编程工具接入对比',
+    lead: 'Claude Code 和 Codex 各有适用场景，但都可以通过 gw-link 使用统一 OpenAI 兼容 API Gateway。',
+    guideTitle: '选择建议',
+    benefits: [
+      { title: 'Claude Code', text: '适合代码理解、重构、复杂上下文和交互式开发。' },
+      { title: 'Codex', text: '适合 CLI、自动化脚本和开发者命令行工作流。' },
+      { title: 'gw-link', text: '统一两者的 API Key、模型路由和成本管理。' }
+    ],
+    steps: ['明确团队主要工作流。', '为不同工具配置同一 gw-link 入口。', '按任务选择模型和成本策略。'],
+    faq: [{ q: 'Claude Code 和 Codex 是否必须二选一？', a: '不需要。通过 gw-link 可以让两者共存并统一管理。' }]
+  },
+  '/docs/quick-start': {
+    title: 'gw-link 30 秒接入指南',
+    description: 'gw-link 快速开始：创建 API Key，配置 base_url，接入 Claude Code、Codex、Gemini CLI 或 VS Code 插件。',
+    kicker: 'Quick Start',
+    h1: 'gw-link 30 秒接入指南',
+    lead: '从创建 API Key 到完成首个请求，按三步完成 AI API Gateway 接入。',
+    guideTitle: '三步开始',
+    benefits: [
+      { title: '创建 Key', text: '登录控制台创建用于 CLI 或 IDE 的 API Key。' },
+      { title: '替换 endpoint', text: '把工具的 base_url 指向 gw-link。' },
+      { title: '验证模型', text: '运行一次测试请求确认配置生效。' }
+    ],
+    steps: ['登录或注册 gw-link。', '创建 API Key 并选择模型。', '复制 base_url 到 Claude Code、Codex 或 Gemini CLI。'],
+    faq: [{ q: '最快多久能接入？', a: '如果工具支持 OpenAI-compatible endpoint，通常只需要几十秒完成配置。' }]
+  },
+  '/docs/troubleshooting': {
+    title: 'gw-link 常见问题与排障',
+    description: '排查 gw-link 接入 Claude Code、Codex、Gemini CLI 时的 API Key、base_url、模型名、网络和权限问题。',
+    kicker: 'Troubleshooting',
+    h1: 'gw-link 常见问题与排障',
+    lead: '遇到 401、404、模型不存在、base_url 配置错误或请求失败时，按清单快速定位问题。',
+    guideTitle: '排障清单',
+    benefits: [
+      { title: '认证错误', text: '检查 API Key 是否复制完整、是否仍然有效。' },
+      { title: '地址错误', text: '确认 base_url 指向 gw-link 的 OpenAI 兼容入口。' },
+      { title: '模型错误', text: '确认工具配置的模型名在 gw-link 中可用。' }
+    ],
+    steps: ['先用最小请求验证 Key。', '检查 base_url 是否包含正确路径。', '确认模型名和权限配置。'],
+    faq: [{ q: '401 一般是什么原因？', a: '通常是 API Key 错误、过期、权限不足或工具读取了旧环境变量。' }]
+  },
+  '/pricing': {
+    title: 'gw-link Pricing - AI API Gateway',
+    description: '查看 gw-link 的 AI API Gateway 定价入口，适合 Claude Code、Codex、Gemini CLI、GPT-Image-2 API 与团队 AI 编码场景。',
+    kicker: 'Pricing',
+    h1: 'gw-link 定价：面向 AI 编程 API Gateway',
+    lead: '根据团队规模、调用量和模型选择，使用 gw-link 管理 Claude Code、Codex、Gemini CLI 等工具的 API 成本。',
+    guideTitle: '成本管理建议',
+    benefits: [
+      { title: '按需使用', text: '围绕真实调用量管理成本。' },
+      { title: '团队透明', text: '让 Key、模型和用量更容易审计。' },
+      { title: '工具统一', text: '多个 AI 编程工具走同一成本管理入口。' }
+    ],
+    steps: ['选择适合的账户和额度。', '为不同工具创建独立 Key。', '定期查看用量并优化模型选择。'],
+    faq: [{ q: '适合团队使用吗？', a: '适合。统一 Key、模型和用量管理是 gw-link 的核心场景。' }]
+  }
+}
+
+const defaultPage = pages['/openai-compatible-api-gateway']
+const page = computed(() => pages[route.path] ?? defaultPage)
+
+watchEffect(() => {
+  document.title = page.value.title
+  upsertMeta('description', page.value.description)
+  upsertCanonical(`https://gw-link.com${route.path}`)
+})
+
+function upsertMeta(name: string, content: string) {
+  let el = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)
+  if (!el) {
+    el = document.createElement('meta')
+    el.setAttribute('name', name)
+    document.head.appendChild(el)
+  }
+  el.setAttribute('content', content)
+}
+
+function upsertCanonical(href: string) {
+  let el = document.querySelector<HTMLLinkElement>('link[rel="canonical"]')
+  if (!el) {
+    el = document.createElement('link')
+    el.setAttribute('rel', 'canonical')
+    document.head.appendChild(el)
+  }
+  el.setAttribute('href', href)
+}
+</script>
+
+<style scoped>
+.seo-page {
+  min-height: 100vh;
+  background: #0b1020;
+  color: #e5ecff;
+  padding: 32px 20px 72px;
+}
+.seo-hero,
+.seo-grid,
+.seo-section {
+  width: min(1080px, 100%);
+  margin: 0 auto;
+}
+.seo-hero {
+  padding: 64px 0 40px;
+}
+.seo-brand {
+  color: #8ab4ff;
+  font-weight: 800;
+  text-decoration: none;
+}
+.seo-kicker {
+  margin-top: 40px;
+  color: #7dd3fc;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+h1 {
+  max-width: 900px;
+  margin: 16px 0;
+  font-size: clamp(2.4rem, 6vw, 5rem);
+  line-height: 1.05;
+}
+.seo-lead {
+  max-width: 760px;
+  color: #b8c3df;
+  font-size: 1.2rem;
+  line-height: 1.8;
+}
+.seo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 28px;
+}
+.seo-btn {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(138, 180, 255, 0.4);
+  border-radius: 999px;
+  color: #e5ecff;
+  padding: 12px 20px;
+  text-decoration: none;
+}
+.seo-btn--primary {
+  background: linear-gradient(135deg, #6d5dfc, #14b8a6);
+  border-color: transparent;
+  color: #fff;
+}
+.seo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+}
+.seo-card,
+.seo-section {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.72);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.25);
+}
+.seo-card {
+  padding: 24px;
+}
+.seo-card h2,
+.seo-section h2 {
+  color: #fff;
+  margin-top: 0;
+}
+.seo-card p,
+.seo-section p,
+.seo-steps {
+  color: #b8c3df;
+  line-height: 1.75;
+}
+.seo-section {
+  margin-top: 24px;
+  padding: 28px;
+}
+.seo-steps li {
+  margin: 10px 0;
+}
+details {
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 16px 0;
+}
+summary {
+  cursor: pointer;
+  color: #e5ecff;
+  font-weight: 700;
+}
+</style>

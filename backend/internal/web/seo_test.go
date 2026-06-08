@@ -44,11 +44,16 @@ func TestBuildSEOHead_EscapesSiteName(t *testing.T) {
 
 func TestBuildRobotsTxt(t *testing.T) {
 	r := BuildRobotsTxt("https://gw.example.com")
-	for _, ua := range []string{"GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "CCBot"} {
+	for _, ua := range []string{
+		"GPTBot", "OAI-SearchBot", "ChatGPT-User",
+		"ClaudeBot", "Claude-User", "PerplexityBot",
+		"Google-Extended", "GoogleOther", "CCBot",
+	} {
 		require.Contains(t, r, "User-agent: "+ua)
 	}
 	require.Contains(t, r, "Disallow: /admin")
 	require.Contains(t, r, "Disallow: /api/")
+	require.Contains(t, r, "Disallow: /auth/")
 	require.Contains(t, r, "Sitemap: https://gw.example.com/sitemap.xml")
 }
 
@@ -60,8 +65,17 @@ func TestBuildSitemapXML(t *testing.T) {
 	x := BuildSitemapXML("https://gw.example.com")
 	require.True(t, strings.HasPrefix(x, `<?xml version="1.0" encoding="UTF-8"?>`))
 	require.Contains(t, x, "<loc>https://gw.example.com/</loc>")
-	require.Contains(t, x, "<loc>https://gw.example.com/home</loc>")
-	require.Contains(t, x, "<loc>https://gw.example.com/login</loc>")
+	// 所有 SEO landing page 都必须出现在 sitemap 中,否则搜索引擎发现不了。
+	for _, p := range []string{
+		"/pricing", "/docs/quick-start", "/docs/troubleshooting",
+		"/claude-code-api-gateway", "/claude-code-base-url", "/codex-api-gateway",
+		"/gemini-cli-api-gateway", "/openai-compatible-api-gateway", "/gpt-image-2-api",
+		"/cc-switch-provider-config", "/compare/claude-code-vs-codex",
+	} {
+		require.Contains(t, x, "<loc>https://gw.example.com"+p+"</loc>")
+	}
+	// /home 是 / 的重定向,不应作为重复 URL 收录。
+	require.NotContains(t, x, "<loc>https://gw.example.com/home</loc>")
 	require.Contains(t, x, "</urlset>")
 }
 
@@ -71,6 +85,8 @@ func TestBuildLLMsTxt(t *testing.T) {
 	require.Contains(t, out, "> AI 网关")
 	require.Contains(t, out, "https://gw.example.com/")
 	require.Contains(t, out, "https://docs.example.com")
+	require.Contains(t, out, "## 核心场景")
+	require.Contains(t, out, "https://gw.example.com/claude-code-api-gateway")
 }
 
 func TestBuildLLMsTxt_NoDocURL_OmitsDocLine(t *testing.T) {

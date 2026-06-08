@@ -97,6 +97,29 @@ func BuildSEOHead(in SEOInput) []byte {
 	return []byte(b.String())
 }
 
+// marketingRoute 是一条面向搜索引擎 / AI 引擎公开的营销或文档路由。
+type marketingRoute struct {
+	path, freq, prio, label string
+}
+
+// marketingRoutes 是公开的营销 / 文档路由清单,同时驱动 sitemap.xml 与 llms.txt,
+// 保证两者始终一致。新增 SEO landing page 时只需在这里登记一次。
+// 必须与 frontend/src/router/index.ts 中的路由保持同步。
+var marketingRoutes = []marketingRoute{
+	{"/", "daily", "1.0", "首页：产品介绍与定价"},
+	{"/pricing", "weekly", "0.8", "定价"},
+	{"/docs/quick-start", "weekly", "0.9", "快速接入指南"},
+	{"/docs/troubleshooting", "weekly", "0.7", "常见问题与排障"},
+	{"/claude-code-api-gateway", "weekly", "0.95", "Claude Code API Gateway"},
+	{"/claude-code-base-url", "weekly", "0.9", "Claude Code base_url 配置"},
+	{"/codex-api-gateway", "weekly", "0.9", "Codex API Gateway"},
+	{"/gemini-cli-api-gateway", "weekly", "0.85", "Gemini CLI API Gateway"},
+	{"/openai-compatible-api-gateway", "weekly", "0.9", "OpenAI 兼容 API Gateway"},
+	{"/gpt-image-2-api", "weekly", "0.85", "GPT-Image-2 API"},
+	{"/cc-switch-provider-config", "weekly", "0.8", "CC Switch 多 Provider/Key/模型配置"},
+	{"/compare/claude-code-vs-codex", "weekly", "0.75", "Claude Code vs Codex 对比"},
+}
+
 // BuildRobotsTxt 生成 robots.txt 内容;放行主流 AI 爬虫。
 func BuildRobotsTxt(baseURL string) string {
 	base := trimSlash(baseURL)
@@ -104,11 +127,18 @@ func BuildRobotsTxt(baseURL string) string {
 	if base != "" {
 		sitemap = base + "/sitemap.xml"
 	}
-	aiBots := []string{"GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "CCBot"}
+	// 覆盖 OpenAI / Anthropic / Perplexity / Google 的索引与实时检索爬虫。
+	aiBots := []string{
+		"GPTBot", "OAI-SearchBot", "ChatGPT-User",
+		"ClaudeBot", "Claude-User",
+		"PerplexityBot",
+		"Google-Extended", "GoogleOther",
+		"CCBot",
+	}
 	var b strings.Builder
 	sw(&b, "User-agent: *\n")
 	sw(&b, "Allow: /\n")
-	for _, d := range []string{"/admin", "/dashboard", "/api/", "/v1/", "/backend-api/"} {
+	for _, d := range []string{"/admin", "/dashboard", "/api/", "/v1/", "/backend-api/", "/auth/"} {
 		sw(&b, "Disallow: "+d+"\n")
 	}
 	sw(&b, "\n# AI crawlers (GEO)\n")
@@ -119,17 +149,13 @@ func BuildRobotsTxt(baseURL string) string {
 	return b.String()
 }
 
-// BuildSitemapXML 生成 sitemap.xml,列出公开营销路由。
+// BuildSitemapXML 生成 sitemap.xml,列出公开营销与文档路由(见 marketingRoutes)。
 func BuildSitemapXML(baseURL string) string {
 	base := trimSlash(baseURL)
-	type u struct {
-		path, freq, prio string
-	}
-	urls := []u{{"/", "weekly", "1.0"}, {"/home", "weekly", "0.9"}, {"/login", "monthly", "0.5"}}
 	var b strings.Builder
 	sw(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
 	sw(&b, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`+"\n")
-	for _, x := range urls {
+	for _, x := range marketingRoutes {
 		loc := x.path
 		if base != "" {
 			loc = base + x.path
@@ -151,20 +177,28 @@ func BuildLLMsTxt(in LLMsInput) string {
 		subtitle = "AI API 网关 / 中转平台"
 	}
 	base := trimSlash(in.BaseURL)
-	home := base + "/"
-	login := base + "/login"
-	if base == "" {
-		home, login = "/", "/login"
+	abs := func(p string) string {
+		if base == "" {
+			return p
+		}
+		return base + p
 	}
 	var b strings.Builder
 	sw(&b, "# "+name+"\n\n")
 	sw(&b, "> "+subtitle+"\n\n")
-	sw(&b, name+" 是一个 AI API 网关 / 中转平台,统一接入 Claude、GPT、Gemini 等大模型,兼容主流 IDE 插件与 CLI 工具,只需替换 base_url 即可接入。\n\n")
+	sw(&b, name+" 是一个面向 Claude Code、Codex、Gemini CLI、VS Code 等 AI 编程工具的 OpenAI 兼容 API 网关 / 中转平台,只需配置 base_url 和 API Key 即可统一接入 Claude、GPT、Gemini 等模型。\n\n")
 	sw(&b, "## 主要页面\n")
-	sw(&b, "- [首页]("+home+"): 产品介绍与定价\n")
-	sw(&b, "- [登录]("+login+"): 用户登录/注册\n")
+	sw(&b, "- [首页]("+abs("/")+"): 产品介绍与定价\n")
+	sw(&b, "- [登录]("+abs("/login")+"): 用户登录/注册\n")
 	if doc := strings.TrimSpace(in.DocURL); doc != "" {
 		sw(&b, "- [接入文档]("+doc+"): API 接入说明\n")
+	}
+	sw(&b, "\n## 核心场景\n")
+	for _, x := range marketingRoutes {
+		if x.path == "/" {
+			continue
+		}
+		sw(&b, "- ["+x.label+"]("+abs(x.path)+")\n")
 	}
 	return b.String()
 }
