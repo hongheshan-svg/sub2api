@@ -144,29 +144,6 @@ func BuildLandingHead(p LandingPage, baseURL string) []byte {
 	return []byte(b.String())
 }
 
-// marketingRoute 是一条面向搜索引擎 / AI 引擎公开的营销或文档路由。
-type marketingRoute struct {
-	path, freq, prio, label string
-}
-
-// marketingRoutes 是公开的营销 / 文档路由清单,同时驱动 sitemap.xml 与 llms.txt,
-// 保证两者始终一致。新增 SEO landing page 时只需在这里登记一次。
-// 必须与 frontend/src/router/index.ts 中的路由保持同步。
-var marketingRoutes = []marketingRoute{
-	{"/", "daily", "1.0", "首页：产品介绍与定价"},
-	{"/pricing", "weekly", "0.8", "定价"},
-	{"/docs/quick-start", "weekly", "0.9", "快速接入指南"},
-	{"/docs/troubleshooting", "weekly", "0.7", "常见问题与排障"},
-	{"/claude-code-api-gateway", "weekly", "0.95", "Claude Code API Gateway"},
-	{"/claude-code-base-url", "weekly", "0.9", "Claude Code base_url 配置"},
-	{"/codex-api-gateway", "weekly", "0.9", "Codex API Gateway"},
-	{"/gemini-cli-api-gateway", "weekly", "0.85", "Gemini CLI API Gateway"},
-	{"/openai-compatible-api-gateway", "weekly", "0.9", "OpenAI 兼容 API Gateway"},
-	{"/gpt-image-2-api", "weekly", "0.85", "GPT-Image-2 API"},
-	{"/cc-switch-provider-config", "weekly", "0.8", "CC Switch 多 Provider/Key/模型配置"},
-	{"/compare/claude-code-vs-codex", "weekly", "0.75", "Claude Code vs Codex 对比"},
-}
-
 // BuildRobotsTxt 生成 robots.txt 内容;放行主流 AI 爬虫。
 func BuildRobotsTxt(baseURL string) string {
 	base := trimSlash(baseURL)
@@ -196,25 +173,41 @@ func BuildRobotsTxt(baseURL string) string {
 	return b.String()
 }
 
-// BuildSitemapXML 生成 sitemap.xml,列出公开营销与文档路由(见 marketingRoutes)。
-func BuildSitemapXML(baseURL string) string {
+// sitemapEntries 在落地页前面加上固定的首页条目(内容源 JSON 不含 /)。
+func sitemapEntries(landing []LandingPage) []LandingPage {
+	out := make([]LandingPage, 0, len(landing)+1)
+	out = append(out, LandingPage{Path: "/", ChangeFreq: "daily", Priority: "1.0"})
+	out = append(out, landing...)
+	return out
+}
+
+// BuildSitemapXML 生成 sitemap.xml,首页 + 全部落地页(见 landing-pages.json)。
+func BuildSitemapXML(baseURL string, landing []LandingPage) string {
 	base := trimSlash(baseURL)
 	var b strings.Builder
 	sw(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
 	sw(&b, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`+"\n")
-	for _, x := range marketingRoutes {
-		loc := x.path
+	for _, x := range sitemapEntries(landing) {
+		loc := x.Path
 		if base != "" {
-			loc = base + x.path
+			loc = base + x.Path
 		}
-		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+x.freq+"</changefreq><priority>"+x.prio+"</priority></url>\n")
+		freq := x.ChangeFreq
+		if freq == "" {
+			freq = "weekly"
+		}
+		prio := x.Priority
+		if prio == "" {
+			prio = "0.7"
+		}
+		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+freq+"</changefreq><priority>"+prio+"</priority></url>\n")
 	}
 	sw(&b, "</urlset>\n")
 	return b.String()
 }
 
-// BuildLLMsTxt 生成 /llms.txt(GEO),markdown 约定格式。
-func BuildLLMsTxt(in LLMsInput) string {
+// BuildLLMsTxt 生成 /llms.txt(GEO),核心场景由落地页派生。
+func BuildLLMsTxt(in LLMsInput, landing []LandingPage) string {
 	name := strings.TrimSpace(in.SiteName)
 	if name == "" {
 		name = "Sub2API"
@@ -240,12 +233,15 @@ func BuildLLMsTxt(in LLMsInput) string {
 	if doc := strings.TrimSpace(in.DocURL); doc != "" {
 		sw(&b, "- [接入文档]("+doc+"): API 接入说明\n")
 	}
-	sw(&b, "\n## 核心场景\n")
-	for _, x := range marketingRoutes {
-		if x.path == "/" {
-			continue
+	if len(landing) > 0 {
+		sw(&b, "\n## 核心场景\n")
+		for _, p := range landing {
+			label := p.Kicker
+			if label == "" {
+				label = p.Title
+			}
+			sw(&b, "- ["+label+"]("+abs(p.Path)+")\n")
 		}
-		sw(&b, "- ["+x.label+"]("+abs(x.path)+")\n")
 	}
 	return b.String()
 }

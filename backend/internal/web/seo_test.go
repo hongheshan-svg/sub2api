@@ -62,26 +62,35 @@ func TestBuildRobotsTxt_NoBaseURL_RelativeSitemap(t *testing.T) {
 	require.Contains(t, BuildRobotsTxt(""), "Sitemap: /sitemap.xml")
 }
 
+func sampleLanding() []LandingPage {
+	mk := func(path, prio string) LandingPage {
+		var p LandingPage
+		p.Path, p.Priority, p.ChangeFreq, p.Kicker = path, prio, "weekly", path
+		return p
+	}
+	return []LandingPage{
+		mk("/claude-code-api-gateway", "0.95"),
+		mk("/pricing", "0.8"),
+	}
+}
+
 func TestBuildSitemapXML(t *testing.T) {
-	x := BuildSitemapXML("https://gw.example.com")
+	x := BuildSitemapXML("https://gw.example.com", sampleLanding())
 	require.True(t, strings.HasPrefix(x, `<?xml version="1.0" encoding="UTF-8"?>`))
 	require.Contains(t, x, "<loc>https://gw.example.com/</loc>")
-	// 所有 SEO landing page 都必须出现在 sitemap 中,否则搜索引擎发现不了。
-	for _, p := range []string{
-		"/pricing", "/docs/quick-start", "/docs/troubleshooting",
-		"/claude-code-api-gateway", "/claude-code-base-url", "/codex-api-gateway",
-		"/gemini-cli-api-gateway", "/openai-compatible-api-gateway", "/gpt-image-2-api",
-		"/cc-switch-provider-config", "/compare/claude-code-vs-codex",
-	} {
-		require.Contains(t, x, "<loc>https://gw.example.com"+p+"</loc>")
-	}
-	// /home 是 / 的重定向,不应作为重复 URL 收录。
+	require.Contains(t, x, "<loc>https://gw.example.com/claude-code-api-gateway</loc>")
+	require.Contains(t, x, "<loc>https://gw.example.com/pricing</loc>")
 	require.NotContains(t, x, "<loc>https://gw.example.com/home</loc>")
 	require.Contains(t, x, "</urlset>")
 }
 
+func TestBuildSitemapXML_Empty_FallsBackToHome(t *testing.T) {
+	x := BuildSitemapXML("https://gw.example.com", nil)
+	require.Contains(t, x, "<loc>https://gw.example.com/</loc>")
+}
+
 func TestBuildLLMsTxt(t *testing.T) {
-	out := BuildLLMsTxt(LLMsInput{SiteName: "GW-LINK", SiteSubtitle: "AI 网关", BaseURL: "https://gw.example.com", DocURL: "https://docs.example.com"})
+	out := BuildLLMsTxt(LLMsInput{SiteName: "GW-LINK", SiteSubtitle: "AI 网关", BaseURL: "https://gw.example.com", DocURL: "https://docs.example.com"}, sampleLanding())
 	require.Contains(t, out, "# GW-LINK")
 	require.Contains(t, out, "> AI 网关")
 	require.Contains(t, out, "https://gw.example.com/")
@@ -91,7 +100,7 @@ func TestBuildLLMsTxt(t *testing.T) {
 }
 
 func TestBuildLLMsTxt_NoDocURL_OmitsDocLine(t *testing.T) {
-	out := BuildLLMsTxt(LLMsInput{SiteName: "GW-LINK", BaseURL: "https://gw.example.com"})
+	out := BuildLLMsTxt(LLMsInput{SiteName: "GW-LINK", BaseURL: "https://gw.example.com"}, nil)
 	require.NotContains(t, out, "接入文档")
 }
 
