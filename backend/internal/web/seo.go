@@ -97,6 +97,53 @@ func BuildSEOHead(in SEOInput) []byte {
 	return []byte(b.String())
 }
 
+// BuildLandingHead 返回某个 SEO 落地页要插入 </head> 前的标签:
+// per-page canonical / og / twitter + FAQPage + BreadcrumbList JSON-LD。
+// 命中落地页时用它取代全站 BuildSEOHead,避免标签重复。
+func BuildLandingHead(p LandingPage, baseURL string) []byte {
+	base := trimSlash(baseURL)
+	canonical := p.Path
+	if base != "" {
+		canonical = base + p.Path
+	}
+	home := "/"
+	if base != "" {
+		home = base + "/"
+	}
+	e := html.EscapeString
+	var b strings.Builder
+	sw(&b, "\n")
+	sw(&b, `<link rel="canonical" href="`+e(canonical)+`" />`+"\n")
+	sw(&b, `<meta property="og:type" content="article" />`+"\n")
+	sw(&b, `<meta property="og:url" content="`+e(canonical)+`" />`+"\n")
+	sw(&b, `<meta property="og:title" content="`+e(p.Title)+`" />`+"\n")
+	sw(&b, `<meta property="og:description" content="`+e(p.Description)+`" />`+"\n")
+	sw(&b, `<meta name="twitter:title" content="`+e(p.Title)+`" />`+"\n")
+	sw(&b, `<meta name="twitter:description" content="`+e(p.Description)+`" />`+"\n")
+
+	if len(p.FAQ) > 0 {
+		mains := make([]map[string]any, 0, len(p.FAQ))
+		for _, f := range p.FAQ {
+			mains = append(mains, map[string]any{
+				"@type": "Question", "name": f.Q,
+				"acceptedAnswer": map[string]any{"@type": "Answer", "text": f.A},
+			})
+		}
+		faq := map[string]any{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": mains}
+		sw(&b, `<script type="application/ld+json">`+jsonLD(faq)+`</script>`+"\n")
+	}
+
+	crumb := map[string]any{
+		"@context": "https://schema.org", "@type": "BreadcrumbList",
+		"itemListElement": []map[string]any{
+			{"@type": "ListItem", "position": 1, "name": "Home", "item": home},
+			{"@type": "ListItem", "position": 2, "name": p.Kicker, "item": canonical},
+		},
+	}
+	sw(&b, `<script type="application/ld+json">`+jsonLD(crumb)+`</script>`+"\n")
+	return []byte(b.String())
+}
+
 // marketingRoute 是一条面向搜索引擎 / AI 引擎公开的营销或文档路由。
 type marketingRoute struct {
 	path, freq, prio, label string

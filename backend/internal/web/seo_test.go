@@ -139,3 +139,20 @@ func TestRenderLandingBody(t *testing.T) {
 	require.Contains(t, body, "<summary>Why?</summary>")
 	require.Contains(t, body, "Because")
 }
+
+func TestBuildLandingHead(t *testing.T) {
+	p := LandingPage{
+		Path:        "/claude-code-api-gateway",
+		Title:       "Claude Code API Gateway - gw-link",
+		Description: "desc",
+		Kicker:      "Claude Code API Gateway",
+		FAQ:         []LandingFAQ{{Q: "Q1", A: "A1"}},
+	}
+	head := string(BuildLandingHead(p, "https://gw-link.com/"))
+	require.Contains(t, head, `<link rel="canonical" href="https://gw-link.com/claude-code-api-gateway"`)
+	require.NotContains(t, head, `href="https://gw-link.com/"`) // not the bare homepage
+	require.Contains(t, head, `property="og:url" content="https://gw-link.com/claude-code-api-gateway"`)
+	require.Contains(t, head, `property="og:title" content="Claude Code API Gateway - gw-link"`)
+	require.Contains(t, head, `"@type":"FAQPage"`)
+	require.Contains(t, head, `"@type":"BreadcrumbList"`)
+}
