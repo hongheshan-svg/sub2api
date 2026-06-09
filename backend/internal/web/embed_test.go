@@ -169,7 +169,7 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 		require.NoError(t, err)
 
 		settingsJSON := []byte(`{"test":"data"}`)
-		result := server.injectSettings(settingsJSON)
+		result := server.injectForPath("", settingsJSON)
 
 		// Should contain the script with nonce placeholder
 		assert.Contains(t, string(result), `<script nonce="__CSP_NONCE_VALUE__">`)
@@ -186,7 +186,7 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 		require.NoError(t, err)
 
 		settingsJSON := []byte(`{}`)
-		result := server.injectSettings(settingsJSON)
+		result := server.injectForPath("", settingsJSON)
 
 		// Script should be injected before </head>
 		headCloseIndex := bytes.Index(result, []byte("</head>"))
@@ -208,7 +208,7 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 		require.NoError(t, err)
 
 		settingsJSON := []byte(`{"nested":{"array":[1,2,3]},"special":"<>&"}`)
-		result := server.injectSettings(settingsJSON)
+		result := server.injectForPath("", settingsJSON)
 
 		assert.Contains(t, string(result), `window.__APP_CONFIG__={"nested":{"array":[1,2,3]},"special":"<>&"};`)
 	})
@@ -232,7 +232,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		testNonce := "test-nonce-12345"
 		c.Set(middleware.CSPNonceKey, testNonce)
 
-		server.serveIndexHTML(c)
+		server.serveIndexHTMLForPath(c, "/")
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
@@ -257,7 +257,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		c1.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c1.Set(middleware.CSPNonceKey, "nonce1")
 
-		server.serveIndexHTML(c1)
+		server.serveIndexHTMLForPath(c1, "/")
 		assert.Equal(t, 1, provider.called)
 
 		// Second request - should use cache
@@ -266,7 +266,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		c2.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c2.Set(middleware.CSPNonceKey, "nonce2")
 
-		server.serveIndexHTML(c2)
+		server.serveIndexHTMLForPath(c2, "/")
 		// Settings provider should not be called again
 		assert.Equal(t, 1, provider.called)
 
@@ -274,7 +274,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.Contains(t, w2.Body.String(), `nonce="nonce2"`)
 	})
 
-	t.Run("sets_etag_header", func(t *testing.T) {
+	t.Run("sets_cache_control_no_store", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
 		}
@@ -287,63 +287,9 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c.Set(middleware.CSPNonceKey, "nonce123")
 
-		server.serveIndexHTML(c)
+		server.serveIndexHTMLForPath(c, "/")
 
-		etag := w.Header().Get("ETag")
-		assert.NotEmpty(t, etag)
-		assert.True(t, strings.HasPrefix(etag, `"`))
-		assert.True(t, strings.HasSuffix(etag, `"`))
-	})
-
-	t.Run("returns_304_for_matching_etag", func(t *testing.T) {
-		provider := &mockSettingsProvider{
-			settings: map[string]string{"test": "value"},
-		}
-
-		server, err := NewFrontendServer(provider)
-		require.NoError(t, err)
-
-		// Use a real router for proper 304 handling
-		router := gin.New()
-		router.Use(func(c *gin.Context) {
-			c.Set(middleware.CSPNonceKey, "test-nonce")
-			c.Next()
-		})
-		router.Use(server.Middleware())
-
-		// First request to populate cache and get ETag
-		w1 := httptest.NewRecorder()
-		req1 := httptest.NewRequest(http.MethodGet, "/", nil)
-		router.ServeHTTP(w1, req1)
-		etag := w1.Header().Get("ETag")
-		require.NotEmpty(t, etag)
-
-		// Second request with If-None-Match
-		w2 := httptest.NewRecorder()
-		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-		req2.Header.Set("If-None-Match", etag)
-		router.ServeHTTP(w2, req2)
-
-		assert.Equal(t, http.StatusNotModified, w2.Code)
-		assert.Empty(t, w2.Body.String())
-	})
-
-	t.Run("sets_cache_control_header", func(t *testing.T) {
-		provider := &mockSettingsProvider{
-			settings: map[string]string{"test": "value"},
-		}
-
-		server, err := NewFrontendServer(provider)
-		require.NoError(t, err)
-
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-		c.Set(middleware.CSPNonceKey, "nonce123")
-
-		server.serveIndexHTML(c)
-
-		assert.Equal(t, "no-cache", w.Header().Get("Cache-Control"))
+		assert.Equal(t, "no-store, must-revalidate", w.Header().Get("Cache-Control"))
 	})
 
 	t.Run("fallback_on_settings_error", func(t *testing.T) {
@@ -362,7 +308,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c.Set(middleware.CSPNonceKey, "nonce123")
 
-		server.serveIndexHTML(c)
+		server.serveIndexHTMLForPath(c, "/")
 
 		// Should still return 200 with base HTML
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -385,7 +331,7 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 		c1.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c1.Set(middleware.CSPNonceKey, "nonce1")
 
-		server.serveIndexHTML(c1)
+		server.serveIndexHTMLForPath(c1, "/")
 		assert.Equal(t, 1, provider.called)
 
 		// Invalidate cache
@@ -400,7 +346,7 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 		c2.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c2.Set(middleware.CSPNonceKey, "nonce2")
 
-		server.serveIndexHTML(c2)
+		server.serveIndexHTMLForPath(c2, "/")
 		assert.Equal(t, 2, provider.called)
 	})
 
@@ -671,7 +617,7 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 func TestHTMLCache(t *testing.T) {
 	t.Run("new_cache_returns_nil", func(t *testing.T) {
 		cache := NewHTMLCache()
-		assert.Nil(t, cache.Get())
+		assert.Nil(t, cache.Get(""))
 	})
 
 	t.Run("set_and_get", func(t *testing.T) {
@@ -680,9 +626,9 @@ func TestHTMLCache(t *testing.T) {
 
 		html := []byte("<html><body>test</body></html>")
 		settings := []byte(`{"key":"value"}`)
-		cache.Set(html, settings)
+		cache.Set("", html, settings)
 
-		result := cache.Get()
+		result := cache.Get("")
 		require.NotNil(t, result)
 		assert.Equal(t, html, result.Content)
 		assert.NotEmpty(t, result.ETag)
@@ -694,13 +640,13 @@ func TestHTMLCache(t *testing.T) {
 
 		html := []byte("<html><body>test</body></html>")
 		settings := []byte(`{"key":"value"}`)
-		cache.Set(html, settings)
+		cache.Set("", html, settings)
 
-		require.NotNil(t, cache.Get())
+		require.NotNil(t, cache.Get(""))
 
 		cache.Invalidate()
 
-		assert.Nil(t, cache.Get())
+		assert.Nil(t, cache.Get(""))
 	})
 
 	t.Run("etag_changes_with_settings", func(t *testing.T) {
@@ -709,12 +655,12 @@ func TestHTMLCache(t *testing.T) {
 
 		html := []byte("<html><body>test</body></html>")
 
-		cache.Set(html, []byte(`{"v":1}`))
-		etag1 := cache.Get().ETag
+		cache.Set("", html, []byte(`{"v":1}`))
+		etag1 := cache.Get("").ETag
 
 		cache.Invalidate()
-		cache.Set(html, []byte(`{"v":2}`))
-		etag2 := cache.Get().ETag
+		cache.Set("", html, []byte(`{"v":2}`))
+		etag2 := cache.Get("").ETag
 
 		assert.NotEqual(t, etag1, etag2)
 	})
@@ -723,8 +669,8 @@ func TestHTMLCache(t *testing.T) {
 		cache := NewHTMLCache()
 		cache.SetBaseHTML([]byte("<html></html>"))
 
-		cache.Set([]byte("<html></html>"), []byte(`{}`))
-		result := cache.Get()
+		cache.Set("", []byte("<html></html>"), []byte(`{}`))
+		result := cache.Get("")
 
 		// ETag should be quoted
 		assert.True(t, strings.HasPrefix(result.ETag, `"`))
@@ -759,6 +705,67 @@ func BenchmarkFrontendServerServeIndexHTML(b *testing.B) {
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c.Set(middleware.CSPNonceKey, "test-nonce")
 
-		server.serveIndexHTML(c)
+		server.serveIndexHTMLForPath(c, "/")
 	}
+}
+
+func newTestServer(t *testing.T) *FrontendServer {
+	t.Helper()
+	provider := &mockSettingsProvider{
+		settings: map[string]any{"site_name": "gw-link", "frontend_url": "https://gw-link.com"},
+	}
+	s, err := NewFrontendServer(provider)
+	require.NoError(t, err)
+	var p LandingPage
+	p.Path = "/claude-code-api-gateway"
+	p.Title = "Claude Code API Gateway - gw-link"
+	p.H1 = "Claude Code API Gateway 标题"
+	p.Kicker = "Claude Code API Gateway"
+	p.FAQ = []LandingFAQ{{Q: "可以用吗?", A: "可以"}}
+	// no seo/landing-pages.json in the test build; inject the page directly
+	s.landing = map[string]LandingPage{p.Path: p}
+	return s
+}
+
+func TestServeLandingRoute(t *testing.T) {
+	s := newTestServer(t)
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/claude-code-api-gateway", nil)
+	r.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, body, "<title>Claude Code API Gateway - gw-link</title>")
+	require.Contains(t, body, `rel="canonical" href="https://gw-link.com/claude-code-api-gateway"`)
+	require.Contains(t, body, "Claude Code API Gateway 标题")
+	require.Contains(t, body, `"@type":"FAQPage"`)
+	require.Contains(t, body, "window.__SEO_PAGE__=")
+}
+
+func TestServeCacheIsolation_LandingThenNonLanding(t *testing.T) {
+	s := newTestServer(t)
+	r := gin.New()
+	r.Use(s.Middleware())
+
+	// Warm the landing cache entry first.
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, httptest.NewRequest(http.MethodGet, "/claude-code-api-gateway", nil))
+	require.Contains(t, w1.Body.String(), "Claude Code API Gateway 标题")
+
+	// A non-landing route must NOT receive the landing body from the cache.
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	require.NotContains(t, w2.Body.String(), "Claude Code API Gateway 标题")
+}
+
+func TestServeNonLandingRoute_NoBodyInjection(t *testing.T) {
+	s := newTestServer(t)
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotContains(t, w.Body.String(), "Claude Code API Gateway 标题")
 }

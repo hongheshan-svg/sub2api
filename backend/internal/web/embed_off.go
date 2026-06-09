@@ -46,3 +46,6 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 func HasEmbeddedFrontend() bool {
 	return false
 }
+
+// LandingPages returns nil for non-embed builds (no embedded content).
+func LandingPages() []LandingPage { return nil }
