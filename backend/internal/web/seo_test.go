@@ -121,3 +121,21 @@ func TestLoadLandingPages_Missing(t *testing.T) {
 	_, _, err := LoadLandingPages(fstest.MapFS{})
 	require.Error(t, err)
 }
+
+func TestRenderLandingBody(t *testing.T) {
+	p := LandingPage{
+		Kicker:     "K",
+		H1:         "My <H1>",
+		Lead:       "lead text",
+		GuideTitle: "Guide",
+		Steps:      []string{"step one"},
+		Benefits:   []LandingBenefit{{Title: "Bene", Text: "btext"}},
+		FAQ:        []LandingFAQ{{Q: "Why?", A: "Because"}},
+	}
+	body := string(RenderLandingBody(p))
+	require.Contains(t, body, "<h1>My &lt;H1&gt;</h1>") // escaped
+	require.Contains(t, body, "<li>step one</li>")
+	require.Contains(t, body, "Bene")
+	require.Contains(t, body, "<summary>Why?</summary>")
+	require.Contains(t, body, "Because")
+}

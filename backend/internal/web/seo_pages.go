@@ -3,7 +3,9 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/fs"
+	"strings"
 )
 
 // LandingBenefit 是落地页的一个价值点。
@@ -54,4 +56,40 @@ func LoadLandingPages(fsys fs.FS) (map[string]LandingPage, []LandingPage, error)
 		byPath[p.Path] = p
 	}
 	return byPath, pages, nil
+}
+
+// RenderLandingBody 把落地页内容渲染成语义化 HTML,注入空的 #app,
+// 让非 JS 爬虫也能读到正文。所有文本字段经 HTML 转义。
+func RenderLandingBody(p LandingPage) []byte {
+	e := html.EscapeString
+	var b strings.Builder
+	sw(&b, "<main>")
+	if p.Kicker != "" {
+		sw(&b, "<p>"+e(p.Kicker)+"</p>")
+	}
+	sw(&b, "<h1>"+e(p.H1)+"</h1>")
+	if p.Lead != "" {
+		sw(&b, "<p>"+e(p.Lead)+"</p>")
+	}
+	for _, it := range p.Benefits {
+		sw(&b, "<section><h2>"+e(it.Title)+"</h2><p>"+e(it.Text)+"</p></section>")
+	}
+	if p.GuideTitle != "" {
+		sw(&b, "<h2>"+e(p.GuideTitle)+"</h2>")
+	}
+	if len(p.Steps) > 0 {
+		sw(&b, "<ol>")
+		for _, s := range p.Steps {
+			sw(&b, "<li>"+e(s)+"</li>")
+		}
+		sw(&b, "</ol>")
+	}
+	if len(p.FAQ) > 0 {
+		sw(&b, "<h2>常见问题</h2>")
+		for _, f := range p.FAQ {
+			sw(&b, "<details open><summary>"+e(f.Q)+"</summary><p>"+e(f.A)+"</p></details>")
+		}
+	}
+	sw(&b, "</main>")
+	return []byte(b.String())
 }
