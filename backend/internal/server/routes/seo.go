@@ -29,6 +29,8 @@ func resolveBaseURL(c *gin.Context, settingService *service.SettingService) stri
 
 // RegisterSEORoutes 注册 /robots.txt /sitemap.xml /llms.txt。
 func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
+	landing := web.LandingPages() // nil in non-embed builds -> sitemap falls back to "/"
+
 	r.GET("/robots.txt", func(c *gin.Context) {
 		base := resolveBaseURL(c, settingService)
 		c.Header("Cache-Control", "public, max-age=3600")
@@ -38,7 +40,7 @@ func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 	r.GET("/sitemap.xml", func(c *gin.Context) {
 		base := resolveBaseURL(c, settingService)
 		c.Header("Cache-Control", "public, max-age=3600")
-		c.Data(http.StatusOK, "application/xml; charset=utf-8", []byte(web.BuildSitemapXML(base)))
+		c.Data(http.StatusOK, "application/xml; charset=utf-8", []byte(web.BuildSitemapXML(base, landing)))
 	})
 
 	r.GET("/llms.txt", func(c *gin.Context) {
@@ -50,6 +52,6 @@ func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 			SiteSubtitle: settingService.GetSiteSubtitle(ctx),
 			BaseURL:      base,
 			DocURL:       settingService.GetDocURL(ctx),
-		})))
+		}, landing)))
 	})
 }
