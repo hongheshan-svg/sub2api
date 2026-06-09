@@ -5,6 +5,7 @@ package web
 import (
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
 )
@@ -92,4 +93,31 @@ func TestBuildLLMsTxt(t *testing.T) {
 func TestBuildLLMsTxt_NoDocURL_OmitsDocLine(t *testing.T) {
 	out := BuildLLMsTxt(LLMsInput{SiteName: "GW-LINK", BaseURL: "https://gw.example.com"})
 	require.NotContains(t, out, "接入文档")
+}
+
+func TestLoadLandingPages(t *testing.T) {
+	fsys := fstest.MapFS{
+		"seo/landing-pages.json": {Data: []byte(`[
+			{"path":"/a","priority":"0.9","changefreq":"weekly","title":"A","h1":"H A","faq":[{"q":"q?","a":"yes"}]},
+			{"path":"/b","priority":"0.8","changefreq":"monthly","title":"B","h1":"H B"}
+		]`)},
+	}
+	byPath, ordered, err := LoadLandingPages(fsys)
+	require.NoError(t, err)
+	require.Len(t, ordered, 2)
+	require.Equal(t, "/a", ordered[0].Path) // order preserved
+	require.Equal(t, "/b", ordered[1].Path)
+	require.Equal(t, "H A", byPath["/a"].H1)
+	require.Equal(t, "yes", byPath["/a"].FAQ[0].A)
+}
+
+func TestLoadLandingPages_InvalidJSON(t *testing.T) {
+	fsys := fstest.MapFS{"seo/landing-pages.json": {Data: []byte(`not json`)}}
+	_, _, err := LoadLandingPages(fsys)
+	require.Error(t, err)
+}
+
+func TestLoadLandingPages_Missing(t *testing.T) {
+	_, _, err := LoadLandingPages(fstest.MapFS{})
+	require.Error(t, err)
 }
