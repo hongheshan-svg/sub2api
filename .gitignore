@@ -119,6 +119,10 @@ tests
 CLAUDE.md
 .claude
 scripts
+# Keep the frontend SEO validator (referenced by package.json "seo:check")
+# even though bare `scripts` ignores scripts dirs elsewhere.
+!frontend/scripts/
+!frontend/scripts/**
 .code-review-state
 #openspec/
 code-reviews/

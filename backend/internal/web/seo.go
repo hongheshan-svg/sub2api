@@ -97,6 +97,53 @@ func BuildSEOHead(in SEOInput) []byte {
 	return []byte(b.String())
 }
 
+// BuildLandingHead 返回某个 SEO 落地页要插入 </head> 前的标签:
+// per-page canonical / og / twitter + FAQPage + BreadcrumbList JSON-LD。
+// 命中落地页时用它取代全站 BuildSEOHead,避免标签重复。
+func BuildLandingHead(p LandingPage, baseURL string) []byte {
+	base := trimSlash(baseURL)
+	canonical := p.Path
+	if base != "" {
+		canonical = base + p.Path
+	}
+	home := "/"
+	if base != "" {
+		home = base + "/"
+	}
+	e := html.EscapeString
+	var b strings.Builder
+	sw(&b, "\n")
+	sw(&b, `<link rel="canonical" href="`+e(canonical)+`" />`+"\n")
+	sw(&b, `<meta property="og:type" content="article" />`+"\n")
+	sw(&b, `<meta property="og:url" content="`+e(canonical)+`" />`+"\n")
+	sw(&b, `<meta property="og:title" content="`+e(p.Title)+`" />`+"\n")
+	sw(&b, `<meta property="og:description" content="`+e(p.Description)+`" />`+"\n")
+	sw(&b, `<meta name="twitter:title" content="`+e(p.Title)+`" />`+"\n")
+	sw(&b, `<meta name="twitter:description" content="`+e(p.Description)+`" />`+"\n")
+
+	if len(p.FAQ) > 0 {
+		mains := make([]map[string]any, 0, len(p.FAQ))
+		for _, f := range p.FAQ {
+			mains = append(mains, map[string]any{
+				"@type": "Question", "name": f.Q,
+				"acceptedAnswer": map[string]any{"@type": "Answer", "text": f.A},
+			})
+		}
+		faq := map[string]any{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": mains}
+		sw(&b, `<script type="application/ld+json">`+jsonLD(faq)+`</script>`+"\n")
+	}
+
+	crumb := map[string]any{
+		"@context": "https://schema.org", "@type": "BreadcrumbList",
+		"itemListElement": []map[string]any{
+			{"@type": "ListItem", "position": 1, "name": "Home", "item": home},
+			{"@type": "ListItem", "position": 2, "name": p.Kicker, "item": canonical},
+		},
+	}
+	sw(&b, `<script type="application/ld+json">`+jsonLD(crumb)+`</script>`+"\n")
+	return []byte(b.String())
+}
+
 // BuildRobotsTxt 生成 robots.txt 内容;放行主流 AI 爬虫。
 func BuildRobotsTxt(baseURL string) string {
 	base := trimSlash(baseURL)
@@ -104,11 +151,18 @@ func BuildRobotsTxt(baseURL string) string {
 	if base != "" {
 		sitemap = base + "/sitemap.xml"
 	}
-	aiBots := []string{"GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "CCBot"}
+	// 覆盖 OpenAI / Anthropic / Perplexity / Google 的索引与实时检索爬虫。
+	aiBots := []string{
+		"GPTBot", "OAI-SearchBot", "ChatGPT-User",
+		"ClaudeBot", "Claude-User",
+		"PerplexityBot",
+		"Google-Extended", "GoogleOther",
+		"CCBot",
+	}
 	var b strings.Builder
 	sw(&b, "User-agent: *\n")
 	sw(&b, "Allow: /\n")
-	for _, d := range []string{"/admin", "/dashboard", "/api/", "/v1/", "/backend-api/"} {
+	for _, d := range []string{"/admin", "/dashboard", "/api/", "/v1/", "/backend-api/", "/auth/"} {
 		sw(&b, "Disallow: "+d+"\n")
 	}
 	sw(&b, "\n# AI crawlers (GEO)\n")
@@ -119,29 +173,41 @@ func BuildRobotsTxt(baseURL string) string {
 	return b.String()
 }
 
-// BuildSitemapXML 生成 sitemap.xml,列出公开营销路由。
-func BuildSitemapXML(baseURL string) string {
+// sitemapEntries 在落地页前面加上固定的首页条目(内容源 JSON 不含 /)。
+func sitemapEntries(landing []LandingPage) []LandingPage {
+	out := make([]LandingPage, 0, len(landing)+1)
+	out = append(out, LandingPage{Path: "/", ChangeFreq: "daily", Priority: "1.0"})
+	out = append(out, landing...)
+	return out
+}
+
+// BuildSitemapXML 生成 sitemap.xml,首页 + 全部落地页(见 landing-pages.json)。
+func BuildSitemapXML(baseURL string, landing []LandingPage) string {
 	base := trimSlash(baseURL)
-	type u struct {
-		path, freq, prio string
-	}
-	urls := []u{{"/", "weekly", "1.0"}, {"/home", "weekly", "0.9"}, {"/login", "monthly", "0.5"}}
 	var b strings.Builder
 	sw(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
 	sw(&b, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`+"\n")
-	for _, x := range urls {
-		loc := x.path
+	for _, x := range sitemapEntries(landing) {
+		loc := x.Path
 		if base != "" {
-			loc = base + x.path
+			loc = base + x.Path
 		}
-		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+x.freq+"</changefreq><priority>"+x.prio+"</priority></url>\n")
+		freq := x.ChangeFreq
+		if freq == "" {
+			freq = "weekly"
+		}
+		prio := x.Priority
+		if prio == "" {
+			prio = "0.7"
+		}
+		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+freq+"</changefreq><priority>"+prio+"</priority></url>\n")
 	}
 	sw(&b, "</urlset>\n")
 	return b.String()
 }
 
-// BuildLLMsTxt 生成 /llms.txt(GEO),markdown 约定格式。
-func BuildLLMsTxt(in LLMsInput) string {
+// BuildLLMsTxt 生成 /llms.txt(GEO),核心场景由落地页派生。
+func BuildLLMsTxt(in LLMsInput, landing []LandingPage) string {
 	name := strings.TrimSpace(in.SiteName)
 	if name == "" {
 		name = "Sub2API"
@@ -151,20 +217,31 @@ func BuildLLMsTxt(in LLMsInput) string {
 		subtitle = "AI API 网关 / 中转平台"
 	}
 	base := trimSlash(in.BaseURL)
-	home := base + "/"
-	login := base + "/login"
-	if base == "" {
-		home, login = "/", "/login"
+	abs := func(p string) string {
+		if base == "" {
+			return p
+		}
+		return base + p
 	}
 	var b strings.Builder
 	sw(&b, "# "+name+"\n\n")
 	sw(&b, "> "+subtitle+"\n\n")
-	sw(&b, name+" 是一个 AI API 网关 / 中转平台,统一接入 Claude、GPT、Gemini 等大模型,兼容主流 IDE 插件与 CLI 工具,只需替换 base_url 即可接入。\n\n")
+	sw(&b, name+" 是一个面向 Claude Code、Codex、Gemini CLI、VS Code 等 AI 编程工具的 OpenAI 兼容 API 网关 / 中转平台,只需配置 base_url 和 API Key 即可统一接入 Claude、GPT、Gemini 等模型。\n\n")
 	sw(&b, "## 主要页面\n")
-	sw(&b, "- [首页]("+home+"): 产品介绍与定价\n")
-	sw(&b, "- [登录]("+login+"): 用户登录/注册\n")
+	sw(&b, "- [首页]("+abs("/")+"): 产品介绍与定价\n")
+	sw(&b, "- [登录]("+abs("/login")+"): 用户登录/注册\n")
 	if doc := strings.TrimSpace(in.DocURL); doc != "" {
 		sw(&b, "- [接入文档]("+doc+"): API 接入说明\n")
+	}
+	if len(landing) > 0 {
+		sw(&b, "\n## 核心场景\n")
+		for _, p := range landing {
+			label := p.Kicker
+			if label == "" {
+				label = p.Title
+			}
+			sw(&b, "- ["+label+"]("+abs(p.Path)+")\n")
+		}
 	}
 	return b.String()
 }

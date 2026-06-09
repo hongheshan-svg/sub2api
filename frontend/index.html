@@ -4,15 +4,57 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sub2API - AI API Gateway</title>
-    <meta name="description" content="统一接入 Claude、GPT、Gemini 等大模型 API,兼容主流 IDE 插件与 CLI 工具,只需替换 base_url、30 秒完成接入的企业级 AI 编码中转网关。" />
-    <meta name="keywords" content="AI API, Claude API, GPT API, Gemini API, API 网关, API 中转, AI 编码, LLM 网关" />
-    <meta name="robots" content="index, follow" />
+    <title>gw-link - AI API Gateway for Claude Code, Codex and Gemini CLI</title>
+    <meta name="description" content="gw-link 是面向 Claude Code、Codex、Gemini CLI、VS Code 与主流 AI 编程工具的 OpenAI 兼容 API Gateway。只需替换 base_url 和 API Key，即可统一接入 Claude、GPT、Gemini 等模型。" />
+    <meta name="keywords" content="gw-link, Claude Code API Gateway, Codex API Gateway, Gemini CLI API, OpenAI compatible API, AI API Gateway, GPT-Image-2 API, API 中转, AI 编码" />
+    <meta name="robots" content="index, follow, max-snippet:160, max-image-preview:large" />
     <meta name="theme-color" content="#1a1a2e" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <!--
+      canonical / og:* / twitter:title|description / Organization + WebSite +
+      SoftwareApplication JSON-LD 由后端 BuildSEOHead 在响应时按站点配置注入
+      (backend/internal/web/seo.go),此处不再静态声明,避免标签重复。
+      下面的 FAQPage 后端不注入,保留在这里。
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "gw-link 支持 Claude Code 吗？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "支持。gw-link 提供 OpenAI 兼容 API Gateway，Claude Code 只需配置 base_url 和 API Key 即可接入。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "gw-link 支持 Codex 和 Gemini CLI 吗？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "支持。gw-link 面向 Claude Code、Codex、Gemini CLI、VS Code 等 AI 编程工具提供统一 API 接入。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "gw-link 是否兼容 OpenAI API 格式？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "兼容。gw-link 采用 OpenAI-compatible API 形式，便于现有 CLI、IDE 插件和自动化脚本低成本迁移。"
+            }
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
+    <noscript>
+      <h1>AI API Gateway for Claude Code, Codex and Gemini CLI</h1>
+      <p>gw-link 是面向 Claude Code、Codex、Gemini CLI、VS Code 与主流 AI 编程工具的 OpenAI 兼容 API Gateway。</p>
+    </noscript>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

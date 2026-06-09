@@ -8,70 +8,57 @@ import (
 	"sync"
 )
 
-// HTMLCache manages the cached index.html with injected settings
+// HTMLCache caches rendered index.html per request path (SEO landing routes get
+// their own entry; all other SPA routes share the "" key).
 type HTMLCache struct {
-	mu              sync.RWMutex
-	cachedHTML      []byte
-	etag            string
-	baseHTMLHash    string // Hash of the original index.html (immutable after build)
-	settingsVersion uint64 // Incremented when settings change
+	mu           sync.RWMutex
+	entries      map[string]CachedHTML
+	baseHTMLHash string
 }
 
-// CachedHTML represents the cache state
+// CachedHTML represents one cached, rendered page.
 type CachedHTML struct {
 	Content []byte
 	ETag    string
 }
 
-// NewHTMLCache creates a new HTML cache instance
 func NewHTMLCache() *HTMLCache {
-	return &HTMLCache{}
+	return &HTMLCache{entries: make(map[string]CachedHTML)}
 }
 
-// SetBaseHTML initializes the cache with the base HTML template
 func (c *HTMLCache) SetBaseHTML(baseHTML []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	hash := sha256.Sum256(baseHTML)
-	c.baseHTMLHash = hex.EncodeToString(hash[:8]) // First 8 bytes for brevity
+	c.baseHTMLHash = hex.EncodeToString(hash[:8])
 }
 
-// Invalidate marks the cache as stale
+// Invalidate drops all cached pages (call when settings change).
 func (c *HTMLCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	c.settingsVersion++
-	c.cachedHTML = nil
-	c.etag = ""
+	c.entries = make(map[string]CachedHTML)
 }
 
-// Get returns the cached HTML or nil if cache is stale
-func (c *HTMLCache) Get() *CachedHTML {
+// Get returns the cached page for key, or nil if absent.
+func (c *HTMLCache) Get(key string) *CachedHTML {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	if c.cachedHTML == nil {
+	v, ok := c.entries[key]
+	if !ok {
 		return nil
 	}
-	return &CachedHTML{
-		Content: c.cachedHTML,
-		ETag:    c.etag,
-	}
+	return &v
 }
 
-// Set updates the cache with new rendered HTML
-func (c *HTMLCache) Set(html []byte, settingsJSON []byte) {
+// Set stores the rendered page for key.
+func (c *HTMLCache) Set(key string, html []byte, settingsJSON []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	c.cachedHTML = html
-	c.etag = c.generateETag(settingsJSON)
+	c.entries[key] = CachedHTML{Content: html, ETag: c.generateETag(key, settingsJSON)}
 }
 
-// generateETag creates an ETag from base HTML hash + settings hash
-func (c *HTMLCache) generateETag(settingsJSON []byte) string {
-	settingsHash := sha256.Sum256(settingsJSON)
-	return `"` + c.baseHTMLHash + "-" + hex.EncodeToString(settingsHash[:8]) + `"`
+func (c *HTMLCache) generateETag(key string, settingsJSON []byte) string {
+	h := sha256.Sum256(append([]byte(key+"\x00"), settingsJSON...))
+	return `"` + c.baseHTMLHash + "-" + hex.EncodeToString(h[:8]) + `"`
 }

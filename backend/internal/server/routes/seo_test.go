@@ -18,8 +18,8 @@ import (
 // outputs that the handlers serve.)
 func TestSEOBuildersProduceExpectedContent(t *testing.T) {
 	require.Contains(t, web.BuildRobotsTxt("https://x.io"), "Sitemap: https://x.io/sitemap.xml")
-	require.Contains(t, web.BuildSitemapXML("https://x.io"), "<loc>https://x.io/home</loc>")
-	require.Contains(t, web.BuildLLMsTxt(web.LLMsInput{SiteName: "X", BaseURL: "https://x.io"}), "# X")
+	require.Contains(t, web.BuildSitemapXML("https://x.io", nil), "<loc>https://x.io/</loc>")
+	require.Contains(t, web.BuildLLMsTxt(web.LLMsInput{SiteName: "X", BaseURL: "https://x.io"}, nil), "# X")
 }
 
 func TestRobotsRouteWiring(t *testing.T) {
