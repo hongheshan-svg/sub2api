@@ -746,6 +746,45 @@ func TestServeLandingRoute(t *testing.T) {
 	require.Contains(t, body, "window.__SEO_PAGE__=")
 	// The site-wide homepage description must not survive on a landing page.
 	require.NotContains(t, body, "OpenAI 兼容 API Gateway。只需替换 base_url")
+	// The static homepage FAQPage must be stripped: only the page-specific
+	// FAQPage may remain, so a landing page carries exactly one FAQPage entity.
+	require.NotContains(t, body, "gw-link 支持 Claude Code 吗")
+	require.Equal(t, 1, strings.Count(body, `"FAQPage"`))
+}
+
+func TestServeNonLandingRoute_KeepsHomepageFAQ(t *testing.T) {
+	s := newTestServer(t)
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	// Non-landing routes keep the site-wide homepage FAQPage from index.html.
+	require.Contains(t, w.Body.String(), "gw-link 支持 Claude Code 吗")
+}
+
+func TestRemoveStaticHomeFAQ(t *testing.T) {
+	t.Run("removes_faqpage_block", func(t *testing.T) {
+		html := []byte(`<head><title>x</title>` +
+			`<script type="application/ld+json">{"@type":"FAQPage","mainEntity":[]}</script>` +
+			`</head>`)
+		out := string(removeStaticHomeFAQ(html))
+		require.NotContains(t, out, "FAQPage")
+		require.Contains(t, out, "<title>x</title>")
+		require.Contains(t, out, "</head>")
+	})
+
+	t.Run("leaves_other_jsonld_untouched", func(t *testing.T) {
+		html := []byte(`<head>` +
+			`<script type="application/ld+json">{"@type":"Organization"}</script>` +
+			`</head>`)
+		out := string(removeStaticHomeFAQ(html))
+		require.Contains(t, out, "Organization")
+	})
+
+	t.Run("noop_when_absent", func(t *testing.T) {
+		html := []byte(`<head><title>x</title></head>`)
+		require.Equal(t, string(html), string(removeStaticHomeFAQ(html)))
+	})
 }
 
 func TestServeCacheIsolation_LandingThenNonLanding(t *testing.T) {
