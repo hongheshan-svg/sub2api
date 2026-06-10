@@ -97,10 +97,61 @@ func BuildSEOHead(in SEOInput) []byte {
 	return []byte(b.String())
 }
 
+// HreflangLink is one <link rel="alternate" hreflang="…" href="…"> entry.
+type HreflangLink struct {
+	Hreflang string
+	Href     string
+}
+
+// counterpartPath returns the other-language path of a landing path following the
+// /en/<slug> convention: "/x" <-> "/en/x".
+func counterpartPath(path string) string {
+	if strings.HasPrefix(path, "/en/") {
+		return strings.TrimPrefix(path, "/en")
+	}
+	return "/en" + path
+}
+
+// langOf returns the page language, defaulting to "zh-CN" when unset.
+func langOf(p LandingPage) string {
+	if l := strings.TrimSpace(p.Lang); l != "" {
+		return l
+	}
+	return "zh-CN"
+}
+
+// HreflangLinksFor returns the alternate-language links for p — self, counterpart
+// and x-default — or nil when p has no translated counterpart in byPath. Google
+// only honours reciprocal pairs, so a page without a counterpart emits no
+// hreflang. x-default points at the zh (root) page of the pair.
+func HreflangLinksFor(p LandingPage, byPath map[string]LandingPage, baseURL string) []HreflangLink {
+	cp := counterpartPath(p.Path)
+	other, ok := byPath[cp]
+	if !ok {
+		return nil
+	}
+	base := trimSlash(baseURL)
+	abs := func(pth string) string {
+		if base == "" {
+			return pth
+		}
+		return base + pth
+	}
+	zhPath := p.Path
+	if strings.HasPrefix(p.Path, "/en/") {
+		zhPath = cp
+	}
+	return []HreflangLink{
+		{Hreflang: langOf(p), Href: abs(p.Path)},
+		{Hreflang: langOf(other), Href: abs(other.Path)},
+		{Hreflang: "x-default", Href: abs(zhPath)},
+	}
+}
+
 // BuildLandingHead 返回某个 SEO 落地页要插入 </head> 前的标签:
-// per-page canonical / og / twitter + FAQPage + BreadcrumbList JSON-LD。
-// 命中落地页时用它取代全站 BuildSEOHead,避免标签重复。
-func BuildLandingHead(p LandingPage, baseURL string) []byte {
+// per-page canonical / hreflang / og / twitter + FAQPage + BreadcrumbList JSON-LD。
+// 命中落地页时用它取代全站 BuildSEOHead,避免标签重复。alts 为空时不输出 hreflang。
+func BuildLandingHead(p LandingPage, baseURL string, alts []HreflangLink) []byte {
 	base := trimSlash(baseURL)
 	canonical := p.Path
 	if base != "" {
@@ -114,6 +165,9 @@ func BuildLandingHead(p LandingPage, baseURL string) []byte {
 	var b strings.Builder
 	sw(&b, "\n")
 	sw(&b, `<link rel="canonical" href="`+e(canonical)+`" />`+"\n")
+	for _, a := range alts {
+		sw(&b, `<link rel="alternate" hreflang="`+e(a.Hreflang)+`" href="`+e(a.Href)+`" />`+"\n")
+	}
 	sw(&b, `<meta property="og:type" content="article" />`+"\n")
 	sw(&b, `<meta property="og:url" content="`+e(canonical)+`" />`+"\n")
 	sw(&b, `<meta property="og:title" content="`+e(p.Title)+`" />`+"\n")
@@ -184,9 +238,13 @@ func sitemapEntries(landing []LandingPage) []LandingPage {
 // BuildSitemapXML 生成 sitemap.xml,首页 + 全部落地页(见 landing-pages.json)。
 func BuildSitemapXML(baseURL string, landing []LandingPage) string {
 	base := trimSlash(baseURL)
+	byPath := make(map[string]LandingPage, len(landing))
+	for _, p := range landing {
+		byPath[p.Path] = p
+	}
 	var b strings.Builder
 	sw(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
-	sw(&b, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`+"\n")
+	sw(&b, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">`+"\n")
 	for _, x := range sitemapEntries(landing) {
 		loc := x.Path
 		if base != "" {
@@ -200,7 +258,18 @@ func BuildSitemapXML(baseURL string, landing []LandingPage) string {
 		if prio == "" {
 			prio = "0.7"
 		}
-		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+freq+"</changefreq><priority>"+prio+"</priority></url>\n")
+		// Bilingual pages annotate each <url> with xhtml:link alternates (self +
+		// counterpart + x-default); single-language pages stay compact.
+		alts := HreflangLinksFor(x, byPath, baseURL)
+		if len(alts) == 0 {
+			sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+freq+"</changefreq><priority>"+prio+"</priority></url>\n")
+			continue
+		}
+		sw(&b, "  <url><loc>"+loc+"</loc><changefreq>"+freq+"</changefreq><priority>"+prio+"</priority>")
+		for _, a := range alts {
+			sw(&b, `<xhtml:link rel="alternate" hreflang="`+a.Hreflang+`" href="`+a.Href+`"/>`)
+		}
+		sw(&b, "</url>\n")
 	}
 	sw(&b, "</urlset>\n")
 	return b.String()

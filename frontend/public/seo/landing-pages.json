@@ -3,6 +3,7 @@
     "path": "/claude-code-api-gateway",
     "changefreq": "weekly",
     "priority": "0.95",
+    "lang": "zh-CN",
     "title": "Claude Code API Gateway - gw-link",
     "description": "gw-link 为 Claude Code 提供 OpenAI 兼容 API Gateway，只需配置 base_url 和 API Key，即可稳定接入 Claude、GPT、Gemini 等模型。",
     "kicker": "Claude Code API Gateway",
@@ -24,6 +25,7 @@
     "path": "/claude-code-base-url",
     "changefreq": "weekly",
     "priority": "0.9",
+    "lang": "zh-CN",
     "title": "Claude Code base_url 配置指南 - gw-link",
     "description": "了解如何用 gw-link 配置 Claude Code base_url，通过 OpenAI 兼容 API Gateway 统一接入 AI 编程模型。",
     "kicker": "Claude Code base_url",
@@ -44,6 +46,7 @@
     "path": "/codex-api-gateway",
     "changefreq": "weekly",
     "priority": "0.9",
+    "lang": "zh-CN",
     "title": "Codex API Gateway - gw-link",
     "description": "gw-link 为 Codex CLI 和 AI 编程工作流提供 OpenAI 兼容 API Gateway，统一管理 API Key、模型和成本。",
     "kicker": "Codex API Gateway",
@@ -64,6 +67,7 @@
     "path": "/gemini-cli-api-gateway",
     "changefreq": "weekly",
     "priority": "0.85",
+    "lang": "zh-CN",
     "title": "Gemini CLI API Gateway - gw-link",
     "description": "用 gw-link 统一 Gemini CLI、Claude Code、Codex 等 AI 编程工具的 API 接入与模型管理。",
     "kicker": "Gemini CLI API Gateway",
@@ -84,6 +88,7 @@
     "path": "/openai-compatible-api-gateway",
     "changefreq": "weekly",
     "priority": "0.9",
+    "lang": "zh-CN",
     "title": "OpenAI Compatible API Gateway for AI Coding - gw-link",
     "description": "gw-link 提供 OpenAI-compatible API Gateway，支持 Claude Code、Codex、Gemini CLI、VS Code 与自动化脚本统一接入。",
     "kicker": "OpenAI Compatible API Gateway",
@@ -104,6 +109,7 @@
     "path": "/gpt-image-2-api",
     "changefreq": "weekly",
     "priority": "0.85",
+    "lang": "zh-CN",
     "title": "GPT-Image-2 API 使用指南 - gw-link",
     "description": "通过 gw-link 使用 GPT-Image-2 API，支持文生图、图生图和自动化内容生成工作流。",
     "kicker": "GPT-Image-2 API",
@@ -124,6 +130,7 @@
     "path": "/cc-switch-provider-config",
     "changefreq": "weekly",
     "priority": "0.8",
+    "lang": "zh-CN",
     "title": "CC Switch 多 Provider/Key/模型配置指南 - gw-link",
     "description": "用 CC Switch 和 gw-link 管理多个 Provider、API Key 与模型配置，让 Claude Code 和 Codex 共用统一模型配置中心。",
     "kicker": "CC Switch Provider Config",
@@ -144,6 +151,7 @@
     "path": "/compare/claude-code-vs-codex",
     "changefreq": "weekly",
     "priority": "0.75",
+    "lang": "zh-CN",
     "title": "Claude Code vs Codex：API 与工作流对比 - gw-link",
     "description": "对比 Claude Code 与 Codex 在 API Gateway、CLI、IDE、模型选择和团队管理方面的差异，并说明如何用 gw-link 统一接入。",
     "kicker": "Claude Code vs Codex",
@@ -164,6 +172,7 @@
     "path": "/docs/quick-start",
     "changefreq": "weekly",
     "priority": "0.9",
+    "lang": "zh-CN",
     "title": "gw-link 30 秒接入指南",
     "description": "gw-link 快速开始：创建 API Key，配置 base_url，接入 Claude Code、Codex、Gemini CLI 或 VS Code 插件。",
     "kicker": "Quick Start",
@@ -184,6 +193,7 @@
     "path": "/docs/troubleshooting",
     "changefreq": "weekly",
     "priority": "0.7",
+    "lang": "zh-CN",
     "title": "gw-link 常见问题与排障",
     "description": "排查 gw-link 接入 Claude Code、Codex、Gemini CLI 时的 API Key、base_url、模型名、网络和权限问题。",
     "kicker": "Troubleshooting",
@@ -204,6 +214,7 @@
     "path": "/pricing",
     "changefreq": "weekly",
     "priority": "0.8",
+    "lang": "zh-CN",
     "title": "gw-link Pricing - AI API Gateway",
     "description": "查看 gw-link 的 AI API Gateway 定价入口，适合 Claude Code、Codex、Gemini CLI、GPT-Image-2 API 与团队 AI 编码场景。",
     "kicker": "Pricing",
@@ -218,6 +229,238 @@
     "steps": ["选择适合的账户和额度。", "为不同工具创建独立 Key。", "定期查看用量并优化模型选择。"],
     "faq": [
       { "q": "适合团队使用吗？", "a": "适合。统一 Key、模型和用量管理是 gw-link 的核心场景。" }
+    ]
+  },
+  {
+    "path": "/en/claude-code-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.95",
+    "lang": "en",
+    "title": "Claude Code API Gateway - gw-link",
+    "description": "gw-link gives Claude Code an OpenAI-compatible API gateway. Set your base_url and API key once to reach Claude, GPT and Gemini models through a single stable endpoint.",
+    "kicker": "Claude Code API Gateway",
+    "h1": "Claude Code API Gateway: One base_url for Every Model",
+    "lead": "Connect Claude Code to a unified AI API gateway with gw-link, and manage model routing, API keys, billing and reliable upstreams in one place.",
+    "guideTitle": "Connect Claude Code",
+    "benefits": [
+      { "title": "OpenAI compatible", "text": "Keep the familiar base_url and API key setup so migrating Claude Code costs almost nothing." },
+      { "title": "One model entry point", "text": "Use Claude, GPT and Gemini behind a single endpoint instead of scattered per-provider config." },
+      { "title": "Built for teams", "text": "Issue keys, watch usage and control spend from one console — ideal for dev teams and AI coding." }
+    ],
+    "steps": ["Sign in to the gw-link console and create an API key.", "Point Claude Code's base_url at gw-link.", "Pick a model and send one minimal request to verify."],
+    "faq": [
+      { "q": "Can Claude Code use gw-link?", "a": "Yes. gw-link exposes an OpenAI-compatible API gateway that fits Claude Code's base_url / API key setup." },
+      { "q": "Do I need to change my code?", "a": "Usually you only swap the base_url and API key; the exact steps depend on how Claude Code is configured." }
+    ]
+  },
+  {
+    "path": "/en/claude-code-base-url",
+    "changefreq": "weekly",
+    "priority": "0.9",
+    "lang": "en",
+    "title": "Claude Code base_url Setup Guide - gw-link",
+    "description": "Learn how to configure the Claude Code base_url with gw-link and reach AI coding models through one OpenAI-compatible API gateway.",
+    "kicker": "Claude Code base_url",
+    "h1": "Claude Code base_url Configuration Guide",
+    "lead": "gw-link lets Claude Code use a single base_url, so you stop switching between providers, keys and models.",
+    "guideTitle": "Recommended setup",
+    "benefits": [
+      { "title": "Simple config", "text": "It comes down to three things: base_url, API key and model name." },
+      { "title": "Lower switching cost", "text": "Every model is reached through the gw-link gateway, so the tool-side config stays stable." },
+      { "title": "Easier debugging", "text": "Watch requests, errors and usage in one place to locate issues faster." }
+    ],
+    "steps": ["Copy the OpenAI-compatible endpoint from gw-link.", "Point Claude Code's base_url at gw-link.", "Save the API key and run one test request."],
+    "faq": [
+      { "q": "What should the base_url be?", "a": "Use the value shown in your console after deployment — typically gw-link's OpenAI-compatible /v1 endpoint." }
+    ]
+  },
+  {
+    "path": "/en/codex-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.9",
+    "lang": "en",
+    "title": "Codex API Gateway - gw-link",
+    "description": "gw-link provides an OpenAI-compatible API gateway for Codex CLI and AI coding workflows, with unified API key, model and cost management.",
+    "kicker": "Codex API Gateway",
+    "h1": "Codex API Gateway for CLI and IDE Workflows",
+    "lead": "Connect Codex CLI, IDE plugins and automation scripts to gw-link and manage models and calls through one API gateway.",
+    "guideTitle": "Connect Codex",
+    "benefits": [
+      { "title": "CLI friendly", "text": "Works with the env-var / API key style used by Codex CLI, scripts and automation jobs." },
+      { "title": "Multi-model routing", "text": "Pick the right model per task while keeping the tool-side integration unchanged." },
+      { "title": "Transparent cost", "text": "Track call volume and spend in one place to keep budgets under control." }
+    ],
+    "steps": ["Create a key in gw-link.", "Point Codex's API endpoint at gw-link.", "Run a simple prompt to verify the response."],
+    "faq": [
+      { "q": "Can Codex and Claude Code share gw-link?", "a": "Yes. Both connect through the same OpenAI-compatible endpoint." }
+    ]
+  },
+  {
+    "path": "/en/gemini-cli-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.85",
+    "lang": "en",
+    "title": "Gemini CLI API Gateway - gw-link",
+    "description": "Use gw-link to unify API access and model management for Gemini CLI, Claude Code, Codex and other AI coding tools.",
+    "kicker": "Gemini CLI API Gateway",
+    "h1": "Gemini CLI API Gateway: Unified Access and Models",
+    "lead": "Manage the Gemini CLI API entry point with gw-link and share one gateway with Claude Code and Codex.",
+    "guideTitle": "Connect Gemini CLI",
+    "benefits": [
+      { "title": "Single entry point", "text": "Bring Gemini CLI into the same AI API gateway and cut down scattered config." },
+      { "title": "Consistent across tools", "text": "Claude Code, Codex and Gemini CLI can share one integration strategy." },
+      { "title": "Team control", "text": "Unify keys, quotas and model selection." }
+    ],
+    "steps": ["Create a gw-link API key.", "Configure the Gemini CLI endpoint.", "Run a test request and check the model response."],
+    "faq": [
+      { "q": "Is Gemini CLI a good fit for an API gateway?", "a": "Yes, especially when a team needs unified keys, models and cost management." }
+    ]
+  },
+  {
+    "path": "/en/openai-compatible-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.9",
+    "lang": "en",
+    "title": "OpenAI Compatible API Gateway for AI Coding - gw-link",
+    "description": "gw-link offers an OpenAI-compatible API gateway for Claude Code, Codex, Gemini CLI, VS Code and automation scripts under one integration.",
+    "kicker": "OpenAI Compatible API Gateway",
+    "h1": "OpenAI Compatible API Gateway for AI Coding",
+    "lead": "Reach Claude, GPT and Gemini through the OpenAI-compatible protocol so your CLI, IDE plugins and scripts keep one consistent config.",
+    "guideTitle": "Where it fits",
+    "benefits": [
+      { "title": "Compatible ecosystem", "text": "Many AI tools speak the OpenAI-style endpoint, so migration cost stays low." },
+      { "title": "Unified governance", "text": "Manage keys, models, billing, errors and access policy in one place." },
+      { "title": "Developer focused", "text": "Built for Claude Code, Codex, VS Code and automated coding workflows." }
+    ],
+    "steps": ["Confirm your tool supports an OpenAI-compatible endpoint.", "Swap in the base_url and API key.", "Set the model name and run a test."],
+    "faq": [
+      { "q": "What does OpenAI compatible mean?", "a": "It means a tool can connect using an OpenAI-style endpoint, key and request format." }
+    ]
+  },
+  {
+    "path": "/en/gpt-image-2-api",
+    "changefreq": "weekly",
+    "priority": "0.85",
+    "lang": "en",
+    "title": "GPT-Image-2 API Guide - gw-link",
+    "description": "Use the GPT-Image-2 API through gw-link for text-to-image, image-to-image and automated content generation workflows.",
+    "kicker": "GPT-Image-2 API",
+    "h1": "GPT-Image-2 API: Text-to-Image and Image-to-Image Guide",
+    "lead": "gw-link can act as a single entry point for image generation APIs — product shots, tutorial figures, social media images and automated content pipelines.",
+    "guideTitle": "Connect the image API",
+    "benefits": [
+      { "title": "Text to image", "text": "Generate product shots, tutorial figures and marketing assets from a prompt." },
+      { "title": "Image to image", "text": "Restyle, redraw or locally edit based on a reference image." },
+      { "title": "Automation friendly", "text": "Fits scripts, workflows and content-production pipelines." }
+    ],
+    "steps": ["Create an API key with access to image models.", "Call the images generations or edits endpoint.", "Save the output and wire it into your publishing flow."],
+    "faq": [
+      { "q": "Can GPT-Image-2 be called programmatically?", "a": "Yes — it suits batch image generation via scripts or server-side workflows." }
+    ]
+  },
+  {
+    "path": "/en/cc-switch-provider-config",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "title": "CC Switch Multi Provider/Key/Model Config Guide - gw-link",
+    "description": "Use CC Switch with gw-link to manage multiple providers, API keys and model configs, giving Claude Code and Codex one shared model config center.",
+    "kicker": "CC Switch Provider Config",
+    "h1": "CC Switch: A Config Center for Providers, Keys and Models",
+    "lead": "Pair CC Switch with gw-link to centrally manage providers, API keys and model choices for Claude Code, Codex and more.",
+    "guideTitle": "Configuration tips",
+    "benefits": [
+      { "title": "Multiple providers", "text": "Abstract different model services into switchable configurations." },
+      { "title": "Multiple keys", "text": "Avoid manually swapping environment variables and local config files." },
+      { "title": "Shared by Claude/Codex", "text": "Let common AI coding tools share one consistent model-config strategy." }
+    ],
+    "steps": ["Create a unified API key in gw-link.", "Add the provider config in CC Switch.", "Select the matching model for Claude Code and Codex."],
+    "faq": [
+      { "q": "Is CC Switch a standalone model?", "a": "No. It works better as a config center for providers, keys and models." }
+    ]
+  },
+  {
+    "path": "/en/compare/claude-code-vs-codex",
+    "changefreq": "weekly",
+    "priority": "0.75",
+    "lang": "en",
+    "title": "Claude Code vs Codex: API and Workflow Comparison - gw-link",
+    "description": "Compare Claude Code and Codex across API gateway, CLI, IDE, model choice and team management, and see how gw-link unifies access to both.",
+    "kicker": "Claude Code vs Codex",
+    "h1": "Claude Code vs Codex: AI Coding Tool Comparison",
+    "lead": "Claude Code and Codex each have their strengths, but both can run through one OpenAI-compatible API gateway with gw-link.",
+    "guideTitle": "How to choose",
+    "benefits": [
+      { "title": "Claude Code", "text": "Great for code understanding, refactoring, large context and interactive development." },
+      { "title": "Codex", "text": "Great for CLI, automation scripts and command-line developer workflows." },
+      { "title": "gw-link", "text": "Unifies API keys, model routing and cost management for both." }
+    ],
+    "steps": ["Clarify your team's main workflow.", "Configure both tools against the same gw-link endpoint.", "Pick models and a cost strategy per task."],
+    "faq": [
+      { "q": "Do I have to pick only one of Claude Code or Codex?", "a": "No. With gw-link the two can coexist and be managed together." }
+    ]
+  },
+  {
+    "path": "/en/docs/quick-start",
+    "changefreq": "weekly",
+    "priority": "0.9",
+    "lang": "en",
+    "title": "gw-link 30-Second Quick Start",
+    "description": "gw-link quick start: create an API key, set your base_url, and connect Claude Code, Codex, Gemini CLI or a VS Code plugin.",
+    "kicker": "Quick Start",
+    "h1": "gw-link 30-Second Quick Start",
+    "lead": "From creating an API key to your first request, connect to the AI API gateway in three steps.",
+    "guideTitle": "Three steps",
+    "benefits": [
+      { "title": "Create a key", "text": "Sign in to the console and create an API key for your CLI or IDE." },
+      { "title": "Swap the endpoint", "text": "Point your tool's base_url at gw-link." },
+      { "title": "Verify the model", "text": "Run one test request to confirm the setup works." }
+    ],
+    "steps": ["Sign in or register for gw-link.", "Create an API key and pick a model.", "Copy the base_url into Claude Code, Codex or Gemini CLI."],
+    "faq": [
+      { "q": "How fast can I connect?", "a": "If your tool supports an OpenAI-compatible endpoint, setup usually takes only a few dozen seconds." }
+    ]
+  },
+  {
+    "path": "/en/docs/troubleshooting",
+    "changefreq": "weekly",
+    "priority": "0.7",
+    "lang": "en",
+    "title": "gw-link Troubleshooting and FAQ",
+    "description": "Troubleshoot API key, base_url, model name, network and permission issues when connecting Claude Code, Codex or Gemini CLI to gw-link.",
+    "kicker": "Troubleshooting",
+    "h1": "gw-link Troubleshooting and FAQ",
+    "lead": "When you hit 401, 404, missing-model, wrong base_url or failed requests, work through this checklist to locate the problem fast.",
+    "guideTitle": "Troubleshooting checklist",
+    "benefits": [
+      { "title": "Auth errors", "text": "Check the API key is copied in full and still valid." },
+      { "title": "Address errors", "text": "Confirm the base_url points at gw-link's OpenAI-compatible endpoint." },
+      { "title": "Model errors", "text": "Confirm the model name configured in your tool is available in gw-link." }
+    ],
+    "steps": ["Verify the key with a minimal request first.", "Check the base_url includes the correct path.", "Confirm the model name and permission settings."],
+    "faq": [
+      { "q": "What usually causes a 401?", "a": "Typically a wrong or expired API key, insufficient permission, or a tool reading a stale environment variable." }
+    ]
+  },
+  {
+    "path": "/en/pricing",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "title": "gw-link Pricing - AI API Gateway",
+    "description": "See gw-link's AI API gateway pricing entry point for Claude Code, Codex, Gemini CLI, the GPT-Image-2 API and team AI coding.",
+    "kicker": "Pricing",
+    "h1": "gw-link Pricing for an AI Coding API Gateway",
+    "lead": "Manage API cost for Claude Code, Codex, Gemini CLI and more with gw-link, based on team size, call volume and model choice.",
+    "guideTitle": "Cost management tips",
+    "benefits": [
+      { "title": "Pay for what you use", "text": "Manage cost around real call volume." },
+      { "title": "Team transparency", "text": "Make keys, models and usage easier to audit." },
+      { "title": "One entry for all tools", "text": "Route multiple AI coding tools through one cost-management entry point." }
+    ],
+    "steps": ["Choose the right account and quota.", "Create separate keys for different tools.", "Review usage regularly and tune model choice."],
+    "faq": [
+      { "q": "Is it suitable for teams?", "a": "Yes. Unified keys, models and usage management is a core gw-link use case." }
     ]
   }
 ]
