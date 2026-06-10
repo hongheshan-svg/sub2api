@@ -719,6 +719,7 @@ func newTestServer(t *testing.T) *FrontendServer {
 	var p LandingPage
 	p.Path = "/claude-code-api-gateway"
 	p.Title = "Claude Code API Gateway - gw-link"
+	p.Description = "Claude Code API Gateway 描述"
 	p.H1 = "Claude Code API Gateway 标题"
 	p.Kicker = "Claude Code API Gateway"
 	p.FAQ = []LandingFAQ{{Q: "可以用吗?", A: "可以"}}
@@ -738,10 +739,13 @@ func TestServeLandingRoute(t *testing.T) {
 	body := w.Body.String()
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, body, "<title>Claude Code API Gateway - gw-link</title>")
+	require.Contains(t, body, `<meta name="description" content="Claude Code API Gateway 描述" />`)
 	require.Contains(t, body, `rel="canonical" href="https://gw-link.com/claude-code-api-gateway"`)
 	require.Contains(t, body, "Claude Code API Gateway 标题")
 	require.Contains(t, body, `"@type":"FAQPage"`)
 	require.Contains(t, body, "window.__SEO_PAGE__=")
+	// The site-wide homepage description must not survive on a landing page.
+	require.NotContains(t, body, "OpenAI 兼容 API Gateway。只需替换 base_url")
 }
 
 func TestServeCacheIsolation_LandingThenNonLanding(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -256,6 +257,7 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 
 	if isLanding {
 		result = setTitle(result, page.Title)
+		result = setMetaDescription(result, page.Description)
 		body := RenderLandingBody(page)
 		appDiv := []byte(`<div id="app"></div>`)
 		replacement := append([]byte(`<div id="app">`), body...)
@@ -266,6 +268,32 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 	}
 
 	return result
+}
+
+// setMetaDescription replaces the content value of the static
+// <meta name="description" content="…"> tag with desc. No-op when desc is empty
+// (keeps the site-wide fallback from index.html) or the tag is absent. Used to give
+// each SEO landing page its own meta description instead of the homepage's.
+func setMetaDescription(htmlBytes []byte, desc string) []byte {
+	if strings.TrimSpace(desc) == "" {
+		return htmlBytes
+	}
+	marker := []byte(`<meta name="description" content="`)
+	start := bytes.Index(htmlBytes, marker)
+	if start == -1 {
+		return htmlBytes
+	}
+	valStart := start + len(marker)
+	rel := bytes.IndexByte(htmlBytes[valStart:], '"')
+	if rel == -1 {
+		return htmlBytes
+	}
+	valEnd := valStart + rel
+	var buf bytes.Buffer
+	buf.Write(htmlBytes[:valStart])
+	buf.WriteString(html.EscapeString(desc))
+	buf.Write(htmlBytes[valEnd:])
+	return buf.Bytes()
 }
 
 // setTitle replaces the <title>…</title> contents with title.
