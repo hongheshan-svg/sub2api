@@ -253,7 +253,14 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 
 	headClose := []byte("</head>")
 	inject := append(headInject, configScript...)
-	result := bytes.Replace(s.baseHTML, headClose, append(inject, headClose...), 1)
+	base := s.baseHTML
+	if isLanding {
+		// Drop the homepage FAQPage baked into index.html; the landing page
+		// injects its own page-specific FAQPage via BuildLandingHead, and two
+		// FAQPage entities (one not matching visible content) hurt rich results.
+		base = removeStaticHomeFAQ(base)
+	}
+	result := bytes.Replace(base, headClose, append(inject, headClose...), 1)
 
 	if isLanding {
 		result = setTitle(result, page.Title)
@@ -268,6 +275,46 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 	}
 
 	return result
+}
+
+// removeStaticHomeFAQ strips the homepage FAQPage JSON-LD block baked into
+// index.html. Applied only to landing pages: each injects its own page-specific
+// FAQPage via BuildLandingHead, and keeping the homepage block too would place two
+// FAQPage entities — one not matching the page's visible content — on the URL.
+// It removes the first <script type="application/ld+json"> block containing
+// "FAQPage", so unrelated JSON-LD (Organization/WebSite/…) is left untouched.
+func removeStaticHomeFAQ(htmlBytes []byte) []byte {
+	open := []byte(`<script type="application/ld+json">`)
+	closeTag := []byte(`</script>`)
+	search := 0
+	for {
+		rel := bytes.Index(htmlBytes[search:], open)
+		if rel == -1 {
+			return htmlBytes
+		}
+		start := search + rel
+		relClose := bytes.Index(htmlBytes[start:], closeTag)
+		if relClose == -1 {
+			return htmlBytes
+		}
+		end := start + relClose + len(closeTag)
+		if bytes.Contains(htmlBytes[start:end], []byte(`"FAQPage"`)) {
+			// Swallow trailing whitespace left by the removed block.
+			for end < len(htmlBytes) {
+				switch htmlBytes[end] {
+				case '\n', '\r', ' ', '\t':
+					end++
+					continue
+				}
+				break
+			}
+			var buf bytes.Buffer
+			buf.Write(htmlBytes[:start])
+			buf.Write(htmlBytes[end:])
+			return buf.Bytes()
+		}
+		search = end
+	}
 }
 
 // setMetaDescription replaces the content value of the static
