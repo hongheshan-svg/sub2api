@@ -243,6 +243,30 @@ git add ent/       # 生成的文件也要提交
 - [ ] 所有 test stub 补全新接口方法（如果改了 interface）
 - [ ] Ent 生成的代码已提交（如果改了 schema）
 
+---
+
+### 坑 12：同步上游时 VERSION 冲突 —— 保留 fork 版本，不要降级
+
+**背景**：fork 有自己独立的版本号节奏，且**领先 upstream**。例如 2026-06 同步时 upstream 在 `0.1.136`，而我们 fork 已自己 bump 到 `0.1.138`（merge-base 为 `0.1.135`）。
+
+**问题**：`git merge upstream/main` 时 `backend/cmd/server/VERSION` 必然冲突（两边都改过同一行）。
+
+**解决**：**保留 HEAD（fork）的较高版本，不要选 upstream 的较低版本** —— 否则等于把 fork 的版本号降级。
+
+```bash
+# VERSION 冲突时：保留 fork 当前值，而不是 upstream 的
+printf '0.1.138\n' > backend/cmd/server/VERSION
+git add backend/cmd/server/VERSION
+```
+
+**同步上游时的典型冲突集**（均为 fork 附加功能 vs upstream 新增的"两边都加行"机械冲突，保留双方即可）：
+
+- `backend/internal/handler/handler.go` / `wire.go`：保留 fork 的 handler（如 `Invoice`）**＋** upstream 新增的（如 `Compliance`）
+- `backend/cmd/server/wire_gen.go`：手动保留双方；**不要用 `go generate` / `wire gen` 重新生成**（invoice 的 `NotificationService` 不是注册 provider，会报 `no provider found for *service.NotificationService`），改用 `go build ./...` 验证编译通过即可
+- 前端若两边对同一处做了等价重构（如 `bedrock_cc_compat` 改顶层 bool），取 fork 版
+
+**相关标签坑**：fork 自己的 `vX.Y.Z` release tag 可能和 upstream 的同名标签撞名（指向不同提交）。`git fetch upstream --tags` 会提示 `would clobber existing tag`，这是预期现象，**不要用 `--force` 覆盖 fork 自己的发布标签**。
+
 ## 五、常用命令速查
 
 ### 数据库操作
@@ -264,11 +288,15 @@ psql -U sub2api -h 127.0.0.1 -d sub2api -f migration.sql
 ### Git 操作
 
 ```bash
-# 同步上游
+# 同步上游（会有冲突，VERSION 等的处理见「坑 12」）
 git fetch upstream
 git checkout main
 git merge upstream/main
-git push origin main
+# 解决冲突：VERSION 保留 fork 较高版本；handler/wire/wire_gen 保留双方；go build ./... 验证
+# 落地走 PR（不直接 push 到共享 main）：
+git switch -c feat/sync-upstream-<ver>
+git push -u origin feat/sync-upstream-<ver>
+gh pr create --base main
 
 # 创建功能分支
 git checkout -b feature/xxx
