@@ -752,6 +752,35 @@ func TestServeLandingRoute(t *testing.T) {
 	require.Equal(t, 1, strings.Count(body, `"FAQPage"`))
 }
 
+func TestServeEnglishLandingRoute_HreflangAndLang(t *testing.T) {
+	s := newTestServer(t)
+	// A zh + en pair so hreflang has reciprocal counterparts.
+	zh := LandingPage{Path: "/pricing", Title: "定价", Description: "中文定价", H1: "中文定价", Kicker: "Pricing", Lang: "zh-CN", FAQ: []LandingFAQ{{Q: "q", A: "a"}}}
+	en := LandingPage{Path: "/en/pricing", Title: "Pricing", Description: "English pricing", H1: "Pricing in English", Kicker: "Pricing", Lang: "en", FAQ: []LandingFAQ{{Q: "q", A: "a"}}}
+	s.landing = map[string]LandingPage{zh.Path: zh, en.Path: en}
+
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/en/pricing", nil))
+
+	body := w.Body.String()
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, body, `<html lang="en">`)
+	require.Contains(t, body, "Pricing in English") // English H1 rendered into #app
+	require.Contains(t, body, `<link rel="canonical" href="https://gw-link.com/en/pricing"`)
+	require.Contains(t, body, `<link rel="alternate" hreflang="en" href="https://gw-link.com/en/pricing" />`)
+	require.Contains(t, body, `<link rel="alternate" hreflang="zh-CN" href="https://gw-link.com/pricing" />`)
+	require.Contains(t, body, `<link rel="alternate" hreflang="x-default" href="https://gw-link.com/pricing" />`)
+	require.Contains(t, body, `<meta name="description" content="English pricing" />`)
+
+	// The zh counterpart now also advertises the hreflang alternates.
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/pricing", nil))
+	require.Contains(t, w2.Body.String(), `<html lang="zh-CN">`)
+	require.Contains(t, w2.Body.String(), `hreflang="en" href="https://gw-link.com/en/pricing"`)
+}
+
 func TestServeNonLandingRoute_KeepsHomepageFAQ(t *testing.T) {
 	s := newTestServer(t)
 	r := gin.New()

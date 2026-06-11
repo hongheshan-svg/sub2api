@@ -35,6 +35,10 @@ type LandingPage struct {
 	Benefits    []LandingBenefit `json:"benefits"`
 	Steps       []string         `json:"steps"`
 	FAQ         []LandingFAQ     `json:"faq"`
+	// Lang is the BCP-47 language of the page, e.g. "zh-CN" or "en". Empty is
+	// treated as the default "zh-CN" for backward compatibility. The English
+	// counterpart of a page lives at "/en"+path (see counterpartPath).
+	Lang string `json:"lang,omitempty"`
 }
 
 // LoadLandingPages 从 fsys 读取 seo/landing-pages.json,返回按 path 索引的 map

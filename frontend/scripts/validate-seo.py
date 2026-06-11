@@ -83,6 +83,16 @@ if PAGES_JSON.exists():
     for keyword in ['Claude Code API Gateway', 'Codex API Gateway', 'Gemini CLI API Gateway',
                     'OpenAI Compatible API Gateway', 'GPT-Image-2 API']:
         require(keyword in blob, f'landing-pages.json missing target keyword: {keyword}')
+    # 4b. 中英配对完整性 + lang 字段（hreflang 需要 reciprocal pairs：每个 /en/x 必须有 /x，反之亦然）
+    pset = set(json_paths)
+    for p in data:
+        path = p.get('path', '?')
+        expected_lang = 'en' if path.startswith('/en/') else 'zh-CN'
+        require(p.get('lang') == expected_lang,
+                f'landing-pages.json entry {path} lang should be "{expected_lang}" (got {p.get("lang")!r})')
+        counterpart = path[3:] if path.startswith('/en/') else '/en' + path
+        require(counterpart in pset,
+                f'landing-pages.json entry {path} missing hreflang counterpart {counterpart}')
 
 # 5. router 注册了 landing-pages.json 中的每个 path
 router = ROOT / 'src' / 'router' / 'index.ts'

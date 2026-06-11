@@ -231,7 +231,7 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 
 	var headInject []byte
 	if isLanding {
-		headInject = BuildLandingHead(page, cfg.FrontendURL)
+		headInject = BuildLandingHead(page, cfg.FrontendURL, HreflangLinksFor(page, s.landing, cfg.FrontendURL))
 	} else {
 		headInject = BuildSEOHead(SEOInput{
 			SiteName:     cfg.SiteName,
@@ -265,6 +265,7 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 	if isLanding {
 		result = setTitle(result, page.Title)
 		result = setMetaDescription(result, page.Description)
+		result = setHtmlLang(result, langOf(page))
 		body := RenderLandingBody(page)
 		appDiv := []byte(`<div id="app"></div>`)
 		replacement := append([]byte(`<div id="app">`), body...)
@@ -339,6 +340,32 @@ func setMetaDescription(htmlBytes []byte, desc string) []byte {
 	var buf bytes.Buffer
 	buf.Write(htmlBytes[:valStart])
 	buf.WriteString(html.EscapeString(desc))
+	buf.Write(htmlBytes[valEnd:])
+	return buf.Bytes()
+}
+
+// setHtmlLang sets the lang attribute on the root <html lang="…"> element. The
+// base index.html ships lang="zh-CN"; English landing pages need lang="en" so the
+// page language matches its content for crawlers and assistive tech.
+func setHtmlLang(htmlBytes []byte, lang string) []byte {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		return htmlBytes
+	}
+	marker := []byte(`<html lang="`)
+	start := bytes.Index(htmlBytes, marker)
+	if start == -1 {
+		return htmlBytes
+	}
+	valStart := start + len(marker)
+	rel := bytes.IndexByte(htmlBytes[valStart:], '"')
+	if rel == -1 {
+		return htmlBytes
+	}
+	valEnd := valStart + rel
+	var buf bytes.Buffer
+	buf.Write(htmlBytes[:valStart])
+	buf.WriteString(html.EscapeString(lang))
 	buf.Write(htmlBytes[valEnd:])
 	return buf.Bytes()
 }

@@ -50,6 +50,7 @@ type Page = {
   benefits: Array<{ title: string; text: string }>
   steps: string[]
   faq: Array<{ q: string; a: string }>
+  lang?: string
 }
 
 declare global {
@@ -90,6 +91,9 @@ watchEffect(() => {
   document.title = page.value.title
   upsertMeta('description', page.value.description)
   upsertCanonical(`https://gw-link.com${route.path}`)
+  // Keep <html lang> in sync with the page language so client-side navigation
+  // between zh and /en landing pages matches the server-rendered lang.
+  document.documentElement.lang = page.value.lang || 'zh-CN'
 })
 
 function upsertMeta(name: string, content: string) {

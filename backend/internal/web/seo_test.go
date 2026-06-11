@@ -157,11 +157,67 @@ func TestBuildLandingHead(t *testing.T) {
 		Kicker:      "Claude Code API Gateway",
 		FAQ:         []LandingFAQ{{Q: "Q1", A: "A1"}},
 	}
-	head := string(BuildLandingHead(p, "https://gw-link.com/"))
+	head := string(BuildLandingHead(p, "https://gw-link.com/", nil))
 	require.Contains(t, head, `<link rel="canonical" href="https://gw-link.com/claude-code-api-gateway"`)
 	require.NotContains(t, head, `href="https://gw-link.com/"`) // not the bare homepage
 	require.Contains(t, head, `property="og:url" content="https://gw-link.com/claude-code-api-gateway"`)
 	require.Contains(t, head, `property="og:title" content="Claude Code API Gateway - gw-link"`)
 	require.Contains(t, head, `"@type":"FAQPage"`)
 	require.Contains(t, head, `"@type":"BreadcrumbList"`)
+	// No counterpart passed -> no hreflang alternates.
+	require.NotContains(t, head, `rel="alternate" hreflang`)
+}
+
+func TestCounterpartPath(t *testing.T) {
+	require.Equal(t, "/en/pricing", counterpartPath("/pricing"))
+	require.Equal(t, "/pricing", counterpartPath("/en/pricing"))
+	require.Equal(t, "/en/docs/quick-start", counterpartPath("/docs/quick-start"))
+	require.Equal(t, "/docs/quick-start", counterpartPath("/en/docs/quick-start"))
+}
+
+func TestHreflangLinksFor(t *testing.T) {
+	byPath := map[string]LandingPage{
+		"/pricing":    {Path: "/pricing", Lang: "zh-CN"},
+		"/en/pricing": {Path: "/en/pricing", Lang: "en"},
+		"/zh-only":    {Path: "/zh-only", Lang: "zh-CN"},
+	}
+
+	// zh page with an en counterpart: self + counterpart + x-default(zh).
+	alts := HreflangLinksFor(byPath["/pricing"], byPath, "https://gw-link.com")
+	require.Equal(t, []HreflangLink{
+		{Hreflang: "zh-CN", Href: "https://gw-link.com/pricing"},
+		{Hreflang: "en", Href: "https://gw-link.com/en/pricing"},
+		{Hreflang: "x-default", Href: "https://gw-link.com/pricing"},
+	}, alts)
+
+	// en page: x-default still points at the zh (root) path.
+	altsEn := HreflangLinksFor(byPath["/en/pricing"], byPath, "https://gw-link.com")
+	require.Equal(t, "x-default", altsEn[2].Hreflang)
+	require.Equal(t, "https://gw-link.com/pricing", altsEn[2].Href)
+
+	// Page without a counterpart: no hreflang (Google needs reciprocal pairs).
+	require.Nil(t, HreflangLinksFor(byPath["/zh-only"], byPath, "https://gw-link.com"))
+}
+
+func TestBuildLandingHead_WithHreflang(t *testing.T) {
+	p := LandingPage{Path: "/pricing", Title: "Pricing", Lang: "zh-CN"}
+	alts := []HreflangLink{
+		{Hreflang: "zh-CN", Href: "https://gw-link.com/pricing"},
+		{Hreflang: "en", Href: "https://gw-link.com/en/pricing"},
+		{Hreflang: "x-default", Href: "https://gw-link.com/pricing"},
+	}
+	head := string(BuildLandingHead(p, "https://gw-link.com", alts))
+	require.Contains(t, head, `<link rel="alternate" hreflang="en" href="https://gw-link.com/en/pricing" />`)
+	require.Contains(t, head, `<link rel="alternate" hreflang="x-default" href="https://gw-link.com/pricing" />`)
+}
+
+func TestBuildSitemapXML_Hreflang(t *testing.T) {
+	landing := []LandingPage{
+		{Path: "/pricing", Lang: "zh-CN"},
+		{Path: "/en/pricing", Lang: "en"},
+	}
+	xml := BuildSitemapXML("https://gw-link.com", landing)
+	require.Contains(t, xml, `xmlns:xhtml="http://www.w3.org/1999/xhtml"`)
+	require.Contains(t, xml, `<xhtml:link rel="alternate" hreflang="en" href="https://gw-link.com/en/pricing"/>`)
+	require.Contains(t, xml, `<loc>https://gw-link.com/en/pricing</loc>`)
 }
