@@ -74,7 +74,7 @@ cd frontend && pnpm install
 
 ### 发版流程与 Release Notes 规范
 
-**触发**：推送 `v*` tag 触发 `release.yml`，它会：①从 tag 名取版本号写入 VERSION；②构建前端；③构建多架构镜像推送到 **GHCR**（`ghcr.io/<owner>/sub2api`，Docker Hub 仅在配了 `DOCKERHUB_USERNAME` secret 时才推）；④`sync-version-file` job 自动把 `chore: sync VERSION to X [skip ci]` 提交回 main。**所以发版无需手动改 VERSION，只需打 tag。**
+**触发**：推送 `v*` tag 触发 `release.yml`，它会：①从 tag 名取版本号写入 VERSION；②构建前端；③通过 **GoReleaser** 构建多架构镜像推送到 **GHCR**（`ghcr.io/<owner>/sub2api`，Docker Hub 仅在配了 `DOCKERHUB_USERNAME` secret 时才推）；④**GoReleaser 自动创建一个已发布（非草稿）的 GitHub Release**，标题 `Sub2API X.Y.Z`、并附构建产物归档；⑤`sync-version-file` job 自动把 `chore: sync VERSION to X [skip ci]` 提交回 main。**所以发版无需手动改 VERSION、也无需手动创建 Release，只需打 tag。**
 
 ```bash
 # 在已同步的 main 上发版（版本号 patch 递增，见「坑 12」fork 版本线）
@@ -82,7 +82,7 @@ git tag -a v0.1.X -m "v0.1.X"
 git push origin v0.1.X      # 触发 release.yml
 ```
 
-**`release.yml` 不创建 GitHub Release** —— Release Notes 需**手动**创建（`gh release create`）。
+**`release.yml` 会自动创建已发布的 GitHub Release**（GoReleaser，见 `.goreleaser.yaml` 的 `release:` 段）——但 body 是通用模板（`> AI API Gateway Platform…` + tag 消息 + 安装/文档页脚），标题为 `Sub2API X.Y.Z`。**所以发布后需用 `gh release edit` 把 body 覆盖为规范 Release Notes**（标题保持自动的 `Sub2API X.Y.Z`，不要改成 `gw-link`；“gw-link” 品牌写在 notes 正文开头的引用块里）。
 
 **Release Notes 规范（以 [v0.1.139](https://github.com/hongheshan-svg/sub2api/releases/tag/v0.1.139) 为基准）**：
 
@@ -95,9 +95,12 @@ git push origin v0.1.X      # 触发 release.yml
 4. **完整对比** —— `compare/v0.1.<prev>...v0.1.X` 链接。
 
 ```bash
-# 创建 Release（tag 已推送后）
-gh release create v0.1.X --title "gw-link v0.1.X" --notes-file notes.md --latest
+# tag 推送、release.yml 跑完后，把自动生成的 Release body 覆盖为规范 notes
+# （GoReleaser 已创建好该 Release，所以是 edit 而非 create；不要改标题）
+gh release edit v0.1.X --notes-file notes.md
 ```
+
+> 历史说明：早期 `release.yml` 不创建 Release、需手动 `gh release create --title "gw-link v0.1.X"`；现已改为 GoReleaser 自动创建，故流程改为 `gh release edit` 覆盖 body。
 
 ## 四、常见坑点 & 解决方案
 
