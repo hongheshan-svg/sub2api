@@ -2004,6 +2004,7 @@ export default {
       typeConcurrency: 'Concurrency (Redeem)',
       typeAdminConcurrency: 'Concurrency (Admin)',
       typeSubscription: 'Subscription',
+      typeInvoiceFee: 'VAT-Special Invoice Fee',
       failedToLoadBalanceHistory: 'Failed to load balance history',
       createdAt: 'Created',
       totalRecharged: 'Total Recharged',

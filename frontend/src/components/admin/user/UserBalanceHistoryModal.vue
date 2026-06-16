@@ -203,7 +203,8 @@ const typeOptions = computed(() => [
   { value: 'admin_balance', label: t('admin.users.typeAdminBalance') },
   { value: 'concurrency', label: t('admin.users.typeConcurrency') },
   { value: 'admin_concurrency', label: t('admin.users.typeAdminConcurrency') },
-  { value: 'subscription', label: t('admin.users.typeSubscription') }
+  { value: 'subscription', label: t('admin.users.typeSubscription') },
+  { value: 'invoice_fee', label: t('admin.users.typeInvoiceFee') }
 ])
 
 // Watch modal open
@@ -238,8 +239,8 @@ const loadHistory = async (page: number) => {
 // Helper: check if admin type
 const isAdminType = (type: string) => type === 'admin_balance' || type === 'admin_concurrency'
 
-// Helper: check if balance type (includes admin_balance)
-const isBalanceType = (type: string) => type === 'balance' || type === 'admin_balance' || type === 'affiliate_balance'
+// Helper: check if balance type (includes admin_balance and invoice fee — all charged against balance)
+const isBalanceType = (type: string) => type === 'balance' || type === 'admin_balance' || type === 'affiliate_balance' || type === 'invoice_fee'
 
 // Helper: check if subscription type
 const isSubscriptionType = (type: string) => type === 'subscription'
@@ -305,6 +306,8 @@ const getItemTitle = (item: BalanceHistoryItem) => {
       return item.value >= 0 ? t('redeem.concurrencyAddedAdmin') : t('redeem.concurrencyReducedAdmin')
     case 'subscription':
       return t('redeem.subscriptionAssigned')
+    case 'invoice_fee':
+      return item.value >= 0 ? t('redeem.invoiceFeeRefunded') : t('redeem.invoiceFeeCharged')
     default:
       return t('common.unknown')
   }
