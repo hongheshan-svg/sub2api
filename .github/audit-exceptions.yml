@@ -35,10 +35,3 @@ exceptions:
     mitigation: "Proxy configuration not user-controlled; upgrade when axios releases fix"
     expires_on: "2026-07-10"
     owner: "security@your-domain"
-  - package: form-data
-    advisory: "GHSA-hmw2-7cc7-3qxx"
-    severity: high
-    reason: "Transitive via axios@1.16.0; browser SPA uses the native FormData API, not the Node form-data multipart path, so the vulnerable serialization code does not run at runtime"
-    mitigation: "Fixed in form-data>=4.0.6 — pin via pnpm.overrides on next lockfile refresh (project uses pnpm 9); no untrusted input reaches multipart field/file names"
-    expires_on: "2026-07-31"
-    owner: "security@your-domain"
