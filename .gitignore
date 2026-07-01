@@ -123,6 +123,8 @@ scripts
 # even though bare `scripts` ignores scripts dirs elsewhere.
 !frontend/scripts/
 !frontend/scripts/**
+!backend/scripts/
+!backend/scripts/resolve-version.sh
 .code-review-state
 #openspec/
 code-reviews/
