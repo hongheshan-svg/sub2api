@@ -33,7 +33,7 @@
             <span class="font-bold">{{ userRateMultiplier }}x</span>
           </template>
           <template v-else>
-            {{ rateMultiplier }}x 倍率
+            {{ rateMultiplier }}x {{ t('admin.groups.rateLabel') }}
           </template>
         </span>
         <svg
@@ -65,6 +65,8 @@ import { useI18n } from 'vue-i18n'
 import GroupBadge from './GroupBadge.vue'
 import type { SubscriptionType, GroupPlatform } from '@/types'
 
+const { t } = useI18n()
+
 interface Props {
   name: string
   platform: GroupPlatform
@@ -82,8 +84,6 @@ const props = withDefaults(defineProps<Props>(), {
   showCheckmark: true,
   userRateMultiplier: null
 })
-
-const { t } = useI18n()
 
 // Matches the homepage pricing table formula: CNY = official_usd × multiplier,
 // where 1 USD = 7 CNY. So multiplier/7 is the ratio vs official price.
