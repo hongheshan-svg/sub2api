@@ -18,6 +18,7 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
+ENV NODE_OPTIONS=--max-old-space-size=1536
 
 # Install pnpm (pinned to v9 to match root Dockerfile, CI, and the lockfile)
 RUN corepack enable && corepack prepare pnpm@9 --activate
