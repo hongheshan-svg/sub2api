@@ -19,7 +19,7 @@ func TestExtractImagesUpstreamError_IncompleteIsRetryable(t *testing.T) {
 	if got == nil {
 		t.Fatal("incomplete event should produce an upstream error, got nil")
 	}
-	if got.StatusCode != http.StatusBadGateway { //nolint:staticcheck // SA5011 false positive: got is nil-guarded by t.Fatal above (CI-only staticcheck analysis artifact)
+	if got.StatusCode != http.StatusBadGateway {
 		t.Fatalf("incomplete(max_output_tokens) should be 502 retryable, got %d", got.StatusCode)
 	}
 	if !IsOpenAIImagesRetryableUpstreamError(got) {

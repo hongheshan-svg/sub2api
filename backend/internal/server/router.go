@@ -64,7 +64,7 @@ func SetupRouter(
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {
 		frontendServer, err := web.NewFrontendServer(settingService)
-		if err != nil { //nolint:staticcheck // SA4023: NewFrontendServer error-return nilness varies by embed build tag; guard is intentional (CI-only staticcheck analysis artifact)
+		if err != nil {
 			log.Printf("Warning: Failed to create frontend server with settings injection: %v, using legacy mode", err)
 			r.Use(web.ServeEmbeddedFrontend())
 			settingService.SetOnUpdateCallback(refreshFrameOrigins)

@@ -121,6 +121,27 @@ linters:
       # Default: true — must be true, ent generates 130K+ lines of code
       generated-is-used: true
 
+  exclusions:
+    rules:
+      # staticcheck SA5011 (possible nil pointer dereference) false-positives on
+      # the `x, err := f(); if x == nil { t.Fatal(...) }; x.Field` test idiom.
+      # These surface nondeterministically on CI (linux) when the very large
+      # `service` package tips staticcheck's fact-loading budget so it loses the
+      # testing.T.Fatal noreturn fact; local runs report 0 issues. Scoped to
+      # tests, where the guarded-Fatal pattern is the sole trigger.
+      - path: _test\.go
+        text: "SA5011"
+        linters:
+          - staticcheck
+      # router.go: web.NewFrontendServer's error-return nilness is decided by the
+      # `embed` build tag (real error in embed build, always-nil stub otherwise),
+      # so SA4023 "always true" fires only in the no-embed analysis. The guard is
+      # intentional and correct for the embed build.
+      - path: internal/server/router\.go
+        text: "SA4023"
+        linters:
+          - staticcheck
+
 formatters:
   enable:
     - gofmt

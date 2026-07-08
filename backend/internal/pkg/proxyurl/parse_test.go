@@ -42,7 +42,7 @@ func TestParse_有效HTTP代理(t *testing.T) {
 	if parsed == nil {
 		t.Fatal("parsed 不应为 nil")
 	}
-	if parsed.Host != "proxy.example.com:8080" { //nolint:staticcheck // SA5011 false positive: parsed is nil-guarded by t.Fatal above (CI-only staticcheck analysis artifact)
+	if parsed.Host != "proxy.example.com:8080" {
 		t.Errorf("Host 不匹配: got %q", parsed.Host)
 	}
 }

@@ -34,7 +34,7 @@ func TestSanitizeAdminPaymentOrderForResponseAddsCurrency(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected sanitized order")
 	}
-	if got.Currency != "USD" { //nolint:staticcheck // SA5011 false positive: got is nil-guarded by t.Fatal above (CI-only staticcheck analysis artifact)
+	if got.Currency != "USD" {
 		t.Fatalf("expected currency USD, got %q", got.Currency)
 	}
 
