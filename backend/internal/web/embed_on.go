@@ -7,7 +7,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"html"
+	htmlpkg "html"
 	"io"
 	"io/fs"
 	"log"
@@ -339,7 +339,7 @@ func setMetaDescription(htmlBytes []byte, desc string) []byte {
 	valEnd := valStart + rel
 	var buf bytes.Buffer
 	buf.Write(htmlBytes[:valStart])
-	buf.WriteString(html.EscapeString(desc))
+	buf.WriteString(htmlpkg.EscapeString(desc))
 	buf.Write(htmlBytes[valEnd:])
 	return buf.Bytes()
 }
@@ -365,7 +365,7 @@ func setHtmlLang(htmlBytes []byte, lang string) []byte {
 	valEnd := valStart + rel
 	var buf bytes.Buffer
 	buf.Write(htmlBytes[:valStart])
-	buf.WriteString(html.EscapeString(lang))
+	buf.WriteString(htmlpkg.EscapeString(lang))
 	buf.Write(htmlBytes[valEnd:])
 	return buf.Bytes()
 }
@@ -392,7 +392,7 @@ func injectSiteTitle(html, settingsJSON []byte) []byte {
 	if err := json.Unmarshal(settingsJSON, &cfg); err != nil || cfg.SiteName == "" {
 		return html
 	}
-	return setTitle(html, cfg.SiteName+" - AI API Gateway")
+	return setTitle(html, htmlpkg.EscapeString(cfg.SiteName)+" - AI API Gateway")
 }
 
 // replaceNoncePlaceholder replaces the nonce placeholder with actual nonce value

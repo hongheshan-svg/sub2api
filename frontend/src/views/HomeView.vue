@@ -329,6 +329,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore, useAuthStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { sanitizeUrl } from '@/utils/url'
 
 
 // ── mouse-follow radial glow ─────────────────────────────────────────────────
@@ -358,7 +359,7 @@ const brandName = computed(() => {
   return configured
 })
 const brandLogo = computed(() => '/gw-link-logo.svg')
-const docUrl = computed(() => appStore.cachedPublicSettings?.doc_url || appStore.docUrl || fallbackDocUrl)
+const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || '') || fallbackDocUrl)
 const contactInfo = computed(() => appStore.cachedPublicSettings?.contact_info || appStore.contactInfo || '')
 
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
