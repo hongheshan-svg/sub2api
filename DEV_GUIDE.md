@@ -77,9 +77,15 @@ cd frontend && pnpm install
 **触发**：推送 `v*` tag 触发 `release.yml`，它会：①从 tag 名取版本号写入 VERSION；②构建前端；③通过 **GoReleaser** 构建多架构镜像推送到 **GHCR**（`ghcr.io/<owner>/sub2api`，Docker Hub 仅在配了 `DOCKERHUB_USERNAME` secret 时才推）；④**GoReleaser 自动创建一个已发布（非草稿）的 GitHub Release**，标题 `Sub2API X.Y.Z`、并附构建产物归档；⑤`sync-version-file` job 自动把 `chore: sync VERSION to X [skip ci]` 提交回 main。**所以发版无需手动改 VERSION、也无需手动创建 Release，只需打 tag。**
 
 ```bash
-# 在已同步的 main 上发版（版本号 patch 递增，见「坑 12」fork 版本线）
-git tag -a v0.1.X -m "v0.1.X"
-git push origin v0.1.X      # 触发 release.yml
+# 在已同步的 main 上发版（fork 版本与上游 1:1 对齐，见「坑 12」）
+# ⚠️ 必须用 -f：git fetch upstream --tags 会在本地留下指向「上游同名 commit」的
+#    v0.1.X tag，普通 git tag -a 会「already exists」静默失败，随后 push 会把
+#    上游那个错的 commit 当发版目标。-f 强制把 tag 移到 fork main。
+git tag -f -a v0.1.X main -m "v0.1.X"
+git push origin v0.1.X --force        # 触发 release.yml
+# 校验 tag 指向 fork main（而非上游 commit）：两者必须相等
+git ls-remote origin 'refs/tags/v0.1.X^{}' | awk '{print $1}'
+git ls-remote origin refs/heads/main    | awk '{print $1}'
 ```
 
 **`release.yml` 会自动创建已发布的 GitHub Release**（GoReleaser，见 `.goreleaser.yaml` 的 `release:` 段）——但 body 是通用模板（`> AI API Gateway Platform…` + tag 消息 + 安装/文档页脚），标题为 `Sub2API X.Y.Z`。**所以发布后需用 `gh release edit` 把 body 覆盖为规范 Release Notes**（标题保持自动的 `Sub2API X.Y.Z`，不要改成 `gw-link`；“gw-link” 品牌写在 notes 正文开头的引用块里）。
@@ -101,6 +107,16 @@ gh release edit v0.1.X --notes-file notes.md
 ```
 
 > 历史说明：早期 `release.yml` 不创建 Release、需手动 `gh release create --title "gw-link v0.1.X"`；现已改为 GoReleaser 自动创建，故流程改为 `gh release edit` 覆盖 body。
+
+### 发版记录
+
+> 仅记录关键信息，完整 Release Notes 见 [GitHub Releases](https://github.com/hongheshan-svg/sub2api/releases)。新发版在表头下追加一行。
+
+| 版本 | 日期 | 同步上游 | 上游提交 | PR | Merge commit | 冲突处理 |
+|------|------|----------|---------|----|--------------|----------|
+| v0.1.155 | 2026-07-14 | v0.1.153 → v0.1.155 | 68 | #29 | `e2b5bff8` | 1 处 add/add 去重：`http_upstream_http2_keepalive_test.go`（fork PR #28 的 HTTP/2 keepalive 补丁被上游 cherry-pick #4207 回流，取 ours 复用已有 `timeoutTestPoolSettings()` helper）。`upstream-pr/http2-keepalive` 分支本地+远端已删。 |
+
+**v0.1.155 校验记录**：本地 `go build -tags embed` / `go test -tags=unit`（0 FAIL）/ vue-tsc / eslint / critical vitest（6 文件 91 tests）全绿；CI 真跑（test 6m23s、golangci-lint 2m40s、frontend 1m21s）；`release.yml` 4 job 全绿；GHCR `ghcr.io/hongheshan-svg/sub2api:0.1.155` 多架构 `linux/amd64`+`linux/arm64` ✓。
 
 ## 四、常见坑点 & 解决方案
 
