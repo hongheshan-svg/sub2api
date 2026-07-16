@@ -126,6 +126,12 @@ export default {
         totpKeyNotConfigured:
           '请先在环境变量中配置 TOTP_ENCRYPTION_KEY。使用命令 openssl rand -hex 32 生成密钥。'
       },
+      security: {
+        sessionBinding: '会话 IP/UA 绑定',
+        sessionBindingHint: '将登录会话与客户端 IP 和 User-Agent 绑定，任一变化即强制该会话失效并需重新登录（提升被盗凭证的利用门槛）。',
+        auditRetention: '操作日志保留天数',
+        auditRetentionHint: '超过该天数的操作日志将被自动清理；填 0 表示永久保留（仅支持手动清空）。'
+      },
       turnstile: {
         title: 'Cloudflare Turnstile',
         description: '登录和注册的机器人防护',
@@ -315,8 +321,7 @@ export default {
         claudeOAuthSystemPromptPlaceholder: '留空时使用内置 Claude Code 扩展提示词。',
         claudeOAuthSystemPromptHint: '兼容旧配置：仅控制第三个注入的 system block。',
         claudeOAuthSystemPromptBlocks: 'Claude OAuth System Blocks',
-        claudeOAuthSystemPromptBlocksPlaceholder: '留空时使用内置 3 个 blocks。支持数组或 {"blocks": [...]}。',
-        claudeOAuthSystemPromptBlocksHint: '每个 block 会保存为带 enabled、type、text、可选 cache_control 的 JSON。{billing_header} 会按请求动态生成；Claude Code 身份提示词和扩展提示词可直接编辑，也可用预设恢复默认值。',
+        claudeOAuthSystemPromptBlocksHint: "每个 block 会保存为带 enabled、type、text、可选 cache_control 的 JSON。{'{'}billing_header{'}'} 会按请求动态生成；Claude Code 身份提示词和扩展提示词可直接编辑，也可用预设恢复默认值。",
         systemBlockTitle: 'System Block {index}',
         systemBlockPreset: '预设',
         systemBlockPresetBilling: 'Billing Header',
@@ -1101,6 +1106,11 @@ export default {
       openaiExperimentalScheduler: {
         title: 'OpenAI 实验调度策略',
         description: '默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑，不代表上游 OpenAI 官方能力。',
+        lowRatePriorityTitle: '低倍率优先',
+        lowRatePriorityDescription: '开启后优先选择计费倍率较低的账号；倍率相同时，再比较账号优先级和当前负载等。启用实验调度策略后，此开关不生效。',
+        oauthRateTitle: 'OAuth 调度参考倍率',
+        oauthRatePriorityDescription: '同一分组同时包含 API Key 和 OAuth 账号时，OAuth 账号按此倍率与已探测的 API Key 计费倍率一起排序。',
+        oauthRateWeightedDescription: '同一分组同时包含 API Key 和 OAuth 账号时，计算“计费倍率”得分时，OAuth 账号按此倍率参与计算。',
         stickyWeightedTitle: '粘性加权',
         stickyWeightedDescription: '开启后 previous_response_id 和 session_hash 粘性进入高级调度打分；关闭时仍按旧逻辑硬命中粘性账号。',
         subscriptionPriorityTitle: '订阅优先',
@@ -1116,6 +1126,7 @@ export default {
         ttftWeight: '首包延迟',
         resetWeight: '重置窗口',
         quotaHeadroomWeight: '额度余量',
+        upstreamCostWeight: '计费倍率',
         previousResponseWeight: 'previous_response 粘性',
         sessionStickyWeight: 'session_hash 粘性'
       },
