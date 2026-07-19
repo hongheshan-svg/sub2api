@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,6 +276,8 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 	} else {
 		result = injectSiteTitle(result, settingsJSON)
 	}
+	// Apply custom branding favicon before the browser paints the static default.
+	result = injectSiteFavicon(result, settingsJSON)
 
 	return result
 }
@@ -385,7 +388,59 @@ func setTitle(html []byte, title string) []byte {
 	return buf.Bytes()
 }
 
-// injectSiteTitle sets the tab title to "<site_name> - AI API Gateway".
+// injectSiteFavicon replaces the static favicon with a configured, browser-safe image URL.
+func injectSiteFavicon(html, settingsJSON []byte) []byte {
+	var cfg struct {
+		SiteLogo string `json:"site_logo"`
+	}
+	if err := json.Unmarshal(settingsJSON, &cfg); err != nil {
+		return html
+	}
+
+	logoURL := safeImageURL(cfg.SiteLogo)
+	if logoURL == "" {
+		return html
+	}
+
+	linkStart := bytes.Index(html, []byte(`<link rel="icon"`))
+	if linkStart == -1 {
+		return html
+	}
+	linkEndOffset := bytes.IndexByte(html[linkStart:], '>')
+	if linkEndOffset == -1 {
+		return html
+	}
+	linkEnd := linkStart + linkEndOffset + 1
+	replacement := []byte(`<link rel="icon" href="` + htmlpkg.EscapeString(logoURL) + `" />`)
+
+	var buf bytes.Buffer
+	buf.Write(html[:linkStart])
+	buf.Write(replacement)
+	buf.Write(html[linkEnd:])
+	return buf.Bytes()
+}
+
+func safeImageURL(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "//") {
+		return trimmed
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "data:image/") {
+		return trimmed
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return ""
+	}
+	return trimmed
+}
+
+// injectSiteTitle replaces the static <title> in HTML with the configured site name.
+// This ensures the browser tab shows the correct title before JS executes.
 func injectSiteTitle(html, settingsJSON []byte) []byte {
 	var cfg struct {
 		SiteName string `json:"site_name"`
