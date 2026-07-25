@@ -371,6 +371,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			}
 			// 传输层错误（代理/DNS/TCP/TLS，无 HTTP 状态码）转 failover，
 			// 由 handler 切换健康账号；持久故障临时摘除账号（对齐 OpenAI 路径）。
+			// Ollama Cloud 活动统计在该 helper 内（cancel 早返回之后）记录。
 			return nil, s.handleAnthropicUpstreamTransportError(ctx, c, account, safeUpstreamURL(upstreamReq.URL.String()), err, false)
 		}
 
