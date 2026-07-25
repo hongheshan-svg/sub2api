@@ -56,6 +56,12 @@ func (s *GatewayService) handleAnthropicUpstreamTransportError(ctx context.Conte
 		return err
 	}
 
+	// Transport attempt reached the network path; count as Ollama Cloud activity
+	// (mirrors handleOpenAIUpstreamTransportError).
+	if s != nil {
+		scheduleOllamaCloudUsageActivity(s.deferredService, account)
+	}
+
 	if classifyOpenAITransportError(err).Persistent {
 		s.tempUnscheduleAnthropicTransportError(ctx, account, safeErr)
 	}
