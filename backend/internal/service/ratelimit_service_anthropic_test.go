@@ -88,12 +88,31 @@ func TestCalculateAnthropic429ResetTime_UtilizationExactlyOne(t *testing.T) {
 	assertAnthropicResult(t, result, 1770998400)
 }
 
-func TestCalculateAnthropic429ResetTime_NeitherExceeded_UsesShorter(t *testing.T) {
+// 两个窗口都未耗尽的 429 不是窗口限流，必须返回 nil 交给秒级兜底冷却处理。
+// 早期实现在这里取 pickSooner 做“最佳猜测”，会把瞬时 429（如单请求百万级
+// cache_creation 撞输入 token 突发限制）放大成最长 5h 封号，再经 failover
+// 逐个连坐其余账号。
+func TestCalculateAnthropic429ResetTime_NeitherExceeded_ReturnsNil(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.95")
 	headers.Set("anthropic-ratelimit-unified-5h-reset", "1770998400") // sooner
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.80")
 	headers.Set("anthropic-ratelimit-unified-7d-reset", "1771549200") // later
+
+	if result := calculateAnthropic429ResetTime(headers); result != nil {
+		t.Errorf("expected nil when neither window is exhausted, got resetAt=%v", result.resetAt)
+	}
+}
+
+// status=rejected 是上游最明确的窗口耗尽信号，即使 utilization 尚未追上 1.0
+// （窗口视图有滞后）也必须按窗口重置点封号。
+func TestCalculateAnthropic429ResetTime_5hRejectedWithLowUtilization(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.98")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", "1770998400")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.20")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", "1771549200")
 
 	result := calculateAnthropic429ResetTime(headers)
 	assertAnthropicResult(t, result, 1770998400)

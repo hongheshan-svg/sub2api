@@ -978,6 +978,11 @@ type GatewayConfig struct {
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
 	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
 	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
+	// 429 专用账户切换上限：同一请求最多可在多少个账号上撞 429。
+	// 429 常由请求自身触发（如单请求百万级 cache_creation 撞输入 token 突发限制），
+	// 此时换号必然同样 429，用通用预算会把整个账号池逐个打成限流冷却。
+	// 达到该上限即停止 failover，把 429 交还客户端。<=0 时使用默认值 3。
+	MaxRateLimitedAccountSwitches int `mapstructure:"max_rate_limited_account_switches"`
 
 	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
@@ -2191,6 +2196,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.max_rate_limited_account_switches", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)

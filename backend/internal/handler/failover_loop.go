@@ -40,6 +40,9 @@ const (
 	// Service 层在 SingleAccountRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
 	// Handler 层只需短暂间隔后重新进入 Service 层即可。
 	singleAccountBackoffDelay = 2 * time.Second
+	// defaultMaxRateLimitedSwitches 429 专用切换预算的兜底默认值。
+	// 见 FailoverState.MaxRateLimitedSwitches。
+	defaultMaxRateLimitedSwitches = 3
 )
 
 // FailoverState 跨循环迭代共享的 failover 状态
@@ -51,6 +54,37 @@ type FailoverState struct {
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
 	hasBoundSession       bool
+
+	// RateLimitedSwitchCount 本次请求已在多少个账号上收到 429。
+	RateLimitedSwitchCount int
+	// MaxRateLimitedSwitches 429 专用切换预算，独立于 MaxSwitches。
+	//
+	// 通用预算（默认 10）假设"换个账号就能成功"，这对 401/5xx 成立，但对 429
+	// 不成立：如果 429 是请求自身触发的（典型是单请求百万级 cache_creation
+	// 撞上输入 token 突发限制——缓存按账号隔离，换号等于缓存全废重新写入，
+	// 每个新账号都要吃满同样的 cache_creation），那么换号必然同样 429。
+	// 结果是一个请求把整个账号池逐个打成限流冷却，最终全组不可用。
+	//
+	// 因此对 429 单独设一个小预算：连续几个独立账号都在同一请求上 429，
+	// 就判定问题在请求侧，停止 failover 并把 429 交还客户端，
+	// 而不是继续牵连其余账号。<=0 时回落 defaultMaxRateLimitedSwitches。
+	MaxRateLimitedSwitches int
+}
+
+// newFailoverState 按 handler 配置创建 failover 状态，
+// 统一带上 429 专用切换预算（gateway.max_rate_limited_account_switches）。
+func (h *GatewayHandler) newFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
+	fs := NewFailoverState(maxSwitches, hasBoundSession)
+	fs.MaxRateLimitedSwitches = h.maxRateLimitedSwitches
+	return fs
+}
+
+// rateLimitedSwitchLimit 返回生效的 429 切换预算。
+func (s *FailoverState) rateLimitedSwitchLimit() int {
+	if s.MaxRateLimitedSwitches > 0 {
+		return s.MaxRateLimitedSwitches
+	}
+	return defaultMaxRateLimitedSwitches
 }
 
 // NewFailoverState 创建 failover 状态
@@ -112,6 +146,23 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 加入失败列表
 	s.FailedAccountIDs[accountID] = struct{}{}
+
+	// 429 专用预算：见 FailoverState.MaxRateLimitedSwitches。
+	// 多个独立账号在同一请求上连续 429 → 判定问题在请求侧，停止牵连其余账号。
+	if failoverErr.StatusCode == http.StatusTooManyRequests {
+		s.RateLimitedSwitchCount++
+		if limit := s.rateLimitedSwitchLimit(); s.RateLimitedSwitchCount >= limit {
+			logger.FromContext(ctx).Warn("gateway.failover_rate_limited_budget_exhausted",
+				zap.Int64("account_id", accountID),
+				zap.Int("rate_limited_switch_count", s.RateLimitedSwitchCount),
+				zap.Int("rate_limited_switch_max", limit),
+				zap.Int("switch_count", s.SwitchCount),
+				zap.Int("max_switches", s.MaxSwitches),
+				zap.String("reason", "consecutive 429 across independent accounts suggests a request-side limit; stopping failover to protect the pool"),
+			)
+			return FailoverExhausted
+		}
+	}
 
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {
