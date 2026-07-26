@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -134,6 +135,95 @@ func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"Extra usage required"}}`))
 
 	require.Zero(t, accountRepo.rateLimitCalls)
+}
+
+// newRateLimit429FallbackSvc 构造一个兜底冷却=12s 的 RateLimitService。
+func newRateLimit429FallbackSvc(accountRepo AccountRepository) *RateLimitService {
+	settingRepo := newMockSettingRepo()
+	data, _ := json.Marshal(RateLimit429CooldownSettings{Enabled: true, CooldownSeconds: 12})
+	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
+
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	return svc
+}
+
+// anthropicHealthyWindowHeaders 模拟一个「窗口远未耗尽」的 Anthropic OAuth 响应头：
+// 新号刚加入，5h/7d 利用率都很低，status=allowed。
+func anthropicHealthyWindowHeaders(now time.Time) http.Header {
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.03")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(now.Add(4*time.Hour).Unix(), 10))
+	headers.Set("anthropic-ratelimit-unified-7d-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(now.Add(6*24*time.Hour).Unix(), 10))
+	return headers
+}
+
+// 瞬时 429（如单请求百万级 cache_creation 撞到输入 token 突发限制）：
+// 响应头带 5h/7d reset，但两个窗口都远未耗尽。此时绝不能按窗口重置点封号——
+// 那会把一次瞬时限流放大成数小时不可调度，failover 再把同一请求复制到其余账号，
+// 逐个封禁，最终全部账号不可用。正确行为是秒级兜底冷却。
+func TestHandle429_AnthropicNoWindowExhaustedUsesFallbackCooldown(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	svc := newRateLimit429FallbackSvc(accountRepo)
+
+	account := &Account{ID: 47, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	before := time.Now()
+	svc.handle429(context.Background(), account, anthropicHealthyWindowHeaders(before),
+		[]byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`))
+	after := time.Now()
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	require.Equal(t, int64(47), accountRepo.lastRateLimitID)
+	require.True(t,
+		!accountRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) &&
+			!accountRepo.lastRateLimitReset.After(after.Add(12*time.Second)),
+		"expected ~12s fallback cooldown, got reset_at=%v (%.0fs from now)",
+		accountRepo.lastRateLimitReset, time.Until(accountRepo.lastRateLimitReset).Seconds())
+}
+
+// 同上，但响应还带了聚合头 anthropic-ratelimit-unified-reset。
+// 聚合头镜像的是 representative claim（可能是 7d），窗口未耗尽时同样不可采信。
+func TestHandle429_AnthropicNoWindowExhaustedIgnoresAggregateReset(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	svc := newRateLimit429FallbackSvc(accountRepo)
+
+	now := time.Now()
+	headers := anthropicHealthyWindowHeaders(now)
+	headers.Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(now.Add(6*24*time.Hour).Unix(), 10))
+
+	account := &Account{ID: 48, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	before := time.Now()
+	svc.handle429(context.Background(), account, headers,
+		[]byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`))
+	after := time.Now()
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	require.True(t,
+		!accountRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) &&
+			!accountRepo.lastRateLimitReset.After(after.Add(12*time.Second)),
+		"expected ~12s fallback cooldown, got reset_at=%v (%.0fs from now)",
+		accountRepo.lastRateLimitReset, time.Until(accountRepo.lastRateLimitReset).Seconds())
+}
+
+// 真正的 5h 窗口耗尽（status=rejected）仍必须封到窗口重置点，不能被兜底冷却削弱。
+func TestHandle429_Anthropic5hRejectedStillUsesWindowReset(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	svc := newRateLimit429FallbackSvc(accountRepo)
+
+	now := time.Now()
+	headers := anthropicHealthyWindowHeaders(now)
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "1.01")
+
+	account := &Account{ID: 49, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	svc.handle429(context.Background(), account, headers,
+		[]byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`))
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	require.WithinDuration(t, now.Add(4*time.Hour), accountRepo.lastRateLimitReset, time.Minute)
 }
 
 func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testing.T) {

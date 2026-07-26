@@ -972,6 +972,18 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		return
 	}
 
+	// 2b. Anthropic：响应带 unified 窗口头，但没有任何窗口被判定耗尽 → 瞬时 429。
+	// 聚合头 anthropic-ratelimit-unified-reset 镜像的是 representative claim
+	// （可能是 7d 窗口的重置点），窗口没耗尽时同样不可采信——否则健康账号会被
+	// 按窗口长度封禁。直接走秒级兜底冷却，让账号在几秒后自愈。
+	if account.Platform == PlatformAnthropic && hasAnthropicUnifiedWindowHeaders(headers) {
+		slog.Warn("rate_limit_429_no_window_exhausted",
+			"account_id", account.ID,
+			"reason", "429 with unified window headers but neither 5h nor 7d exhausted; treating as transient")
+		s.apply429FallbackRateLimit(ctx, account, "anthropic_no_window_exhausted")
+		return
+	}
+
 	// 3. 尝试从响应头解析重置时间（Anthropic 聚合头，向后兼容）
 	resetTimestamp := headers.Get("anthropic-ratelimit-unified-reset")
 
@@ -1364,8 +1376,8 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 		reset7d = &t
 	}
 
-	is5hExceeded := isAnthropicWindowExceeded(headers, "5h")
-	is7dExceeded := isAnthropicWindowExceeded(headers, "7d")
+	is5hExceeded := isAnthropicWindowRejected(headers, "5h") || isAnthropicWindowExceeded(headers, "5h")
+	is7dExceeded := isAnthropicWindowRejected(headers, "7d") || isAnthropicWindowExceeded(headers, "7d")
 
 	slog.Info("anthropic_429_window_analysis",
 		"is_5h_exceeded", is5hExceeded,
@@ -1388,8 +1400,12 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 	case is7dExceeded:
 		chosen = reset7d
 	default:
-		// Neither flag clearly exceeded — pick the sooner reset as best guess
-		chosen = pickSooner(reset5h, reset7d)
+		// 两个窗口都未被判定耗尽 → 这不是窗口限流，而是瞬时 429
+		// （典型：单请求百万级 cache_creation 撞上输入 token 突发限制）。
+		// 曾经这里取 pickSooner 做“最佳猜测”，等于把一次秒级限流放大成最长 5h
+		// 不可调度；failover 再把同一个大请求原样复制到其余账号，逐个封禁，
+		// 最终整组账号全灭。返回 nil，交由调用方走秒级兜底冷却。
+		return nil
 	}
 
 	if chosen == nil {
@@ -1419,20 +1435,12 @@ func isAnthropicWindowExceeded(headers http.Header, window string) bool {
 	return false
 }
 
-// pickSooner returns whichever of the two time pointers is earlier.
-// If only one is non-nil, it is returned. If both are nil, returns nil.
-func pickSooner(a, b *time.Time) *time.Time {
-	switch {
-	case a != nil && b != nil:
-		if a.Before(*b) {
-			return a
-		}
-		return b
-	case a != nil:
-		return a
-	default:
-		return b
-	}
+// hasAnthropicUnifiedWindowHeaders 判断响应是否携带 unified 5h/7d 窗口头。
+// Anthropic OAuth/SetupToken 账号的响应基本总是带这两个头，因此它可以用来区分
+// 「上游给了窗口视图但窗口没耗尽」（瞬时 429）与「压根没有窗口信息」两种情况。
+func hasAnthropicUnifiedWindowHeaders(headers http.Header) bool {
+	return headers.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
+		headers.Get("anthropic-ratelimit-unified-7d-reset") != ""
 }
 
 func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) {

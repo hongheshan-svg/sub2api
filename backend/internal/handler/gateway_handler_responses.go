@@ -159,7 +159,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
 	// 3. Account selection + failover loop
-	fs := NewFailoverState(h.maxAccountSwitches, false)
+	fs := h.newFailoverState(h.maxAccountSwitches, false)
 
 	for {
 		if requestCtx.Err() != nil {

@@ -267,6 +267,100 @@ func TestHandleFailoverError_BasicSwitch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// HandleFailoverError — 429 专用切换预算
+// ---------------------------------------------------------------------------
+
+// 同一个请求连续在多个账号上撞 429，说明大概率是请求自身触发限流
+// （典型：单请求百万级 cache_creation 撞输入 token 突发限制），而不是这些
+// 账号恰好都被限流。继续换号只会把同一个"有毒"请求复制到整个账号池，
+// 每个账号都被标记冷却，最终全组不可用。
+func TestHandleFailoverError_RateLimitedSwitchBudget(t *testing.T) {
+	t.Run("连续429在预算耗尽后停止而非烧完MaxSwitches", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(10, false) // 通用预算很宽松
+		fs.MaxRateLimitedSwitches = 3
+
+		// 前两个账号 429：仍继续换号，尝试找到健康账号
+		for i, accountID := range []int64{100, 200} {
+			action := fs.HandleFailoverError(context.Background(), mock, accountID, "anthropic",
+				maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+			require.Equal(t, FailoverContinue, action, "第 %d 个 429 应继续换号", i+1)
+		}
+
+		// 第三个账号也 429：预算耗尽，必须停止，不再牵连其余账号
+		action := fs.HandleFailoverError(context.Background(), mock, 300, "anthropic",
+			maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+		require.Equal(t, FailoverExhausted, action, "第 3 个 429 应耗尽 429 预算")
+		require.Equal(t, 3, fs.RateLimitedSwitchCount)
+		require.Len(t, fs.FailedAccountIDs, 3, "只应牵连 3 个账号，而非 MaxSwitches+1 个")
+		require.Equal(t, 2, fs.SwitchCount, "通用切换预算远未用完")
+	})
+
+	t.Run("非429错误不消耗429预算", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(10, false)
+		fs.MaxRateLimitedSwitches = 2
+
+		for _, status := range []int{500, 502, 503, 529, 401} {
+			action := fs.HandleFailoverError(context.Background(), mock, int64(status), "anthropic",
+				maxSameAccountRetries, newTestFailoverErr(status, false, false))
+			require.Equal(t, FailoverContinue, action, "status=%d 应继续换号", status)
+		}
+		require.Zero(t, fs.RateLimitedSwitchCount)
+	})
+
+	t.Run("429预算独立于通用预算且不影响后续非429切换", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(10, false)
+		fs.MaxRateLimitedSwitches = 2
+
+		// 一次 429，未达预算
+		action := fs.HandleFailoverError(context.Background(), mock, 100, "anthropic",
+			maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.RateLimitedSwitchCount)
+
+		// 再来一次 500：非 429，照常切换
+		action = fs.HandleFailoverError(context.Background(), mock, 200, "anthropic",
+			maxSameAccountRetries, newTestFailoverErr(500, false, false))
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.RateLimitedSwitchCount, "500 不应计入 429 预算")
+
+		// 第二次 429：达到预算 2，停止
+		action = fs.HandleFailoverError(context.Background(), mock, 300, "anthropic",
+			maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+		require.Equal(t, FailoverExhausted, action)
+	})
+
+	t.Run("未显式配置时使用默认预算", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(10, false) // 不设 MaxRateLimitedSwitches
+
+		for i := 0; i < defaultMaxRateLimitedSwitches-1; i++ {
+			action := fs.HandleFailoverError(context.Background(), mock, int64(i+1), "anthropic",
+				maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+			require.Equal(t, FailoverContinue, action)
+		}
+		action := fs.HandleFailoverError(context.Background(), mock, 999, "anthropic",
+			maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+		require.Equal(t, FailoverExhausted, action)
+	})
+
+	t.Run("预算配置为0或负数时回落到默认值而非立即耗尽", func(t *testing.T) {
+		for _, configured := range []int{0, -1} {
+			mock := &mockTempUnscheduler{}
+			fs := NewFailoverState(10, false)
+			fs.MaxRateLimitedSwitches = configured
+
+			action := fs.HandleFailoverError(context.Background(), mock, 100, "anthropic",
+				maxSameAccountRetries, newTestFailoverErr(http.StatusTooManyRequests, false, false))
+			require.Equal(t, FailoverContinue, action,
+				"MaxRateLimitedSwitches=%d 应回落默认值，不应首个 429 就放弃", configured)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // HandleFailoverError — 缓存计费 (ForceCacheBilling)
 // ---------------------------------------------------------------------------
 
