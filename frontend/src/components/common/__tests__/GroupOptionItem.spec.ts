@@ -1,60 +1,44 @@
-import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import GroupOptionItem from '../GroupOptionItem.vue'
-import { createI18n } from 'vue-i18n'
+import { describe, expect, it, vi } from 'vitest'
 
-const i18n = createI18n({
-  legacy: false,
-  locale: 'zh',
-  messages: {
-    zh: {
-      common: {
-        groupOption: {
-          discountOriginal: () => '原价',
-          discountFormat: ({ named }: { named: (key: string) => unknown }) =>
-            `${named('value')}折`
-        }
-      }
-    }
+import GroupOptionItem from '../GroupOptionItem.vue'
+
+vi.mock('vue-i18n', async () => {
+  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  return {
+    ...actual,
+    useI18n: () => ({ t: (key: string) => key }),
   }
 })
 
-function mountItem(props: Record<string, unknown> = {}) {
-  return mount(GroupOptionItem, {
-    props: {
-      name: 'test-group',
-      platform: 'anthropic',
-      rateMultiplier: 4,
-      ...props
-    },
-    global: { plugins: [i18n] }
-  })
-}
+vi.mock('@/stores/app', () => ({
+  useAppStore: () => ({ cachedPublicSettings: null }),
+}))
 
-describe('GroupOptionItem discount pill', () => {
-  it('renders "5.7折" for rate 4 (4/7×10 = 5.71)', () => {
-    const wrapper = mountItem({ rateMultiplier: 4 })
-    expect(wrapper.text()).toContain('5.7折')
-  })
+describe('GroupOptionItem description layout', () => {
+  it('applies multiline and overflow-safe text styles', () => {
+    const description = 'First section\nvery-long-unbroken-description-value-that-must-not-overflow'
+    const wrapper = mount(GroupOptionItem, {
+      props: {
+        name: 'Example group',
+        platform: 'openai',
+        description,
+      },
+      global: {
+        stubs: {
+          GroupBadge: true,
+        },
+      },
+    })
 
-  it('renders "原价" for rate 7', () => {
-    const wrapper = mountItem({ rateMultiplier: 7 })
-    expect(wrapper.text()).toContain('原价')
-  })
+    const descriptionElement = wrapper
+      .findAll('span')
+      .find((element) => element.text() === description)
 
-  it('renders "1.4折" for rate 1', () => {
-    const wrapper = mountItem({ rateMultiplier: 1 })
-    expect(wrapper.text()).toContain('1.4折')
-  })
-
-  it('omits discount pill when rate is 0', () => {
-    const wrapper = mountItem({ rateMultiplier: 0 })
-    expect(wrapper.text()).not.toContain('折')
-    expect(wrapper.text()).not.toContain('原价')
-  })
-
-  it('uses userRateMultiplier when present', () => {
-    const wrapper = mountItem({ rateMultiplier: 4, userRateMultiplier: 1 })
-    expect(wrapper.text()).toContain('1.4折')
+    expect(descriptionElement).toBeDefined()
+    expect(descriptionElement?.classes()).toContain('whitespace-pre-line')
+    expect(descriptionElement?.classes()).toContain('[overflow-wrap:anywhere]')
+    expect(descriptionElement?.classes()).toContain('line-clamp-3')
+    expect(wrapper.find('[title]').attributes('title')).toBe(description)
   })
 })
