@@ -29,6 +29,16 @@
         <!-- Notification Bell (in-app inbox) -->
         <NotificationBell v-if="user" />
 
+        <!-- Model Plaza Entry -->
+        <router-link
+          v-if="user && modelPlazaEnabled"
+          :to="{ path: '/model-plaza', query: { embedded: '1' } }"
+          class="hidden items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-white sm:flex"
+        >
+          <Icon name="grid" size="sm" />
+          <span class="hidden sm:inline">{{ t('nav.modelPlaza') }}</span>
+        </router-link>
+
         <!-- Language Switcher -->
         <LocaleSwitcher />
 
@@ -241,6 +251,7 @@ import SubscriptionProgressMini from '@/components/common/SubscriptionProgressMi
 import AnnouncementBell from '@/components/common/AnnouncementBell.vue'
 import NotificationBell from '@/components/common/NotificationBell.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 
 const router = useRouter()
 const route = useRoute()
@@ -254,6 +265,7 @@ const user = computed(() => authStore.user)
 const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 const contactInfo = computed(() => appStore.contactInfo)
+const modelPlazaEnabled = computed(() => isFeatureFlagEnabled(FeatureFlags.modelPlaza))
 const avatarUrl = computed(() => user.value?.avatar_url?.trim() || '')
 const availableBalance = computed(() => Number(user.value?.balance || 0))
 const frozenBalance = computed(() => Number(user.value?.frozen_balance || 0))
