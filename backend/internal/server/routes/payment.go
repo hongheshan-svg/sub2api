@@ -51,6 +51,8 @@ func RegisterPaymentRoutes(
 	invoice := v1.Group("/invoice")
 	invoice.Use(gin.HandlerFunc(jwtAuth))
 	invoice.Use(middleware.BackendModeUserGuard(settingService))
+	// 面板全局按用户限流
+	invoice.Use(panelRateLimiter.Global())
 	{
 		invoice.GET("/orders", paymentHandler.ListInvoiceableOrders)
 
