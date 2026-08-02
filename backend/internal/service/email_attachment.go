@@ -26,7 +26,7 @@ type EmailAttachment struct {
 }
 
 // SendEmailWithAttachment sends an HTML email with one or more file attachments.
-// Reuses the SMTP transport (sendMailTLS / sendMailPlain) from email_service.go.
+// Reuses the SMTP transport (connectSMTP) from email_service.go.
 func (s *EmailService) SendEmailWithAttachment(ctx context.Context, to, subject, body string, attachments []EmailAttachment) error {
 	config, err := s.GetSMTPConfig(ctx)
 	if err != nil {
@@ -46,15 +46,38 @@ func (s *EmailService) SendEmailWithAttachment(ctx context.Context, to, subject,
 		return fmt.Errorf("build multipart message: %w", err)
 	}
 
-	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
-	var auth smtp.Auth
+	client, err := s.connectSMTP(config)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	// Only authenticate when credentials are provided (relay mode sends anonymously).
 	if config.Username != "" {
-		auth = smtp.PlainAuth("", config.Username, config.Password, config.Host)
+		auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
+		if err = client.Auth(auth); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
 	}
-	if config.UseTLS {
-		return s.sendMailTLS(addr, auth, config.From, to, msg, config.Host)
+	if err = client.Mail(config.From); err != nil {
+		return fmt.Errorf("smtp mail: %w", err)
 	}
-	return s.sendMailPlain(addr, auth, config.From, to, msg, config.Host)
+	if err = client.Rcpt(to); err != nil {
+		return fmt.Errorf("smtp rcpt: %w", err)
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("smtp data: %w", err)
+	}
+	if _, err = w.Write(msg); err != nil {
+		return fmt.Errorf("write msg: %w", err)
+	}
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("close writer: %w", err)
+	}
+	// Email is sent successfully after w.Close(), ignore Quit errors.
+	_ = client.Quit()
+	return nil
 }
 
 // buildMultipartMessage assembles an RFC 5322 message with a multipart/mixed body.
