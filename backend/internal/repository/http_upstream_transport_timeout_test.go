@@ -25,7 +25,7 @@ func TestBuildUpstreamTransport_SetsConnectionEstablishmentTimeouts(t *testing.T
 	require.NoError(t, err)
 
 	require.NotNil(t, tr.DialContext, "直连必须使用带超时的 DialContext")
-	require.Equal(t, upstreamTLSHandshakeTimeout, tr.TLSHandshakeTimeout, "TLS 握手必须有独立超时")
+	require.Equal(t, defaultUpstreamTLSHandshakeTimeout, tr.TLSHandshakeTimeout, "TLS 握手必须有独立超时")
 	// 设置了自定义 DialContext 后 Go 会静默禁用自动 HTTP/2，
 	// 必须显式打开以保持 Claude/Gemini 默认路径原有的 H2 行为。
 	require.True(t, tr.ForceAttemptHTTP2, "默认直连路径必须保持自动 HTTP/2")
@@ -40,7 +40,7 @@ func TestBuildUpstreamTransport_HTTPProxyKeepsAutoHTTP2(t *testing.T) {
 
 	require.NotNil(t, tr.Proxy, "HTTP 代理应通过 Transport.Proxy 配置")
 	require.NotNil(t, tr.DialContext, "连接代理的 TCP 拨号也要有超时")
-	require.Equal(t, upstreamTLSHandshakeTimeout, tr.TLSHandshakeTimeout)
+	require.Equal(t, defaultUpstreamTLSHandshakeTimeout, tr.TLSHandshakeTimeout)
 	require.True(t, tr.ForceAttemptHTTP2, "HTTP 代理(CONNECT)路径此前即为自动 H2，保持不变")
 }
 
