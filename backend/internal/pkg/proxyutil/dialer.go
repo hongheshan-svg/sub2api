@@ -26,13 +26,25 @@ import (
 // 隧道建立阶段，不影响隧道建立后的流式读写（x/net/proxy 的 socks dialer 会在
 // 协商结束后清除 conn deadline）。
 const (
-	// socksDialTimeout 约束到 SOCKS5 代理本身的 TCP 连接。
-	socksDialTimeout = 15 * time.Second
-	// socksKeepAlive TCP 保活探测间隔。
-	socksKeepAlive = 30 * time.Second
+	// socks5DialTimeout 限制到 SOCKS5 代理自身的 TCP 建连耗时。
+	socks5DialTimeout = 10 * time.Second
+	// socks5DialKeepAlive 与 Go 默认 keepalive 探测间隔保持一致。
+	socks5DialKeepAlive = 30 * time.Second
 	// tunnelEstablishTimeout 兜底约束整个隧道建立（TCP + SOCKS 协商）。
+	// 仅靠底层 TCP 建连超时覆盖不到 SOCKS 协商阶段的挂起。
 	tunnelEstablishTimeout = 30 * time.Second
 )
+
+// socks5ForwardDialer 是 SOCKS5 dialer 的底层拨号器。
+//
+// proxy.FromURL 的默认 forward dialer 是 proxy.Direct（零值 net.Dialer，无超时），
+// 代理地址不可达时会一直卡到内核 TCP 重传耗尽（Linux 约 130 秒）。SOCKS5 分支会
+// 覆盖 Transport.DialContext，因此调用方在 Transport 上设置的建连超时对这条路径
+// 无效，必须在这里补上。
+var socks5ForwardDialer = &net.Dialer{
+	Timeout:   socks5DialTimeout,
+	KeepAlive: socks5DialKeepAlive,
+}
 
 type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -71,7 +83,7 @@ func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error
 		return nil
 
 	case "socks5", "socks5h":
-		dialer, err := proxy.FromURL(proxyURL, &net.Dialer{Timeout: socksDialTimeout, KeepAlive: socksKeepAlive})
+		dialer, err := proxy.FromURL(proxyURL, socks5ForwardDialer)
 		if err != nil {
 			return fmt.Errorf("create socks5 dialer: %w", err)
 		}

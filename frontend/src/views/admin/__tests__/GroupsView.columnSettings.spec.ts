@@ -55,6 +55,7 @@ vi.mock('@/api/admin', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       updateSortOrder: vi.fn(),
+      getLiveCapability: vi.fn(() => Promise.resolve({ supported: false })),
     },
     accounts: {
       list: listAccounts,
