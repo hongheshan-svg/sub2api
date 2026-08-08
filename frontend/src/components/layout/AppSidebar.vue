@@ -765,12 +765,13 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate },
   )
-  if (appStore.docUrl) {
+  const safeDocUrl = sanitizeUrl(appStore.docUrl || '')
+  if (safeDocUrl) {
     items.push({
       path: 'docs-external',
       label: t('nav.docs'),
       icon: BookIcon,
-      externalUrl: appStore.docUrl,
+      externalUrl: safeDocUrl,
     })
   }
   items.push(
