@@ -86,7 +86,6 @@ export default {
     chooseFile: 'Choose File',
     upload: 'Upload',
     remove: 'Remove',
-    noFileSelected: 'No file selected',
     selectedFile: 'Selected: {name}',
     fileReadFailed: 'Failed to read file',
     selectImageFile: 'Please select an image file',

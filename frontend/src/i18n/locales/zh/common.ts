@@ -86,7 +86,6 @@ export default {
     chooseFile: '选择文件',
     upload: '上传',
     remove: '移除',
-    noFileSelected: '未选择文件',
     selectedFile: '已选：{name}',
     fileReadFailed: '读取文件失败',
     selectImageFile: '请选择图片文件',
