@@ -26,11 +26,28 @@ const (
 	// 指数退避：第 N 次失败后的等待 = retryBaseDelay * 2^(N-1)，并且上限为 retryMaxDelay。
 	retryBaseDelay = 300 * time.Millisecond
 	retryMaxDelay  = 3 * time.Second
-
-	// 最大重试耗时（包含请求本身耗时 + 退避等待时间）。
-	// 用于防止极端情况下 goroutine 长时间堆积导致资源耗尽。
-	maxRetryElapsed = 10 * time.Second
 )
+
+// maxRetryElapsed 最大重试耗时（包含请求本身耗时 + 退避等待时间），从首次请求发出前起算。
+// 用于防止极端情况下 goroutine 长时间堆积导致资源耗尽。
+//
+// 仅约束「碰运气」的退避重试（5xx / 429 等瞬时错误）：这类重试没有确定的成功条件，
+// 必须有整体耗时上限。400 确定性整流请改用 rectifyMaxElapsed，见其注释。
+//
+// var 而非 const：测试需要压缩预算以覆盖预算耗尽分支。
+var maxRetryElapsed = 10 * time.Second
+
+// rectifyMaxElapsed 400 确定性整流重试的预算，从「收到 400 之时」起算。
+//
+// 与 maxRetryElapsed 分离的原因：thinking 签名整流是确定性修复——剥离历史 thinking block
+// 后同一约束必然不再触发，只需一次额外往返。若与 maxRetryElapsed 共用同一个从首次请求
+// 起算的计时器，首次请求耗时就会挤占整流预算：长会话（agent 客户端上下文动辄数十 K token，
+// 叠加第三方中转的延迟）在上游返回 400 时预算往往已耗尽，整流重试根本不会发起，
+// 400 被原样透传给客户端——表现为偶发的
+// "Invalid `signature` in `thinking` block"（快请求整流成功、慢请求直接报错）。
+//
+// var 而非 const：与 maxRetryElapsed 对称，便于测试压缩预算覆盖耗尽分支。
+var rectifyMaxElapsed = 10 * time.Second
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
 	// OAuth/Setup Token 账号：仅 403 重试
@@ -389,6 +406,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
+			// 确定性整流的预算起点：从「收到 400」起算，而非复用 retryStart（含首次请求往返耗时）。
+			// 详见 rectifyMaxElapsed 的注释。
+			rectifyStart := time.Now()
 			respBody, readErr := s.readUpstreamErrorBody(resp)
 			if readErr == nil {
 				_ = resp.Body.Close()
@@ -421,8 +441,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 							strings.Contains(m, "function_response")
 					}
 
-					// 避免在重试预算已耗尽时再发起额外请求
-					if time.Since(retryStart) >= maxRetryElapsed {
+					// 避免在整流预算已耗尽时再发起额外请求（预算从收到 400 起算）
+					if time.Since(rectifyStart) >= rectifyMaxElapsed {
 						resp.Body = io.NopCloser(bytes.NewReader(respBody))
 						break
 					}
@@ -472,7 +492,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									}(),
 								})
 								msg2 := extractUpstreamErrorMessage(retryRespBody)
-								if looksLikeToolSignatureError(msg2) && time.Since(retryStart) < maxRetryElapsed {
+								if looksLikeToolSignatureError(msg2) && time.Since(rectifyStart) < rectifyMaxElapsed {
 									logger.LegacyPrintf("service.gateway", "Account %d: signature retry still failing and looks tool-related, retrying with tool blocks downgraded", account.ID)
 									filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body, reqModel)
 									retryCtx2, releaseRetryCtx2 := detachStreamUpstreamContext(ctx, reqStream)
