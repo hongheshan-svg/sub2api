@@ -131,8 +131,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		// 传输层错误转 failover（对齐 OpenAI 路径），handler 负责换账号或写出错误。
-		return nil, s.handleAnthropicUpstreamTransportError(ctx, c, account, safeUpstreamURL(upstreamReq.URL.String()), err, false)
+		return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+			UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+		})
 	}
 	defer func() { _ = resp.Body.Close() }()
 

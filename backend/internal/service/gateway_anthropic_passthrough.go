@@ -114,9 +114,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			// 传输层错误转 failover（对齐 OpenAI 路径），handler 负责换账号或写出错误。
-			// Ollama Cloud 活动统计在该 helper 内（cancel 早返回之后）记录。
-			return nil, s.handleAnthropicUpstreamTransportError(ctx, c, account, safeUpstreamURL(upstreamReq.URL.String()), err, true)
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+				Passthrough: true,
+			})
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
