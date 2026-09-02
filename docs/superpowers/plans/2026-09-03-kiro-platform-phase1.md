@@ -4730,8 +4730,357 @@ git commit -m "feat(kiro): 认证协议层（三条刷新路径 + IdC PKCE + 设
 
 ---
 
-> **计划文档状态：** A 组（Task 1-8）+ Task 9 已完整展开。
-> Task 10-20 见下方接口契约，逐组补齐。
+### Task 10: Account 的 Kiro 凭证访问器
+
+**Files:**
+- Create: `backend/internal/service/kiro_credentials.go`
+- Test: `backend/internal/service/kiro_credentials_test.go`
+
+**Interfaces:**
+- Consumes: 现有 `Account.GetCredential(key) string`、`Account.Credentials map[string]any`；Task 9 的 `kiro.AuthMethod` / `kiro.ParseAuthMethod`
+- Produces:
+  - `func (a *Account) KiroAuthMethod() kiro.AuthMethod`
+  - `func (a *Account) IsKiroAPIKeyAccount() bool`
+  - `func (a *Account) KiroRegion() string`
+  - `func (a *Account) KiroProfileArn() string`
+  - `func (a *Account) KiroAPIKey() string`
+  - `func (a *Account) KiroAccessToken() string`
+  - `func (a *Account) KiroRefreshToken() string`
+  - `func (a *Account) KiroClientCredentials() (clientID, clientSecret string)`
+  - `func (a *Account) KiroIssuerURL() string`
+  - `func (a *Account) KiroMachineID() string`
+  - `func (a *Account) KiroFakeThinking() bool`
+  - `func (a *Account) KiroBearerToken() string`
+  - `func EnsureKiroMachineID(creds map[string]any) (string, bool)`
+  - `func GenerateKiroMachineID() (string, error)`
+  - `func KiroTokenCacheKey(account *Account) string`
+
+**⚠️ `machine_id` 一次生成、永久持久化**（设计文档 §5.5 第 2 点）。
+Kiro 把它拼进 `User-Agent` 与 `x-amz-user-agent`（`KiroIDE-{ver}-{machineId}`）做设备指纹。
+每次请求重新生成等于每次都是新设备，有触发上游风控的风险。
+`EnsureKiroMachineID` 返回的 `bool` 表示「本次新生成、调用方需要落库」。
+
+**`KiroBearerToken`**：API Key 账号用 `api_key` 作 Bearer，OAuth 账号用 `access_token`
+（对齐 Kiro-Go 的 `accountBearerToken`）。
+
+**假思考默认关闭**（设计文档 §10 第 1 条），账号级开关 `credentials["fake_thinking"]`。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/service/kiro_credentials_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"regexp"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+func kiroAccount(creds map[string]any) *Account {
+	return &Account{ID: 42, Platform: PlatformKiro, Credentials: creds}
+}
+
+func TestKiroAuthMethodDefaultsToSocial(t *testing.T) {
+	require.Equal(t, kiro.AuthSocial, kiroAccount(nil).KiroAuthMethod())
+	require.Equal(t, kiro.AuthSocial, kiroAccount(map[string]any{}).KiroAuthMethod())
+	require.Equal(t, kiro.AuthIdC, kiroAccount(map[string]any{"auth_method": "idc"}).KiroAuthMethod())
+	require.Equal(t, kiro.AuthBuilderID, kiroAccount(map[string]any{"auth_method": "builder_id"}).KiroAuthMethod())
+}
+
+func TestIsKiroAPIKeyAccount(t *testing.T) {
+	require.True(t, kiroAccount(map[string]any{"auth_method": "api_key"}).IsKiroAPIKeyAccount())
+	require.False(t, kiroAccount(map[string]any{"auth_method": "social"}).IsKiroAPIKeyAccount())
+}
+
+func TestKiroRegionDefaults(t *testing.T) {
+	require.Equal(t, "us-east-1", kiroAccount(nil).KiroRegion())
+	require.Equal(t, "eu-central-1", kiroAccount(map[string]any{"region": "eu-central-1"}).KiroRegion())
+	// 空白值也退回默认。
+	require.Equal(t, "us-east-1", kiroAccount(map[string]any{"region": "   "}).KiroRegion())
+}
+
+// TestKiroBearerTokenPicksAPIKeyForAPIKeyAccounts 覆盖两类账号的取值差异。
+func TestKiroBearerTokenPicksAPIKeyForAPIKeyAccounts(t *testing.T) {
+	apiKeyAcc := kiroAccount(map[string]any{
+		"auth_method":  "api_key",
+		"api_key":      "kiro_ak_123",
+		"access_token": "should_not_be_used",
+	})
+	require.Equal(t, "kiro_ak_123", apiKeyAcc.KiroBearerToken())
+
+	oauthAcc := kiroAccount(map[string]any{
+		"auth_method":  "social",
+		"access_token": "at_456",
+	})
+	require.Equal(t, "at_456", oauthAcc.KiroBearerToken())
+}
+
+func TestKiroClientCredentials(t *testing.T) {
+	id, secret := kiroAccount(map[string]any{
+		"client_id": "cid", "client_secret": "csec",
+	}).KiroClientCredentials()
+	require.Equal(t, "cid", id)
+	require.Equal(t, "csec", secret)
+
+	id, secret = kiroAccount(nil).KiroClientCredentials()
+	require.Empty(t, id)
+	require.Empty(t, secret)
+}
+
+func TestKiroFakeThinkingDefaultsOff(t *testing.T) {
+	require.False(t, kiroAccount(nil).KiroFakeThinking(), "假思考默认关闭")
+	require.True(t, kiroAccount(map[string]any{"fake_thinking": true}).KiroFakeThinking())
+	// JSONB 往返后布尔可能变成字符串。
+	require.True(t, kiroAccount(map[string]any{"fake_thinking": "true"}).KiroFakeThinking())
+	require.False(t, kiroAccount(map[string]any{"fake_thinking": "false"}).KiroFakeThinking())
+}
+
+// TestEnsureKiroMachineIDGeneratesOnceAndPersists 覆盖 §5.5 第 2 点：
+// machine_id 参与设备指纹，必须一次生成、永久稳定。
+func TestEnsureKiroMachineIDGeneratesOnceAndPersists(t *testing.T) {
+	creds := map[string]any{}
+
+	id, created := EnsureKiroMachineID(creds)
+	require.True(t, created, "首次必须报告已新建，调用方据此落库")
+	require.NotEmpty(t, id)
+	require.Equal(t, id, creds["machine_id"], "必须写回 creds")
+
+	again, created := EnsureKiroMachineID(creds)
+	require.False(t, created, "已存在时不得重新生成")
+	require.Equal(t, id, again, "同一账号的 machine_id 必须稳定")
+}
+
+func TestGenerateKiroMachineIDShape(t *testing.T) {
+	id, err := GenerateKiroMachineID()
+	require.NoError(t, err)
+	require.Regexp(t, regexp.MustCompile(`^[0-9a-f]{64}$`), id,
+		"形态需与 Kiro IDE 的机器指纹一致（64 位十六进制）")
+
+	other, err := GenerateKiroMachineID()
+	require.NoError(t, err)
+	require.NotEqual(t, id, other)
+}
+
+func TestKiroTokenCacheKey(t *testing.T) {
+	require.Equal(t, "kiro:account:42", KiroTokenCacheKey(kiroAccount(nil)))
+	require.Equal(t, "kiro:account:0", KiroTokenCacheKey(nil))
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestKiro|TestEnsureKiroMachineID|TestGenerateKiroMachineID|TestIsKiroAPIKey' -v
+```
+
+Expected: FAIL —— `undefined: KiroTokenCacheKey` 等；若 `PlatformKiro` 尚未提升为一等常量
+（Task 13 才做），此处仍可编译，因为 `service/domain_constants.go:53` 已有该常量。
+
+- [ ] **Step 3: 实现 `kiro_credentials.go`**
+
+```go
+package service
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+)
+
+// kiroDefaultRegion 与 pkg/kiro 的默认区域保持一致。
+const kiroDefaultRegion = "us-east-1"
+
+// KiroAuthMethod 返回账号的凭证接入方式。缺省为 social。
+func (a *Account) KiroAuthMethod() kiro.AuthMethod {
+	if a == nil {
+		return kiro.AuthSocial
+	}
+	return kiro.ParseAuthMethod(a.GetCredential("auth_method"))
+}
+
+// IsKiroAPIKeyAccount 判断是否为 API Key 账号。
+// 这类账号走 Kiro CLI runtime 端点、带 tokentype 头、且不使用 profileArn。
+func (a *Account) IsKiroAPIKeyAccount() bool {
+	return a.KiroAuthMethod() == kiro.AuthAPIKey
+}
+
+// KiroRegion 返回账号所属区域，缺省 us-east-1。
+func (a *Account) KiroRegion() string {
+	if a == nil {
+		return kiroDefaultRegion
+	}
+	if region := strings.TrimSpace(a.GetCredential("region")); region != "" {
+		return region
+	}
+	return kiroDefaultRegion
+}
+
+// KiroProfileArn 返回 profileArn。刷新 token 时必须回写此字段，
+// 否则账号运行一段时间后会 403。
+func (a *Account) KiroProfileArn() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("profile_arn"))
+}
+
+// KiroAPIKey 返回 API Key 账号的密钥。
+func (a *Account) KiroAPIKey() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("api_key"))
+}
+
+// KiroAccessToken 返回当前的访问令牌。
+func (a *Account) KiroAccessToken() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("access_token"))
+}
+
+// KiroRefreshToken 返回刷新令牌。
+func (a *Account) KiroRefreshToken() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("refresh_token"))
+}
+
+// KiroClientCredentials 返回 OIDC 动态注册得到的客户端凭据。
+// 仅 builder_id / idc 两种方式有值。
+func (a *Account) KiroClientCredentials() (string, string) {
+	if a == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(a.GetCredential("client_id")),
+		strings.TrimSpace(a.GetCredential("client_secret"))
+}
+
+// KiroIssuerURL 返回 SSO 门户地址（IdC 为组织自有 start URL）。
+func (a *Account) KiroIssuerURL() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("issuer_url"))
+}
+
+// KiroMachineID 返回设备指纹。参与 User-Agent 构造，必须稳定。
+func (a *Account) KiroMachineID() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("machine_id"))
+}
+
+// KiroBearerToken 返回用于 Authorization 头的令牌。
+// API Key 账号用 api_key，OAuth 账号用 access_token。
+func (a *Account) KiroBearerToken() string {
+	if a == nil {
+		return ""
+	}
+	if a.IsKiroAPIKeyAccount() {
+		if key := a.KiroAPIKey(); key != "" {
+			return key
+		}
+	}
+	return a.KiroAccessToken()
+}
+
+// KiroFakeThinking 返回是否为该账号启用假思考。默认关闭 ——
+// 开启会往每个请求注入数百 token 的指令，且产出的是模型自写文本而非真 reasoning。
+func (a *Account) KiroFakeThinking() bool {
+	if a == nil {
+		return false
+	}
+	raw, ok := a.Credentials["fake_thinking"]
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		return err == nil && parsed
+	default:
+		return false
+	}
+}
+
+// GenerateKiroMachineID 生成一个新的设备指纹，形态与 Kiro IDE 一致
+// （64 位十六进制）。
+func GenerateKiroMachineID() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate kiro machine id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// EnsureKiroMachineID 保证 creds 里有 machine_id，返回该值与「是否本次新建」。
+//
+// 返回 true 时调用方**必须**把 creds 落库 —— machine_id 参与上游的设备指纹，
+// 每次请求重新生成等于每次都是新设备，有触发风控的风险。
+// 生成失败时返回空串与 false，调用方应降级为不带 machineId 的 User-Agent。
+func EnsureKiroMachineID(creds map[string]any) (string, bool) {
+	if creds == nil {
+		return "", false
+	}
+	if existing, ok := creds["machine_id"].(string); ok {
+		if trimmed := strings.TrimSpace(existing); trimmed != "" {
+			return trimmed, false
+		}
+	}
+
+	id, err := GenerateKiroMachineID()
+	if err != nil {
+		return "", false
+	}
+	creds["machine_id"] = id
+	return id, true
+}
+
+// KiroTokenCacheKey 返回分布式刷新锁使用的缓存键，形态对齐其他平台。
+func KiroTokenCacheKey(account *Account) string {
+	if account == nil {
+		return "kiro:account:0"
+	}
+	return "kiro:account:" + strconv.FormatInt(account.ID, 10)
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestKiro|TestEnsureKiroMachineID|TestGenerateKiroMachineID|TestIsKiroAPIKey' -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 全模块回归并提交**
+
+```bash
+cd backend && gofmt -w internal/service/kiro_credentials.go && go build ./... && go test -tags=unit ./...
+git add backend/internal/service/kiro_credentials.go backend/internal/service/kiro_credentials_test.go
+git commit -m "feat(kiro): Account 凭证访问器与稳定设备指纹"
+```
+
+---
+
+> **计划文档状态：** A 组（Task 1-8）+ Task 9-10 已完整展开。
+> Task 11-20 见下方接口契约，逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -4739,9 +5088,8 @@ git commit -m "feat(kiro): 认证协议层（三条刷新路径 + IdC PKCE + 设
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 10 | `service/kiro_credentials.go` —— Account 的 kiro 凭证访问器 | `func (a *Account) KiroAuthMethod() kiro.AuthMethod`；`func (a *Account) KiroRegion() string`；`func (a *Account) KiroProfileArn() string`；`func (a *Account) KiroAPIKey() string`；`func (a *Account) KiroRefreshToken() string`；`func (a *Account) KiroAccessToken() string`；`func (a *Account) KiroClientCredentials() (id, secret string)`；`func (a *Account) KiroIssuerURL() string`；`func (a *Account) KiroFakeThinking() bool`；`func EnsureKiroMachineID(creds map[string]any) (string, bool)` —— **`machine_id` 一次生成永久持久化**（§5.5 第 2 点），返回的 bool 表示是否需要落库；`func KiroTokenCacheKey(*Account) string`（对齐 `GrokTokenCacheKey`） |
-| 11 | `service/kiro_oauth_service.go` + `service/kiro_token_refresher.go` | OAuth 服务照 `GrokOAuthService` 形状：`GenerateAuthURL` / `ExchangeCode` / `StartDeviceAuth` / `PollDeviceAuth` / `RefreshAccountToken` / `BuildAccountCredentials`；会话暂存用 `internal/pkg/redissession`（`New(rdb, prefix, ttl)` + `Set`/`Get`/`Delete`/`TryConsume`）而非进程内存 —— 自建回调页在多副本下会跨副本（§5.5 第 4 点）。刷新器实现 `OAuthRefreshExecutor`（即 `TokenRefresher` + `CacheKey`）：`CanRefresh` 对 `AuthAPIKey` 返回 false；`Refresh` 用 `MergeCredentials` 保留原字段并**回写 `profile_arn`** |
-| 12 | 接线：`token_refresh_service.go:139` 注册表加 kiro 行；`handler/admin/kiro_oauth_handler.go`；回调路由 | 注册行 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}`；handler 暴露 `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；wire provider set + `go build ./...` 验证 |
+| 11 | `service/kiro_oauth_service.go` + `service/kiro_token_refresher.go` | OAuth 服务照 `GrokOAuthService` 形状：`GenerateAuthURL(ctx, proxyID, redirectURI, issuerURL)` / `ExchangeCode(ctx, input)` / `StartDeviceAuth(ctx, proxyID)` / `PollDeviceAuth(ctx, sessionID)` / `RefreshAccountToken(ctx, account)` / `BuildAccountCredentials(ts *kiro.TokenSet, method kiro.AuthMethod)`；会话暂存用 `internal/pkg/redissession`（`New(rdb, prefix, ttl)` + `Set`/`Get`/`Delete`/`TryConsume`）而非进程内存 —— 自建回调页在多副本下会跨副本（§5.5 第 4 点）。刷新器实现 `OAuthRefreshExecutor`（= `TokenRefresher` 的 `CanRefresh`/`NeedsRefresh`/`Refresh` 加上 `CacheKey`）：`CanRefresh` 对 `kiro.AuthAPIKey` 返回 false；`Refresh` 用 `MergeCredentials(account.Credentials, newCreds)` 保留原字段并**回写 `profile_arn`** |
+| 12 | 接线：注册表 + admin handler + 回调路由 + wire | `token_refresh_service.go:139` 后加 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}`；`handler/admin/kiro_oauth_handler.go` 暴露 `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；wire provider set 后用 `go build ./...` 验证（**不要盲目 regen —— `wire_gen.go` 的 invoice 块是手工维护的**） |
 
 
 ### B 组：凭证与授权
