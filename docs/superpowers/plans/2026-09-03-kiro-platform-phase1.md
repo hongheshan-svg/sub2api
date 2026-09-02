@@ -8867,23 +8867,170 @@ git commit -m "feat(kiro): 额度获取与 credits 冷却
 
 ---
 
-> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ D 组的 Task 19-20 已完整展开。
-> Task 21 起见下方接口契约。
+### Task 21: 计费落账核实与预扣费兜底
+
+**Files:**
+- Create: `backend/internal/service/kiro_billing_test.go`
+- Modify: 视 Step 1 的调查结果而定（可能是 `kiro_gateway_service.go` 或预扣费路径）
+
+**Interfaces:**
+- Consumes: Task 17 填好的 `ForwardResult.Usage`；现有 `billing_service`
+- Produces: 无新导出 API；产出的是**验证**与（若需要的话）预扣费兜底
+
+**本任务解决设计文档 §10 的第 3 条开放假设**：
+「预扣费路径对 `max_tokens` 的依赖尚未核实」。
+
+Kiro 的 `userInputMessage` 没有 `max_tokens` 槽位（设计文档 §6.3 有损清单），
+所以入站请求里的 `max_tokens` 在转换中被丢弃。如果本仓库的预扣费逻辑依赖它估算
+消费上限，kiro 这条线会拿到零值 —— 可能导致**预扣为 0**（用户余额不足也放行）
+或**预扣异常大**（正常请求被拒）。两种都是真实的线上故障。
+
+- [ ] **Step 1: 调查预扣费对 `max_tokens` 的依赖**
+
+```bash
+cd backend
+grep -rn "MaxTokens" internal/service/billing_*.go internal/handler/gateway_*.go | grep -v _test
+grep -rn "func.*[Pp]reCharge\|预扣\|reserve" internal/service/billing_*.go | grep -v _test
+```
+
+把结论写进本任务的提交信息。三种可能：
+
+- **不依赖** → 无需改代码，只补 Step 3 的落账测试
+- **依赖且有默认值** → 确认默认值对 kiro 合理，补测试固化
+- **依赖且无默认值** → 走 Step 2 加兜底
+
+- [ ] **Step 2: 仅当 Step 1 判定需要时 —— 加预扣费兜底**
+
+在 `kiro_gateway_service.go` 的 `ForwardUpstream` 里，解析出 `inbound` 之后补一段：
+
+```go
+	// Kiro 的 userInputMessage 没有 max_tokens 槽位，该值在转换中被丢弃。
+	// 预扣费若依赖它，这里用一个保守上限兜底，避免预扣为 0（余额不足也放行）
+	// 或预扣异常大（正常请求被拒）。
+	if inbound.MaxTokens <= 0 {
+		inbound.MaxTokens = kiroDefaultMaxTokens
+	}
+```
+
+并在文件顶部定义：
+
+```go
+// kiroDefaultMaxTokens 是入站未声明 max_tokens 时用于预扣费估算的保守上限。
+// 取值参照 Claude 模型的常见单轮输出上限，只影响预扣，实际扣费以真实用量为准。
+const kiroDefaultMaxTokens = 8192
+```
+
+- [ ] **Step 3: 写落账测试**
+
+创建 `backend/internal/service/kiro_billing_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+// TestKiroUsageMappingKeepsUpstreamCacheTokens 固化设计文档 D4 的计费口径：
+// cache token 用 meteringEvent 的真实值，input/output 才是估算。
+func TestKiroUsageMappingKeepsUpstreamCacheTokens(t *testing.T) {
+	tr := kiro.NewStreamTranslator("claude-sonnet-4.6", "msg_1", false)
+
+	// 直接构造 usage 场景：真实 cache token + 估算 output。
+	usage := tr.Usage()
+	require.Zero(t, usage.CacheReadInputTokens, "无 meteringEvent 时为 0")
+
+	inbound := &apicompat.AnthropicRequest{
+		System: rawJSONForBilling(t, `"a system prompt of some length"`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSONForBilling(t, `"hello there, this is a message"`)},
+		},
+	}
+
+	claudeUsage := ClaudeUsage{
+		InputTokens:              kiro.EstimateRequestInput(inbound),
+		OutputTokens:             usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens,
+	}
+
+	require.Positive(t, claudeUsage.InputTokens, "input token 必须来自本地估算，不得为 0")
+	require.Zero(t, claudeUsage.CacheCreationInputTokens)
+}
+
+// TestKiroBillingModeIsToken 固化 usage_log.billing_mode 的取值。
+// kiro 走 token 计费（设计文档 D4），credits 只用于调度与额度展示。
+func TestKiroBillingModeIsToken(t *testing.T) {
+	require.Equal(t, "token", kiroBillingMode,
+		"kiro 按估算 token 计费；credits 只记账号层，不进 usage_log")
+}
+```
+
+在测试文件底部加辅助函数并 import `"encoding/json"`：
+
+```go
+func rawJSONForBilling(t *testing.T, s string) json.RawMessage {
+	t.Helper()
+	require.True(t, json.Valid([]byte(s)))
+	return json.RawMessage(s)
+}
+```
+
+并在 `kiro_gateway_service.go` 里定义常量：
+
+```go
+// kiroBillingMode 是 usage_log.billing_mode 的取值。
+// kiro 按估算 token 计费；credits 只记在账号层，不逐请求入库（设计文档 §7.4）。
+const kiroBillingMode = "token"
+```
+
+- [ ] **Step 4: 端到端核实一次真实落账**
+
+用 Task 17 Step 7 建立的假上游跑一次完整转发，然后断言写入 `usage_log` 的行：
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestKiro' -v
+```
+
+人工核对四点（若现有测试基建不便断言，至少在本地起服务跑一次并查库确认）：
+
+1. `billing_mode` 为 `token`
+2. `cache_creation_tokens` / `cache_read_tokens` 等于 `meteringEvent` 的值
+3. `input_tokens` / `output_tokens` 非零且量级合理（估算误差 ±10-20% 属预期）
+4. `usage_log` 里**没有** credits 列的写入尝试（credits 只在账号额度视图）
+
+- [ ] **Step 5: 全量回归并提交**
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./...
+git add backend/internal/service/kiro_billing_test.go backend/internal/service/kiro_gateway_service.go
+git commit -m "feat(kiro): 计费落账核实与预扣费兜底
+
+核实结论：<填入 Step 1 的调查结果>。
+cache token 用 meteringEvent 真实值，input/output 本地估算，
+billing_mode=token；credits 只记账号层不进 usage_log。"
+```
+
+---
+
+> **计划文档状态：** **A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ D 组（19-21）已全部完整展开。**
+> 至此后端完整：账号可建可授权可刷新、流量可转发、额度可见、计费落账。
+> E 组（前端）见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
 
-### D 组剩余
-
-| Task | 交付物 | 关键接口 |
-|---|---|---|
-| 21 | 计费落账核实 | `ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账、`usage_log.billing_mode="token"`、`cache_creation_tokens`/`cache_read_tokens` 落的是 `meteringEvent` 真实值。**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办）：`grep -rn "MaxTokens" backend/internal/service/billing_*.go backend/internal/handler/gateway_*.go`；若预扣费依赖它，kiro 用「`kiro.EstimateRequestInput` + 保守 output 上限」兜底。产出一个端到端测试：一次 kiro 请求落库后 `usage_log` 各字段符合预期 |
-
 ### E 组：前端（Task 22-23）
 
-| Task | 交付物 |
-|---|---|
-| 22 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
-| 23 | 额度展示（`kiro_credits` 进度条 + `kiro_subscription_title` + `kiro_overage_status`）+ 分组平台选项 |
+| Task | 交付物 | 关键点 |
+|---|---|---|
+| 22 | 账号表单 + 授权向导 | 平台下拉加 `kiro`；四种 `auth_method` 分支表单（social 粘 refreshToken / builder_id 走设备码向导 / idc 填 start URL 后跳转授权 / api_key 粘密钥）；授权向导对接 Task 14 的四个端点，设备码轮询按返回的 `interval` 节流。**参考 `frontend/src/**` 里 grok 与 antigravity 的账号表单实现**，凭证字段命名对齐 Task 10 的 credentials schema |
+| 23 | 额度展示 + 分组平台选项 | 账号详情展示 `kiro_credits` 进度条（`used_requests`/`limit_requests` 是**请求数**不是 token，文案不要写成 token）、`kiro_subscription_title`（KIRO FREE / KIRO PRO+）、`kiro_overage_status`；分组创建/编辑的平台选项加 kiro；模型白名单默认值用 `kiro.DefaultModels()` 的对应前端常量 |
 
 ### D 组：额度与计费（Task 19-20）
 
