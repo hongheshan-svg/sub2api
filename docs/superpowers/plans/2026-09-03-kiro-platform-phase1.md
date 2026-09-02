@@ -8496,8 +8496,379 @@ EffectiveLimit 计入 ACTIVE 赠送额度——只看 usageLimit 会把有赠送
 
 ---
 
-> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ Task 19 已完整展开。
-> Task 20 起见下方接口契约。
+### Task 20: 额度获取与 credits 冷却
+
+**Files:**
+- Create: `backend/internal/service/kiro_quota_fetcher.go`
+- Test: `backend/internal/service/kiro_quota_fetcher_test.go`
+- Modify: `backend/internal/service/account_usage_service.go`（`UsageInfo` 增加三个字段）
+
+**Interfaces:**
+- Consumes: Task 19 的 `kiro.BuildUsageLimitsURL` / `ParseUsageLimits` / `UsageLimits` / `UsageBreakdown`；Task 16 的 `kiro.BuildHeaders`；Task 10 的 Account 访问器；现有 `QuotaFetcher` / `QuotaResult` / `UsageInfo` / `UsageProgress`
+- Produces:
+  - `UsageInfo` 新增：`KiroCredits *UsageProgress`、`KiroSubscriptionTitle string`、`KiroOverageStatus string`
+  - `const kiroCreditsExhaustedKey = "KiroCredits"`
+  - `type KiroQuotaFetcher struct { ... }`
+  - `func NewKiroQuotaFetcher() *KiroQuotaFetcher`
+  - `func (f *KiroQuotaFetcher) CanFetch(account *Account) bool`
+  - `func (f *KiroQuotaFetcher) FetchQuota(ctx context.Context, account *Account, proxyURL string) (*QuotaResult, error)`
+  - `func kiroCreditsCooldownUntil(b *kiro.UsageBreakdown, now time.Time) (time.Time, bool)`
+
+**要点：** 冷却时间用 `getUsageLimits` 返回的**真实 `nextDateReset`**，
+比 Antigravity 的固定 5 小时准确。`nextDateReset` 缺失或已是过去时间时，
+退回一个保守的固定窗口（1 小时），避免把账号永久冷却或立刻解冻。
+
+- [ ] **Step 1: 给 `UsageInfo` 加字段**
+
+在 `backend/internal/service/account_usage_service.go` 的 `UsageInfo` 结构体里，
+Grok 字段块之后加入：
+
+```go
+	// Kiro credits 额度（AGENTIC_REQUEST 口径，UsedRequests/LimitRequests 是请求数）
+	KiroCredits           *UsageProgress `json:"kiro_credits,omitempty"`
+	KiroSubscriptionTitle string         `json:"kiro_subscription_title,omitempty"` // KIRO FREE / KIRO PRO+ ...
+	KiroOverageStatus     string         `json:"kiro_overage_status,omitempty"`     // ENABLED / DISABLED
+```
+
+- [ ] **Step 2: 写失败测试**
+
+创建 `backend/internal/service/kiro_quota_fetcher_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+func TestKiroQuotaFetcherCanFetch(t *testing.T) {
+	f := NewKiroQuotaFetcher()
+
+	require.True(t, f.CanFetch(&Account{Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social", "access_token": "at",
+	}}))
+
+	// 无可用凭证时不查。
+	require.False(t, f.CanFetch(&Account{Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social",
+	}}))
+
+	require.False(t, f.CanFetch(&Account{Platform: PlatformAnthropic}))
+	require.False(t, f.CanFetch(nil))
+}
+
+func TestKiroQuotaFetcherMapsUsageInfo(t *testing.T) {
+	reset := time.Now().Add(48 * time.Hour).Unix()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/getUsageLimits", r.URL.Path)
+		require.Equal(t, "AGENTIC_REQUEST", r.URL.Query().Get("resourceType"))
+		require.Equal(t, "arn:x", r.URL.Query().Get("profileArn"))
+		require.Contains(t, r.Header.Get("User-Agent"), "KiroIDE-")
+
+		_, _ = w.Write([]byte(`{
+			"subscriptionInfo":{"subscriptionTitle":"KIRO PRO+"},
+			"overageConfiguration":{"overageStatus":"ENABLED"},
+			"usageBreakdownList":[{
+				"resourceType":"AGENTIC_REQUEST",
+				"currentUsage":600,"usageLimit":1000,
+				"nextDateReset":` + itoa(reset) + `,
+				"bonuses":[{"usageLimit":200,"status":"ACTIVE"}]
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	f := NewKiroQuotaFetcher()
+	f.qHostFor = func(*Account) string { return srv.URL }
+
+	account := &Account{ID: 1, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social", "access_token": "at", "profile_arn": "arn:x",
+	}}
+
+	res, err := f.FetchQuota(context.Background(), account, "")
+	require.NoError(t, err)
+	require.NotNil(t, res.UsageInfo)
+	require.NotNil(t, res.Raw, "原始响应要留档")
+
+	ui := res.UsageInfo
+	require.Equal(t, "KIRO PRO+", ui.KiroSubscriptionTitle)
+	require.Equal(t, "ENABLED", ui.KiroOverageStatus)
+
+	require.NotNil(t, ui.KiroCredits)
+	require.EqualValues(t, 600, ui.KiroCredits.UsedRequests)
+	require.EqualValues(t, 1200, ui.KiroCredits.LimitRequests, "必须含 ACTIVE 赠送额度")
+	require.InDelta(t, 50.0, ui.KiroCredits.Utilization, 0.01)
+	require.NotNil(t, ui.KiroCredits.ResetsAt)
+}
+
+func TestKiroQuotaFetcherUpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"expired"}`))
+	}))
+	defer srv.Close()
+
+	f := NewKiroQuotaFetcher()
+	f.qHostFor = func(*Account) string { return srv.URL }
+
+	_, err := f.FetchQuota(context.Background(), &Account{
+		ID: 1, Platform: PlatformKiro,
+		Credentials: map[string]any{"auth_method": "social", "access_token": "at"},
+	}, "")
+	require.Error(t, err)
+}
+
+// TestKiroCreditsCooldownUsesRealResetTime 覆盖比 Antigravity 更准的一点：
+// 冷却到上游给出的真实重置时间，而不是固定 5 小时。
+func TestKiroCreditsCooldownUsesRealResetTime(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(30 * time.Hour)
+
+	b := &kiro.UsageBreakdown{CurrentUsage: 1200, UsageLimit: 1000, NextDateReset: &reset}
+	until, ok := kiroCreditsCooldownUntil(b, now)
+	require.True(t, ok)
+	require.WithinDuration(t, reset, until, time.Second)
+
+	// 未耗尽 → 不冷却。
+	b.CurrentUsage = 500
+	_, ok = kiroCreditsCooldownUntil(b, now)
+	require.False(t, ok)
+}
+
+func TestKiroCreditsCooldownFallsBackWhenResetMissingOrStale(t *testing.T) {
+	now := time.Now()
+
+	// 缺 nextDateReset。
+	b := &kiro.UsageBreakdown{CurrentUsage: 1000, UsageLimit: 1000}
+	until, ok := kiroCreditsCooldownUntil(b, now)
+	require.True(t, ok)
+	require.WithinDuration(t, now.Add(kiroCreditsFallbackCooldown), until, time.Second)
+
+	// nextDateReset 已过期 —— 直接用会导致立刻解冻并反复打上游。
+	past := now.Add(-time.Hour)
+	b.NextDateReset = &past
+	until, ok = kiroCreditsCooldownUntil(b, now)
+	require.True(t, ok)
+	require.WithinDuration(t, now.Add(kiroCreditsFallbackCooldown), until, time.Second)
+}
+```
+
+在测试文件底部加入辅助函数并 import `"strconv"`：
+
+```go
+func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestKiroQuotaFetcher|TestKiroCreditsCooldown' -v
+```
+
+Expected: FAIL —— `undefined: NewKiroQuotaFetcher`。
+
+- [ ] **Step 4: 实现 `kiro_quota_fetcher.go`**
+
+```go
+package service
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+)
+
+// kiroCreditsExhaustedKey 是 model_rate_limits 中标记 credits 耗尽的特殊 key。
+// 与 Antigravity 的 "AICredits" 并列，各平台独立。
+const kiroCreditsExhaustedKey = "KiroCredits"
+
+// kiroCreditsFallbackCooldown 是拿不到可信重置时间时的保守冷却窗口。
+const kiroCreditsFallbackCooldown = time.Hour
+
+// kiroQuotaTimeout 是额度查询的超时。
+const kiroQuotaTimeout = 20 * time.Second
+
+// kiroQuotaBodyLimit 限制额度响应的读取量。
+const kiroQuotaBodyLimit = 1 << 20
+
+// KiroQuotaFetcher 实现 QuotaFetcher，通过 getUsageLimits 拉取账号额度。
+type KiroQuotaFetcher struct {
+	// qHostFor 可被测试替换以指向 httptest.Server。
+	qHostFor func(account *Account) string
+}
+
+// NewKiroQuotaFetcher 创建额度获取器。
+func NewKiroQuotaFetcher() *KiroQuotaFetcher {
+	return &KiroQuotaFetcher{
+		qHostFor: func(account *Account) string {
+			return fmt.Sprintf("https://q.%s.amazonaws.com", account.KiroRegion())
+		},
+	}
+}
+
+// CanFetch 判断账号是否具备查询额度的凭证。
+func (f *KiroQuotaFetcher) CanFetch(account *Account) bool {
+	if account == nil || account.Platform != PlatformKiro {
+		return false
+	}
+	return strings.TrimSpace(account.KiroBearerToken()) != ""
+}
+
+// FetchQuota 查询并映射账号额度。
+func (f *KiroQuotaFetcher) FetchQuota(ctx context.Context, account *Account, proxyURL string) (*QuotaResult, error) {
+	if !f.CanFetch(account) {
+		return nil, fmt.Errorf("kiro: account %d has no usable credential for quota lookup", account.GetID())
+	}
+
+	endpoint := kiro.BuildUsageLimitsURL(f.qHostFor(account), account.KiroProfileArn())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	// 复用转发路径的指纹头，避免额度探测与转发呈现两种客户端形态。
+	machineID, _ := EnsureKiroMachineID(account.Credentials)
+	req.Header = kiro.BuildHeaders(kiro.HeaderOptions{
+		Endpoint:    kiro.Endpoint{Origin: "AI_EDITOR"},
+		BearerToken: account.KiroBearerToken(),
+		MachineID:   machineID,
+		IsAPIKey:    account.IsKiroAPIKeyAccount(),
+		Profile:     kiro.DefaultClientProfile(),
+	})
+
+	hc, err := httpclient.GetClient(httpclient.Options{ProxyURL: proxyURL, Timeout: kiroQuotaTimeout})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, kiroQuotaBodyLimit))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("kiro: getUsageLimits returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	limits, err := kiro.ParseUsageLimits(body)
+	if err != nil {
+		return nil, err
+	}
+
+	return &QuotaResult{
+		UsageInfo: kiroUsageInfo(limits),
+		Raw:       rawJSONMap(body),
+	}, nil
+}
+
+// kiroUsageInfo 把解析结果映射成账号额度视图。
+func kiroUsageInfo(limits *kiro.UsageLimits) *UsageInfo {
+	now := time.Now()
+	info := &UsageInfo{
+		Source:                "active",
+		UpdatedAt:             &now,
+		KiroSubscriptionTitle: limits.SubscriptionTitle,
+		KiroOverageStatus:     limits.OverageStatus,
+	}
+
+	b := limits.AgenticRequest()
+	if b == nil {
+		return info
+	}
+
+	progress := &UsageProgress{
+		Utilization:   b.UtilizationPercent(),
+		UsedRequests:  int64(b.CurrentUsage),
+		LimitRequests: int64(b.EffectiveLimit()),
+		ResetsAt:      b.NextDateReset,
+	}
+	if b.NextDateReset != nil {
+		if remaining := int(time.Until(*b.NextDateReset).Seconds()); remaining > 0 {
+			progress.RemainingSeconds = remaining
+		}
+	}
+	info.KiroCredits = progress
+	return info
+}
+
+// kiroCreditsCooldownUntil 返回 credits 耗尽时应冷却到的时间点。
+//
+// 优先用上游给出的真实 nextDateReset（比 Antigravity 的固定 5 小时准确）；
+// 缺失或已过期时退回保守窗口 —— 直接用过期时间会导致立刻解冻并反复打上游。
+func kiroCreditsCooldownUntil(b *kiro.UsageBreakdown, now time.Time) (time.Time, bool) {
+	if b == nil || !b.Exhausted() {
+		return time.Time{}, false
+	}
+	if b.NextDateReset != nil && b.NextDateReset.After(now) {
+		return *b.NextDateReset, true
+	}
+	return now.Add(kiroCreditsFallbackCooldown), true
+}
+```
+
+> **实现提示**：`rawJSONMap(body)` 与 `account.GetID()` 是占位写法。
+> 前者用 `json.Unmarshal` 到 `map[string]any` 实现（失败返回 nil）；
+> 后者若 `Account` 无该方法，直接用 `account.ID`。
+
+- [ ] **Step 5: 接入 credits 冷却**
+
+在 Task 17 的 `finishWithAction` 里，`SignalCreditsExhausted` 分支调用
+`kiroCreditsCooldownUntil` 并写入限流键（照
+`antigravity_credits_overages.go:61 setCreditsExhausted` 的写法）：
+
+```go
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
+		// 记日志，不阻断错误返回
+	}
+	s.updateAccountModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
+```
+
+同时把 `NewKiroQuotaFetcher` 注册进额度获取器的平台分派处
+（`grep -rn "QuotaFetcher" backend/internal/service/*.go backend/internal/service/wire.go | grep -v _test`）。
+
+- [ ] **Step 6: 运行测试并全量回归**
+
+```bash
+cd backend && gofmt -w internal/service/ && go build ./... && go test -tags=unit ./...
+```
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add backend/internal/service/kiro_quota_fetcher.go \
+        backend/internal/service/kiro_quota_fetcher_test.go \
+        backend/internal/service/account_usage_service.go
+git commit -m "feat(kiro): 额度获取与 credits 冷却
+
+冷却到上游真实 nextDateReset 而非固定窗口；重置时间缺失或已过期时
+退回保守窗口，避免立刻解冻后反复打上游。"
+```
+
+---
+
+> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ D 组的 Task 19-20 已完整展开。
+> Task 21 起见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -8505,15 +8876,14 @@ EffectiveLimit 计入 ACTIVE 赠送额度——只看 usageLimit 会把有赠送
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 20 | `service/kiro_quota_fetcher.go` 额度获取与 credits 冷却 | 实现 `QuotaFetcher`（`CanFetch(account) bool` + `FetchQuota(ctx, account, proxyURL) (*QuotaResult, error)`，见 `service/quota_fetcher.go:8`）。用 Task 19 的 `BuildUsageLimitsURL` + `ParseUsageLimits`，请求头复用 Task 16 的 `kiro.BuildHeaders`。映射到 `UsageInfo`：新增字段 `KiroCredits *UsageProgress`（`UsedRequests`=`CurrentUsage`、`LimitRequests`=`EffectiveLimit()`、`Utilization`=`UtilizationPercent()`、`ResetsAt`=`NextDateReset`）、`KiroSubscriptionTitle string`、`KiroOverageStatus string`。`Exhausted()` 为真时写 `model_rate_limits["KiroCredits"]` 冷却至**真实 `NextDateReset`**（而非 antigravity 那样的固定 5h） |
-| 21 | 计费落账核实 | `ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账、`usage_log.billing_mode="token"`；**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办）—— `grep -rn "MaxTokens" backend/internal/service/billing_*.go backend/internal/handler/gateway_*.go`，若预扣费依赖它，kiro 用「`kiro.EstimateRequestInput` + 保守 output 上限」兜底 |
+| 21 | 计费落账核实 | `ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账、`usage_log.billing_mode="token"`、`cache_creation_tokens`/`cache_read_tokens` 落的是 `meteringEvent` 真实值。**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办）：`grep -rn "MaxTokens" backend/internal/service/billing_*.go backend/internal/handler/gateway_*.go`；若预扣费依赖它，kiro 用「`kiro.EstimateRequestInput` + 保守 output 上限」兜底。产出一个端到端测试：一次 kiro 请求落库后 `usage_log` 各字段符合预期 |
 
 ### E 组：前端（Task 22-23）
 
 | Task | 交付物 |
 |---|---|
 | 22 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
-| 23 | 额度展示（`KiroCredits` 进度条 + 订阅档位 + overage 状态）+ 分组平台选项 |
+| 23 | 额度展示（`kiro_credits` 进度条 + `kiro_subscription_title` + `kiro_overage_status`）+ 分组平台选项 |
 
 ### D 组：额度与计费（Task 19-20）
 
