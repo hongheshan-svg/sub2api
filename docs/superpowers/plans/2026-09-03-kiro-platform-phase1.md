@@ -2439,7 +2439,243 @@ git commit -m "feat(kiro): Anthropic 请求 → Kiro conversationState 构造"
 
 ---
 
-> **计划文档状态：** Task 1-5 已完整展开。Task 6-20 见下方接口契约，逐组补齐。
+### Task 6: token 估算
+
+> **顺序说明**：本任务原排在 `stream.go` 之后，实际调换 —— `StreamTranslator.Usage()`
+> 需要用本任务的 `EstimateText` 估算 output token，先做估算器可消除反向依赖。
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/tokens.go`
+- Test: `backend/internal/pkg/kiro/tokens_test.go`
+
+**Interfaces:**
+- Consumes: `apicompat.AnthropicRequest`；Task 4 的 `FlattenSystem`
+- Produces:
+  - `func EstimateText(s string) int`
+  - `func EstimateRequestInput(req *apicompat.AnthropicRequest) int`
+
+**背景（实现者必读）：** Kiro 的 `meteringEvent` **只给 credits 和真实的 cache token，
+不给 input/output token**。本仓库全链路按 token 计费，因此 input/output 必须本地估算。
+公式移植自 `Kiro-Go/proxy/token_estimator.go`，按字符类加权：
+
+```
+若 rune 数 < 5   → ceil(n / 3)，下限 1
+否则            → ceil(ascii/4.5 + digits/2.0 + symbols/1.5 + nonASCII/1.5)，下限 1
+```
+
+字符分类：`r >= 0x80` 为 nonASCII；`'0'..'9'` 为 digits；
+`'!'..'/'`、`':'..'@'`、`'['..'\``、`'{'..'~'` 为 symbols；其余为 ascii。
+
+估算误差经验值 ±10-20%，这是既定的计费口径（设计文档 D4），不是缺陷。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/pkg/kiro/tokens_test.go`：
+
+```go
+package kiro
+
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEstimateTextEmpty(t *testing.T) {
+	t.Parallel()
+	require.Zero(t, EstimateText(""))
+}
+
+func TestEstimateTextShortStrings(t *testing.T) {
+	t.Parallel()
+
+	// 长度 < 5 走 ceil(n/3)，下限 1。
+	require.Equal(t, 1, EstimateText("a"))
+	require.Equal(t, 1, EstimateText("abc"))
+	require.Equal(t, 2, EstimateText("abcd"))
+}
+
+func TestEstimateTextAsciiProse(t *testing.T) {
+	t.Parallel()
+
+	// 36 个普通 ascii 字符（含空格）→ ceil(36/4.5) = 8
+	got := EstimateText("the quick brown fox jumps over lazyy")
+	require.Equal(t, 8, got)
+}
+
+func TestEstimateTextCJKCostsMore(t *testing.T) {
+	t.Parallel()
+
+	// 非 ASCII 按 /1.5 计，中文比等长英文贵。
+	cjk := EstimateText("中文字符测试内容一二三")
+	ascii := EstimateText("aaaaaaaaaaa")
+	require.Greater(t, cjk, ascii)
+}
+
+func TestEstimateTextSymbolsAndDigits(t *testing.T) {
+	t.Parallel()
+
+	// 12 个符号 → ceil(12/1.5) = 8
+	require.Equal(t, 8, EstimateText("{}[]()<>!@#$"))
+	// 12 个数字 → ceil(12/2) = 6
+	require.Equal(t, 6, EstimateText("123456789012"))
+}
+
+func TestEstimateTextNeverZeroForNonEmpty(t *testing.T) {
+	t.Parallel()
+	require.GreaterOrEqual(t, EstimateText(" "), 1)
+}
+
+func TestEstimateRequestInputCoversSystemMessagesTools(t *testing.T) {
+	t.Parallel()
+
+	base := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"hello world this is a message"`)},
+		},
+	}
+	withSystem := &apicompat.AnthropicRequest{
+		System:   rawJSON(t, `"a fairly long system prompt goes here"`),
+		Messages: base.Messages,
+	}
+	withTools := &apicompat.AnthropicRequest{
+		Messages: base.Messages,
+		Tools: []apicompat.AnthropicTool{{
+			Name:        "Read",
+			Description: "reads a file from disk and returns its contents",
+			InputSchema: rawJSON(t, `{"type":"object","properties":{"path":{"type":"string"}}}`),
+		}},
+	}
+
+	require.Greater(t, EstimateRequestInput(withSystem), EstimateRequestInput(base),
+		"system 必须计入 input token")
+	require.Greater(t, EstimateRequestInput(withTools), EstimateRequestInput(base),
+		"工具声明必须计入 input token")
+}
+
+func TestEstimateRequestInputNil(t *testing.T) {
+	t.Parallel()
+	require.Zero(t, EstimateRequestInput(nil))
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run TestEstimate -v
+```
+
+Expected: FAIL —— `undefined: EstimateText`。
+
+- [ ] **Step 3: 实现 `tokens.go`**
+
+```go
+package kiro
+
+import (
+	"math"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+)
+
+// EstimateText 估算一段文本的 token 数。
+//
+// Kiro 的 meteringEvent 只给 credits 和真实 cache token，不给 input/output token，
+// 而本仓库按 token 计费，因此这两项必须本地估算。公式移植自
+// Kiro-Go/proxy/token_estimator.go，按字符类加权。经验误差 ±10-20%。
+func EstimateText(s string) int {
+	if s == "" {
+		return 0
+	}
+
+	runes := []rune(s)
+	n := len(runes)
+	if n == 0 {
+		return 0
+	}
+	if n < 5 {
+		if est := int(math.Ceil(float64(n) / 3.0)); est > 1 {
+			return est
+		}
+		return 1
+	}
+
+	var ascii, digits, symbols, nonASCII int
+	for _, r := range runes {
+		switch {
+		case r >= 0x80:
+			nonASCII++
+		case r >= '0' && r <= '9':
+			digits++
+		case (r >= '!' && r <= '/') || (r >= ':' && r <= '@') ||
+			(r >= '[' && r <= '`') || (r >= '{' && r <= '~'):
+			symbols++
+		default:
+			ascii++
+		}
+	}
+
+	est := int(math.Ceil(
+		float64(ascii)/4.5 +
+			float64(digits)/2.0 +
+			float64(symbols)/1.5 +
+			float64(nonASCII)/1.5,
+	))
+	if est < 1 {
+		return 1
+	}
+	return est
+}
+
+// EstimateRequestInput 估算整个请求的 input token：system + 全部消息 + 工具声明。
+func EstimateRequestInput(req *apicompat.AnthropicRequest) int {
+	if req == nil {
+		return 0
+	}
+
+	total := 0
+
+	if system, err := FlattenSystem(req.System); err == nil {
+		total += EstimateText(system)
+	}
+
+	// 消息按原始 JSON 估算：内容块的结构本身也占 token，
+	// 且这样不会因某条消息解析失败而整体归零。
+	for _, m := range req.Messages {
+		total += EstimateText(string(m.Content))
+	}
+
+	for _, tool := range req.Tools {
+		total += EstimateText(tool.Name)
+		total += EstimateText(tool.Description)
+		total += EstimateText(string(tool.InputSchema))
+	}
+
+	return total
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -v
+```
+
+Expected: 全部 PASS。若 `TestEstimateTextAsciiProse` 的期望值与实现不符，
+**以实现公式为准修正测试期望**（公式是移植来的既定口径，不要为了凑测试改公式）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/
+git add backend/internal/pkg/kiro/tokens.go backend/internal/pkg/kiro/tokens_test.go
+git commit -m "feat(kiro): input/output token 估算"
+```
+
+---
+
+> **计划文档状态：** Task 1-6 已完整展开。Task 7-20 见下方接口契约，逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -2447,9 +2683,8 @@ git commit -m "feat(kiro): Anthropic 请求 → Kiro conversationState 构造"
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 6 | `stream.go` 流式转换 | `func NewStreamTranslator(model string) *StreamTranslator`；`func (*StreamTranslator) Feed([]byte) ([]apicompat.AnthropicStreamEvent, error)`；`func (*StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent`；`func (*StreamTranslator) Usage() apicompat.AnthropicUsage`；`func (*StreamTranslator) Credits() float64`。`toolUseEvent.Input` 分片累积 → `input_json_delta`；`FakeThinking` 开启时剥离 `<thinking>` 为 thinking block（**不带 signature，不写回 history**） |
-| 7 | `tokens.go` token 估算 | `func EstimateText(string) int`；`func EstimateRequestInput(*apicompat.AnthropicRequest) int`。移植 `Kiro-Go/proxy/token_estimator.go`：长度 < 5 时 `ceil(n/3)`；否则 `ceil(ascii/4.5 + digit/2 + symbol/1.5 + 非ASCII/1.5)`，下限 1 |
-| 8 | `models.go` + `endpoints.go` + `errors.go` | `func MapModel(string) string`；`func DefaultModels() []string`；`type Endpoint struct{URL, Origin, AmzTarget, Name string}`；`func EndpointsFor(isAPIKey bool, region string) []Endpoint`（见 spec §7.1 四端点表）；`type Signal int` 常量 `SignalAuthExpired/SignalOverage/SignalRateLimited/SignalNetworkRegion/SignalBadRequest/SignalSuspended/SignalCreditsExhausted/SignalOK` + `func Classify(status int, body []byte) Signal` —— **必测 `INVALID_MODEL_ID` → `SignalNetworkRegion`（不标记账号故障）、400 → `SignalBadRequest`（不重试不转移）** |
+| 7 | `stream.go` 流式转换 | `func NewStreamTranslator(model string, fakeThinking bool) *StreamTranslator`；`func (*StreamTranslator) Feed([]byte) ([]apicompat.AnthropicStreamEvent, error)`；`func (*StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent`；`func (*StreamTranslator) Usage() apicompat.AnthropicUsage`；`func (*StreamTranslator) Credits() float64`；`func (*StreamTranslator) SawContent() bool`。要点：`toolUseEvent.Input` 分片累积 → `input_json_delta`；`metadataEvent.StopReason` → `mapStopReason(reason, toolCount)`；`meteringEvent` 的 cache token 直接进 `Usage()`，output token 用 Task 6 的 `EstimateText` 估算累积文本；`fakeThinking` 开启时把开头的 `<thinking>...</thinking>` 剥离为 thinking block（**不带 signature**）；`SawContent()` 供上层判断「首字节前失败可重试、已出字节不可重试」 |
+| 8 | `models.go` + `endpoints.go` + `errors.go` | `func MapModel(string) string`；`func DefaultModels() []string`；`type Endpoint struct{URL, Origin, AmzTarget, Name string}`；`func EndpointsFor(isAPIKey bool, region string) []Endpoint`（见 spec §7.1 四端点表）；`type Signal int` 常量 `SignalOK/SignalAuthExpired/SignalOverage/SignalRateLimited/SignalNetworkRegion/SignalBadRequest/SignalSuspended/SignalCreditsExhausted` + `func Classify(status int, body []byte) Signal` —— **必测 `INVALID_MODEL_ID` → `SignalNetworkRegion`（不标记账号故障）、400 → `SignalBadRequest`（不重试不转移）** |
 
 
 ### B 组：凭证与授权
