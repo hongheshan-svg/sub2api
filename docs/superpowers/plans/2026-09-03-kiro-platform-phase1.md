@@ -7050,8 +7050,514 @@ kiro 有意不纳入 AllowedSchedulingThresholdPlatforms：它是 credits 制，
 
 ---
 
-> **计划文档状态：** A 组（Task 1-8）+ B 组（Task 9-14）+ Task 15 已完整展开。
-> Task 16 起见下方接口契约。
+### Task 16: 客户端指纹头与上游端点调用
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/headers.go`
+- Test: `backend/internal/pkg/kiro/headers_test.go`
+- Create: `backend/internal/service/kiro_gateway_upstream.go`
+- Test: `backend/internal/service/kiro_gateway_upstream_test.go`
+
+**Interfaces:**
+- Consumes: Task 8 的 `Endpoint` / `EndpointsFor`；Task 10 的 Account 访问器；`httpclient.GetClient`
+- Produces（`pkg/kiro`）：
+  - `type ClientProfile struct { KiroVersion, NodeVersion, SystemVersion string }`
+  - `func DefaultClientProfile() ClientProfile`
+  - `type HeaderOptions struct { Endpoint Endpoint; BearerToken, MachineID string; IsAPIKey bool; Profile ClientProfile }`
+  - `func BuildHeaders(opts HeaderOptions) http.Header`
+- Produces（`service`）：
+  - `type KiroUpstreamResult struct { Response *http.Response; Endpoint kiro.Endpoint }`
+  - `func (s *KiroGatewayService) callEndpoint(ctx context.Context, account *Account, ep kiro.Endpoint, payload []byte) (*http.Response, error)`
+
+**⚠️ 指纹头是风控敏感项**（设计文档 §5.5 第 2 点）。Kiro 上游按 User-Agent 里的
+`KiroIDE-{version}-{machineId}` 识别设备。`machineId` 必须来自账号 credentials 的
+稳定值（Task 10 的 `EnsureKiroMachineID`），**不能每次请求生成**。
+
+头部构造（移植自 `Kiro-Go/proxy/kiro_headers.go`）：
+
+```
+User-Agent:                    aws-sdk-js/{sdkVer} ua/2.1 os/{sysVer} lang/js
+                               md/nodejs#{nodeVer} api/{apiName}#{sdkVer} {mode}
+                               KiroIDE-{kiroVer}[-{machineId}]
+x-amz-user-agent:              aws-sdk-js/{sdkVer} KiroIDE-{kiroVer}[-{machineId}]
+x-amzn-codewhisperer-optout:   true
+Authorization:                 Bearer {token}
+Content-Type:                  application/json
+tokentype:                     API_KEY          （仅 API Key 账号）
+x-amz-target:                  {ep.AmzTarget}   （仅非首选端点）
+```
+
+两套 SDK 参数按端点区分：
+- `AI_EDITOR` 端点 → `codewhispererstreaming` / `1.0.34` / mode `m/E`
+- `KIRO_CLI` 端点 → `codewhispererruntime` / `1.0.0` / mode `m/N,E`
+
+- [ ] **Step 1: 写失败测试（pkg 层）**
+
+创建 `backend/internal/pkg/kiro/headers_test.go`：
+
+```go
+package kiro
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestBuildHeadersEditorEndpoint(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(false, "us-east-1")
+	h := BuildHeaders(HeaderOptions{
+		Endpoint:    eps[0],
+		BearerToken: "at_123",
+		MachineID:   "machine-abc",
+		Profile:     DefaultClientProfile(),
+	})
+
+	require.Equal(t, "Bearer at_123", h.Get("Authorization"))
+	require.Equal(t, "application/json", h.Get("Content-Type"))
+	require.Equal(t, "true", h.Get("x-amzn-codewhisperer-optout"))
+
+	ua := h.Get("User-Agent")
+	require.Contains(t, ua, "aws-sdk-js/")
+	require.Contains(t, ua, "api/codewhispererstreaming#")
+	require.Contains(t, ua, "m/E")
+	require.Contains(t, ua, "KiroIDE-")
+	require.True(t, strings.HasSuffix(ua, "-machine-abc"), "machineId 必须拼在 UA 末尾")
+
+	require.Contains(t, h.Get("x-amz-user-agent"), "KiroIDE-")
+	require.True(t, strings.HasSuffix(h.Get("x-amz-user-agent"), "-machine-abc"))
+
+	// 首选端点不带 x-amz-target。
+	require.Empty(t, h.Get("x-amz-target"))
+	// 非 API Key 账号不带 tokentype。
+	require.Empty(t, h.Get("tokentype"))
+}
+
+func TestBuildHeadersFallbackEndpointCarriesAmzTarget(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(false, "us-east-1")
+	h := BuildHeaders(HeaderOptions{
+		Endpoint:    eps[1],
+		BearerToken: "at",
+		Profile:     DefaultClientProfile(),
+	})
+
+	require.Equal(t,
+		"AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		h.Get("x-amz-target"))
+}
+
+// TestBuildHeadersAPIKeyAccount 覆盖 API Key 路径的两处差异：
+// tokentype 头 + runtime SDK 参数。
+func TestBuildHeadersAPIKeyAccount(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(true, "us-east-1")
+	h := BuildHeaders(HeaderOptions{
+		Endpoint:    eps[0],
+		BearerToken: "kiro_ak_1",
+		MachineID:   "m1",
+		IsAPIKey:    true,
+		Profile:     DefaultClientProfile(),
+	})
+
+	require.Equal(t, "API_KEY", h.Get("tokentype"))
+	require.Equal(t, "Bearer kiro_ak_1", h.Get("Authorization"))
+
+	ua := h.Get("User-Agent")
+	require.Contains(t, ua, "api/codewhispererruntime#")
+	require.Contains(t, ua, "m/N,E")
+}
+
+// TestBuildHeadersWithoutMachineIDDegradesGracefully 覆盖 machineId 生成失败的降级：
+// 宁可不带指纹，也不能每次请求编一个新的。
+func TestBuildHeadersWithoutMachineIDDegradesGracefully(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(false, "us-east-1")
+	h := BuildHeaders(HeaderOptions{
+		Endpoint:    eps[0],
+		BearerToken: "at",
+		Profile:     DefaultClientProfile(),
+	})
+
+	ua := h.Get("User-Agent")
+	require.Contains(t, ua, "KiroIDE-")
+	require.NotContains(t, ua, "KiroIDE--", "缺 machineId 时不得留下悬空连字符")
+}
+
+func TestBuildHeadersOmitsEmptyBearer(t *testing.T) {
+	t.Parallel()
+
+	h := BuildHeaders(HeaderOptions{
+		Endpoint: EndpointsFor(false, "us-east-1")[0],
+		Profile:  DefaultClientProfile(),
+	})
+	require.Empty(t, h.Get("Authorization"))
+}
+
+func TestDefaultClientProfileIsPopulated(t *testing.T) {
+	t.Parallel()
+
+	p := DefaultClientProfile()
+	require.NotEmpty(t, p.KiroVersion)
+	require.NotEmpty(t, p.NodeVersion)
+	require.NotEmpty(t, p.SystemVersion)
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run 'TestBuildHeaders|TestDefaultClientProfile' -v
+```
+
+Expected: FAIL —— `undefined: BuildHeaders`。
+
+- [ ] **Step 3: 实现 `pkg/kiro/headers.go`**
+
+```go
+package kiro
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+// 两套 SDK 参数：AI_EDITOR 端点走 streaming，KIRO_CLI 端点走 runtime。
+const (
+	streamingSDKVersion = "1.0.34"
+	streamingAPIName    = "codewhispererstreaming"
+	streamingMode       = "m/E"
+
+	runtimeSDKVersion = "1.0.0"
+	runtimeAPIName    = "codewhispererruntime"
+	runtimeMode       = "m/N,E"
+)
+
+// ClientProfile 是伪装成 Kiro IDE 所需的版本信息。
+type ClientProfile struct {
+	KiroVersion   string
+	NodeVersion   string
+	SystemVersion string
+}
+
+// DefaultClientProfile 返回默认的客户端版本组合。
+// 上游若开始按版本区分行为，改这里即可。
+func DefaultClientProfile() ClientProfile {
+	return ClientProfile{
+		KiroVersion:   "0.3.16",
+		NodeVersion:   "20.18.1",
+		SystemVersion: "darwin#24.5.0",
+	}
+}
+
+// HeaderOptions 是构造请求头所需的全部输入。
+type HeaderOptions struct {
+	Endpoint Endpoint
+	// BearerToken 对 API Key 账号是 api_key，对 OAuth 账号是 access_token。
+	BearerToken string
+	// MachineID 是账号的稳定设备指纹。为空时降级为不带指纹的 UA ——
+	// 绝不能在此处即时生成，每次请求换指纹比不带指纹更可疑。
+	MachineID string
+	IsAPIKey  bool
+	Profile   ClientProfile
+}
+
+// BuildHeaders 构造转发请求的头部。
+//
+// Kiro 上游按 User-Agent 里的 KiroIDE-{version}-{machineId} 识别设备，
+// 因此 MachineID 必须来自账号 credentials 的稳定值（见 service.EnsureKiroMachineID）。
+func BuildHeaders(opts HeaderOptions) http.Header {
+	sdkVersion, apiName, mode := streamingSDKVersion, streamingAPIName, streamingMode
+	if opts.IsAPIKey || opts.Endpoint.Origin == "KIRO_CLI" {
+		sdkVersion, apiName, mode = runtimeSDKVersion, runtimeAPIName, runtimeMode
+	}
+
+	kiroTag := "KiroIDE-" + opts.Profile.KiroVersion
+	if machineID := strings.TrimSpace(opts.MachineID); machineID != "" {
+		kiroTag += "-" + machineID
+	}
+
+	userAgent := fmt.Sprintf(
+		"aws-sdk-js/%s ua/2.1 os/%s lang/js md/nodejs#%s api/%s#%s %s %s",
+		sdkVersion,
+		opts.Profile.SystemVersion,
+		opts.Profile.NodeVersion,
+		apiName,
+		sdkVersion,
+		mode,
+		kiroTag,
+	)
+	amzUserAgent := fmt.Sprintf("aws-sdk-js/%s %s", sdkVersion, kiroTag)
+
+	h := make(http.Header)
+	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "application/json, text/event-stream")
+	h.Set("User-Agent", userAgent)
+	h.Set("x-amz-user-agent", amzUserAgent)
+	// 明确关闭上游的数据留存，与 Kiro IDE 行为一致。
+	h.Set("x-amzn-codewhisperer-optout", "true")
+
+	if token := strings.TrimSpace(opts.BearerToken); token != "" {
+		h.Set("Authorization", "Bearer "+token)
+	}
+	if opts.IsAPIKey {
+		// 上游两种大小写都接受；CLI 抓包里是小写。
+		h.Set("tokentype", "API_KEY")
+	}
+	if target := strings.TrimSpace(opts.Endpoint.AmzTarget); target != "" {
+		h.Set("x-amz-target", target)
+	}
+
+	return h
+}
+```
+
+- [ ] **Step 4: 写失败测试（service 层）**
+
+创建 `backend/internal/service/kiro_gateway_upstream_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+func TestKiroCallEndpointSendsFingerprintHeaders(t *testing.T) {
+	var gotUA, gotOptout, gotAuth, gotTokenType string
+	var gotBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotOptout = r.Header.Get("x-amzn-codewhisperer-optout")
+		gotAuth = r.Header.Get("Authorization")
+		gotTokenType = r.Header.Get("tokentype")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	svc := &KiroGatewayService{}
+	account := &Account{ID: 1, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":  "social",
+		"access_token": "at_1",
+		"machine_id":   "stable-machine",
+	}}
+	ep := kiro.Endpoint{URL: srv.URL, Origin: "AI_EDITOR", Name: "test"}
+
+	resp, err := svc.callEndpoint(context.Background(), account, ep, []byte(`{"a":1}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, gotUA, "stable-machine")
+	require.Equal(t, "true", gotOptout)
+	require.Equal(t, "Bearer at_1", gotAuth)
+	require.Empty(t, gotTokenType)
+	require.JSONEq(t, `{"a":1}`, string(gotBody))
+}
+
+func TestKiroCallEndpointAPIKeyAccountSendsTokenType(t *testing.T) {
+	var gotTokenType, gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTokenType = r.Header.Get("tokentype")
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	svc := &KiroGatewayService{}
+	account := &Account{ID: 2, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "api_key",
+		"api_key":     "kiro_ak_9",
+	}}
+	ep := kiro.Endpoint{URL: srv.URL, Origin: "KIRO_CLI", Name: "cli"}
+
+	resp, err := svc.callEndpoint(context.Background(), account, ep, []byte(`{}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, "API_KEY", gotTokenType)
+	require.Equal(t, "Bearer kiro_ak_9", gotAuth)
+}
+
+// TestKiroCallEndpointGeneratesAndPersistsMachineID 覆盖首次调用时的指纹固化。
+func TestKiroCallEndpointGeneratesAndPersistsMachineID(t *testing.T) {
+	var seenUA []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUA = append(seenUA, r.Header.Get("User-Agent"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	svc := &KiroGatewayService{}
+	account := &Account{ID: 3, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":  "social",
+		"access_token": "at",
+	}}
+	ep := kiro.Endpoint{URL: srv.URL, Origin: "AI_EDITOR", Name: "test"}
+
+	for i := 0; i < 2; i++ {
+		resp, err := svc.callEndpoint(context.Background(), account, ep, []byte(`{}`))
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+	}
+
+	require.Len(t, seenUA, 2)
+	require.Equal(t, seenUA[0], seenUA[1], "同一账号两次请求的指纹必须一致")
+	require.NotEmpty(t, account.Credentials["machine_id"], "生成的指纹必须写回 credentials 供调用方落库")
+}
+```
+
+- [ ] **Step 5: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run TestKiroCallEndpoint -v
+```
+
+Expected: FAIL —— `undefined: KiroGatewayService`。
+
+- [ ] **Step 6: 实现 `service/kiro_gateway_upstream.go`**
+
+```go
+package service
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+)
+
+// kiroUpstreamTimeout 是单次上游请求的总超时。
+// 流式响应可能长时间保持，取值需覆盖最长的一次生成。
+const kiroUpstreamTimeout = 10 * time.Minute
+
+// KiroGatewayService 负责把 Anthropic 请求转发到 Kiro 上游。
+//
+// 结构对齐 AntigravityGatewayService：本文件只管「怎么把一次请求发出去」，
+// 编排、流式写出与错误分类在 kiro_gateway_service.go。
+type KiroGatewayService struct {
+	// 依赖在 Task 17 补齐（账号仓储、限流、计费等）。
+	// 本文件的 callEndpoint 只依赖 account 与 httpclient，便于独立测试。
+
+	// clientProfile 可被测试或配置覆盖。
+	clientProfile *kiro.ClientProfile
+}
+
+// profile 返回生效的客户端版本组合。
+func (s *KiroGatewayService) profile() kiro.ClientProfile {
+	if s != nil && s.clientProfile != nil {
+		return *s.clientProfile
+	}
+	return kiro.DefaultClientProfile()
+}
+
+// callEndpoint 向指定端点发起一次请求。
+//
+// 调用方负责按 kiro.EndpointsFor 的顺序重试；本函数只发一次。
+// 返回的 *http.Response 由调用方关闭。
+func (s *KiroGatewayService) callEndpoint(ctx context.Context, account *Account, ep kiro.Endpoint, payload []byte) (*http.Response, error) {
+	if account == nil {
+		return nil, fmt.Errorf("kiro: account is required")
+	}
+
+	// 首次使用时固化设备指纹。返回 true 说明是新生成的，
+	// 调用方（Task 17 的编排层）需要把 credentials 落库。
+	machineID, _ := EnsureKiroMachineID(account.Credentials)
+
+	header := kiro.BuildHeaders(kiro.HeaderOptions{
+		Endpoint:    ep,
+		BearerToken: account.KiroBearerToken(),
+		MachineID:   machineID,
+		IsAPIKey:    account.IsKiroAPIKeyAccount(),
+		Profile:     s.profile(),
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.URL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("kiro: build request: %w", err)
+	}
+	req.Header = header
+
+	hc, err := s.httpClientFor(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: call %s: %w", ep.Name, err)
+	}
+	return resp, nil
+}
+
+// httpClientFor 返回按账号代理配置构建的客户端。
+func (s *KiroGatewayService) httpClientFor(ctx context.Context, account *Account) (*http.Client, error) {
+	proxyURL := s.resolveProxyURL(ctx, account)
+	hc, err := httpclient.GetClient(httpclient.Options{
+		ProxyURL: proxyURL,
+		Timeout:  kiroUpstreamTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kiro: build http client: %w", err)
+	}
+	return hc, nil
+}
+```
+
+> **实现提示**：`resolveProxyURL(ctx, account)` 应复用仓库现有的账号代理解析入口。
+> 先 `grep -rn "func.*ResolveAccountProxy\|accountProxyURL\|ProxyURLForAccount" backend/internal/service/ | grep -v _test`
+> 找到既有实现并调用它，**不要新写一份代理解析**。若确实没有可复用的，
+> 按 `AntigravityQuotaFetcher.GetProxyURL` 的写法实现一个同名方法。
+
+- [ ] **Step 7: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -count=1 && go test -tags=unit ./internal/service/ -run TestKiroCallEndpoint -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 8: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ internal/service/ && go build ./... && go vet ./internal/...
+git add backend/internal/pkg/kiro/headers.go backend/internal/pkg/kiro/headers_test.go \
+        backend/internal/service/kiro_gateway_upstream.go \
+        backend/internal/service/kiro_gateway_upstream_test.go
+git commit -m "feat(kiro): 客户端指纹头与上游端点调用
+
+machineId 取自账号 credentials 的稳定值并在首次调用时固化——
+每次请求换指纹比不带指纹更容易触发上游风控。"
+```
+
+---
+
+> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ Task 15-16 已完整展开。
+> Task 17 起见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -7059,9 +7565,22 @@ kiro 有意不纳入 AllowedSchedulingThresholdPlatforms：它是 credits 制，
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 16 | `service/kiro_gateway_service.go` 转发主流程 | `func NewKiroGatewayService(...) *KiroGatewayService`；`func (s *KiroGatewayService) Messages(ctx, *GatewayRequest) error`（流式写出）。要点：用 Task 8 的 `kiro.EndpointsFor` 按序尝试；请求头指纹 `User-Agent: aws-sdk-js/{ver} ... KiroIDE-{ver}-{machineId}`、`x-amz-user-agent`、`x-amzn-codewhisperer-optout: true`、API Key 账号加 `tokentype: API_KEY`、非首选端点加 `x-amz-target`；请求体用 `kiro.BuildRequest`，响应用 `kiro.NewStreamTranslator`；`conversationId` 接粘性会话，**换账号时必须重新生成** |
-| 17 | 错误分类接入调度 | `kiro.Classify(status, body)` → `Signal`；403 → 强制刷新一次并重试同端点；429 → 换端点，端点耗尽后交 `ratelimit_service.go:1129 handle429`；`SignalCreditsExhausted` → 写 `model_rate_limits["KiroCredits"]` 冷却至 `getUsageLimits.nextDateReset`；**`Signal.Failoverable()` 为 false 时不得进入账号转移循环**（`SignalBadRequest` / `SignalNetworkRegion` / `SignalSuspended`）；`StreamTranslator.SawContent()` 为 true 时一律不可重试 |
+| 17 | `service/kiro_gateway_service.go` 转发编排 + 流式写出 + 错误分类接入 | `func (s *KiroGatewayService) ForwardUpstream(ctx, c *gin.Context, account *Account, body []byte) (*ForwardResult, error)`（签名对齐 `AntigravityGatewayService.ForwardUpstream`）。流程：`apicompat` 解析入站 → `kiro.BuildRequest` → 按 `kiro.EndpointsFor` 顺序 `callEndpoint` → `kiro.NewStreamTranslator` 边解码边写 SSE。错误分类：`kiro.Classify(status, body)` → `SignalAuthExpired` 强制刷新一次并重试同端点；`SignalRateLimited` 换下一个端点，端点耗尽后交 `ratelimit_service.go:1129 handle429`；`SignalCreditsExhausted` 写 `model_rate_limits["KiroCredits"]` 冷却至 `getUsageLimits.nextDateReset`；**`Signal.Failoverable()` 为 false 时（`SignalBadRequest` / `SignalNetworkRegion` / `SignalSuspended`）不得进入账号转移循环**；`StreamTranslator.SawContent()` 为 true 时一律不可重试（会产生重复内容）。`conversationId` 接粘性会话，**换账号时必须重新生成** |
 | 18 | 路由分派 + handler + wire | `routes/gateway.go:195` 的 `/v1/messages` 分支加 `case service.PlatformKiro: h.KiroGateway.Messages(c)`；`handler/kiro_gateway_handler.go`；provider set 后 `go build ./...` 验证（`wire_gen.go` 的 invoice 块手工维护） |
+
+### D 组：额度与计费（Task 19-20）
+
+| Task | 交付物 |
+|---|---|
+| 19 | `service/kiro_quota_fetcher.go`：`CanFetch` / `FetchQuota` / `GetProxyURL`，调 `getUsageLimits`（见 spec §7.3 的查询串与响应字段） |
+| 20 | 计费接入：cache token 用 `meteringEvent` 真实值，input/output 用 `kiro.EstimateRequestInput` 与 `StreamTranslator.Usage()`，`billing_mode="token"`；credits 只记账号层不进 `usage_log` |
+
+### E 组：前端（Task 21-22）
+
+| Task | 交付物 |
+|---|---|
+| 21 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
+| 22 | 额度展示 + 分组平台选项 |
 
 ### D 组：额度与计费（Task 19-20）
 
