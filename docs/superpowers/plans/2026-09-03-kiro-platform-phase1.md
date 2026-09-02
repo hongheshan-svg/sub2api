@@ -5478,18 +5478,1287 @@ Redis 后端。放在 pkg/ 是因为 depguard 禁止 service 层 import redis，
 
 ---
 
-> **计划文档状态：** A 组（Task 1-8）+ Task 9-11 已完整展开。
-> Task 12 起见下方接口契约，逐组补齐。
+### Task 12: 授权流服务
+
+**Files:**
+- Create: `backend/internal/service/kiro_oauth_service.go`
+- Test: `backend/internal/service/kiro_oauth_service_test.go`
+
+**Interfaces:**
+- Consumes: Task 9 的 `kiro.RegisterOIDCClient` / `NewPKCE` / `BuildAuthorizeURL` / `ExchangeAuthorizationCode` / `StartDeviceAuthorization` / `PollDeviceToken` / `RefreshSocial` / `RefreshOIDC` / `OIDCBase` / `SocialBase` / `TokenSet` / `AuthMethod`；Task 10 的 Account 访问器；Task 11 的 `kiro.SessionStore` / `OAuthSession` / `GenerateSessionID` / `SessionTTL`；现有 `ProxyRepository`、`httpclient.GetClient`、`infraerrors`
+- Produces:
+  - `type KiroOAuthService struct { ... }`
+  - `func NewKiroOAuthService(proxyRepo ProxyRepository) *KiroOAuthService`
+  - `func (s *KiroOAuthService) WithSessionStore(store *kiro.SessionStore) *KiroOAuthService`
+  - `func (s *KiroOAuthService) Stop()`
+  - `type KiroAuthURLInput struct { ProxyID *int64; RedirectURI, IssuerURL, Region string }`
+  - `type KiroAuthURLResult struct { SessionID, AuthorizeURL string; ExpiresIn int }`
+  - `func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthURLInput) (*KiroAuthURLResult, error)`
+  - `type KiroExchangeCodeInput struct { SessionID, Code, State string; ProxyID *int64 }`
+  - `func (s *KiroOAuthService) ExchangeCode(ctx context.Context, input *KiroExchangeCodeInput) (*kiro.TokenSet, *kiro.OAuthSession, error)`
+  - `type KiroDeviceAuthResult struct { SessionID, UserCode, VerificationURI, VerificationURIComplete string; ExpiresIn, Interval int }`
+  - `func (s *KiroOAuthService) StartDeviceAuth(ctx context.Context, proxyID *int64, region string) (*KiroDeviceAuthResult, error)`
+  - `func (s *KiroOAuthService) PollDeviceAuth(ctx context.Context, sessionID string, proxyID *int64) (*kiro.TokenSet, *kiro.OAuthSession, error)`
+  - `func (s *KiroOAuthService) RefreshAccountToken(ctx context.Context, account *Account) (*kiro.TokenSet, error)`
+  - `type KiroCredentialInput struct { TokenSet *kiro.TokenSet; Method kiro.AuthMethod; Region, IssuerURL, ClientID, ClientSecret string }`
+  - `func (s *KiroOAuthService) BuildAccountCredentials(in KiroCredentialInput) map[string]any`
+
+**三个安全要求（必须落到测试里）：**
+
+1. **`state` 必须校验** —— 回调携带的 `state` 与会话中存的不一致时直接拒绝（防 CSRF）。
+   用 `crypto/subtle.ConstantTimeCompare`，与 `GrokOAuthService` 一致。
+2. **`TryConsume` 防重放** —— 一个授权码只能兑换一次。回调 URL 会出现在浏览器历史里，
+   重放必须失败。
+3. **`profile_arn` 必须写入 credentials** —— 设计文档 §5.5 第 1 点。
+
+**base URL 做成结构体字段**（默认 `kiro.OIDCBase` / `kiro.SocialBase`），
+测试用 `httptest.Server` 注入，避免打真网。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/service/kiro_oauth_service_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+// newTestKiroOAuthService 返回一个把两个 base URL 都指向 srv 的服务实例。
+func newTestKiroOAuthService(t *testing.T, srv *httptest.Server) *KiroOAuthService {
+	t.Helper()
+	svc := NewKiroOAuthService(nil)
+	t.Cleanup(svc.Stop)
+	svc.oidcBase = func(string) string { return srv.URL }
+	svc.socialBase = func(string) string { return srv.URL }
+	return svc
+}
+
+func TestKiroGenerateAuthURLRegistersClientAndStoresSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/client/register", r.URL.Path)
+		_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+
+	res, err := svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{
+		RedirectURI: "https://gw.example.com/admin/kiro/oauth/callback",
+		IssuerURL:   "https://d-90667b4f8e.awsapps.com/start",
+		Region:      "us-east-1",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, res.SessionID)
+	require.Positive(t, res.ExpiresIn)
+
+	u, err := url.Parse(res.AuthorizeURL)
+	require.NoError(t, err)
+	q := u.Query()
+	require.Equal(t, "cid", q.Get("client_id"))
+	require.Equal(t, "S256", q.Get("code_challenge_method"))
+	require.NotEmpty(t, q.Get("state"))
+
+	// 会话必须落库，且带上 PKCE verifier 与客户端凭据。
+	sess, ok := svc.sessionStore.Get(context.Background(), res.SessionID)
+	require.True(t, ok)
+	require.Equal(t, kiro.AuthIdC, sess.Method)
+	require.Equal(t, "cid", sess.ClientID)
+	require.Equal(t, "csec", sess.ClientSecret)
+	require.NotEmpty(t, sess.Verifier)
+	require.Equal(t, q.Get("state"), sess.State)
+}
+
+func TestKiroGenerateAuthURLRequiresRedirectAndIssuer(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	_, err := svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{IssuerURL: "https://x/start"})
+	require.Error(t, err)
+
+	_, err = svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{RedirectURI: "https://x/cb"})
+	require.Error(t, err)
+}
+
+// TestKiroExchangeCodeRejectsStateMismatch 是 CSRF 防护回归。
+func TestKiroExchangeCodeRejectsStateMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("state 不匹配时不应发起 token 交换")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+	ctx := context.Background()
+	svc.sessionStore.Set(ctx, "sid", &kiro.OAuthSession{
+		Method: kiro.AuthIdC, State: "correct", ExpiresAt: time.Now().Add(kiro.SessionTTL),
+	})
+
+	_, _, err := svc.ExchangeCode(ctx, &KiroExchangeCodeInput{
+		SessionID: "sid", Code: "c", State: "forged",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "state")
+}
+
+// TestKiroExchangeCodeIsSingleUse 是重放防护回归：
+// 回调 URL 会留在浏览器历史里，第二次兑换必须失败。
+func TestKiroExchangeCodeIsSingleUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/token", r.URL.Path)
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+	ctx := context.Background()
+	svc.sessionStore.Set(ctx, "sid", &kiro.OAuthSession{
+		Method: kiro.AuthIdC, State: "st", ClientID: "cid", ClientSecret: "csec",
+		Verifier: "ver", RedirectURI: "https://gw/cb", Region: "us-east-1",
+		ExpiresAt: time.Now().Add(kiro.SessionTTL),
+	})
+
+	ts, sess, err := svc.ExchangeCode(ctx, &KiroExchangeCodeInput{SessionID: "sid", Code: "c", State: "st"})
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+	require.Equal(t, "arn:x", ts.ProfileArn)
+	require.Equal(t, kiro.AuthIdC, sess.Method)
+
+	_, _, err = svc.ExchangeCode(ctx, &KiroExchangeCodeInput{SessionID: "sid", Code: "c", State: "st"})
+	require.Error(t, err, "同一授权码不得兑换两次")
+}
+
+func TestKiroExchangeCodeUnknownSession(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	_, _, err := svc.ExchangeCode(context.Background(), &KiroExchangeCodeInput{
+		SessionID: "nope", Code: "c", State: "s",
+	})
+	require.Error(t, err)
+}
+
+func TestKiroStartAndPollDeviceAuth(t *testing.T) {
+	var tokenCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/register":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			require.Contains(t, body["grantTypes"].([]any),
+				"urn:ietf:params:oauth:grant-type:device_code")
+			_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+		case "/device_authorization":
+			_, _ = w.Write([]byte(`{"deviceCode":"dc","userCode":"ABCD-EFGH",
+				"verificationUri":"https://view.awsapps.com/start/#/device",
+				"verificationUriComplete":"https://view.awsapps.com/start/#/device?user_code=ABCD-EFGH",
+				"expiresIn":600,"interval":5}`))
+		case "/token":
+			tokenCalls++
+			if tokenCalls == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+	ctx := context.Background()
+
+	res, err := svc.StartDeviceAuth(ctx, nil, "us-east-1")
+	require.NoError(t, err)
+	require.Equal(t, "ABCD-EFGH", res.UserCode)
+	require.Contains(t, res.VerificationURIComplete, "ABCD-EFGH")
+	require.Equal(t, 5, res.Interval)
+
+	// 首次轮询：尚未授权。
+	_, _, err = svc.PollDeviceAuth(ctx, res.SessionID, nil)
+	require.ErrorIs(t, err, kiro.ErrAuthorizationPending)
+
+	// 会话必须保留，供继续轮询。
+	_, ok := svc.sessionStore.Get(ctx, res.SessionID)
+	require.True(t, ok, "pending 不得销毁会话")
+
+	// 第二次：成功。
+	ts, sess, err := svc.PollDeviceAuth(ctx, res.SessionID, nil)
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+	require.Equal(t, kiro.AuthBuilderID, sess.Method)
+}
+
+func TestKiroRefreshAccountTokenDispatchesByAuthMethod(t *testing.T) {
+	var socialHits, oidcHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/refreshToken":
+			socialHits++
+		case "/token":
+			oidcHits++
+		}
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt2","expiresIn":3600,"profileArn":"arn:y"}`))
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+	ctx := context.Background()
+
+	social := &Account{ID: 1, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social", "refresh_token": "rt",
+	}}
+	ts, err := svc.RefreshAccountToken(ctx, social)
+	require.NoError(t, err)
+	require.Equal(t, "arn:y", ts.ProfileArn)
+	require.Equal(t, 1, socialHits)
+
+	idc := &Account{ID: 2, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "idc", "refresh_token": "rt",
+		"client_id": "cid", "client_secret": "csec",
+	}}
+	_, err = svc.RefreshAccountToken(ctx, idc)
+	require.NoError(t, err)
+	require.Equal(t, 1, oidcHits)
+}
+
+func TestKiroRefreshAccountTokenRejectsAPIKeyAccounts(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	apiKeyAcc := &Account{ID: 3, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "api_key", "api_key": "k",
+	}}
+	_, err := svc.RefreshAccountToken(context.Background(), apiKeyAcc)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "api_key")
+}
+
+// TestKiroBuildAccountCredentialsWritesProfileArn 覆盖 §5.5 第 1 点。
+func TestKiroBuildAccountCredentialsWritesProfileArn(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	creds := svc.BuildAccountCredentials(KiroCredentialInput{
+		TokenSet: &kiro.TokenSet{
+			AccessToken: "at", RefreshToken: "rt",
+			ProfileArn: "arn:aws:codewhisperer:::profile/ABC",
+			ExpiresAt:  time.Now().Add(time.Hour),
+		},
+		Method:       kiro.AuthIdC,
+		Region:       "us-east-1",
+		IssuerURL:    "https://d-90667b4f8e.awsapps.com/start",
+		ClientID:     "cid",
+		ClientSecret: "csec",
+	})
+
+	require.Equal(t, "at", creds["access_token"])
+	require.Equal(t, "rt", creds["refresh_token"])
+	require.Equal(t, "arn:aws:codewhisperer:::profile/ABC", creds["profile_arn"])
+	require.Equal(t, "idc", creds["auth_method"])
+	require.Equal(t, "us-east-1", creds["region"])
+	require.Equal(t, "cid", creds["client_id"])
+	require.Equal(t, "csec", creds["client_secret"])
+	require.NotEmpty(t, creds["expires_at"])
+	require.NotEmpty(t, creds["machine_id"], "首次建号即固化设备指纹")
+}
+
+func TestKiroBuildAccountCredentialsOmitsEmptyClientCreds(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	creds := svc.BuildAccountCredentials(KiroCredentialInput{
+		TokenSet: &kiro.TokenSet{AccessToken: "at", RefreshToken: "rt"},
+		Method:   kiro.AuthSocial,
+		Region:   "us-east-1",
+	})
+
+	require.NotContains(t, creds, "client_id", "social 不产生客户端凭据")
+	require.NotContains(t, creds, "client_secret")
+	require.Equal(t, "social", creds["auth_method"])
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run TestKiro -v
+```
+
+Expected: FAIL —— `undefined: NewKiroOAuthService`。
+
+- [ ] **Step 3: 实现 `kiro_oauth_service.go`**
+
+```go
+package service
+
+import (
+	"context"
+	"crypto/subtle"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+)
+
+// kiroOAuthHTTPTimeout 是授权/刷新请求的总超时。
+const kiroOAuthHTTPTimeout = 30 * time.Second
+
+// KiroOAuthService 负责 Kiro 账号的授权与令牌刷新。
+//
+// 两条初始授权路径：
+//   - idc：动态注册 → PKCE → /authorize → 自建回调页 → /token
+//   - builder_id：动态注册（device_code）→ /device_authorization → 轮询 /token
+//
+// social 与 api_key 不经过授权流：前者由管理员粘贴 refreshToken，后者直接粘 API Key。
+type KiroOAuthService struct {
+	sessionStore *kiro.SessionStore
+	proxyRepo    ProxyRepository
+
+	// base URL 做成字段以便测试注入 httptest.Server。
+	oidcBase   func(region string) string
+	socialBase func(region string) string
+}
+
+// NewKiroOAuthService 创建服务，默认使用进程内存会话存储。
+// 生产环境由 wire 注入 Redis 版本（见 WithSessionStore）。
+func NewKiroOAuthService(proxyRepo ProxyRepository) *KiroOAuthService {
+	return &KiroOAuthService{
+		sessionStore: kiro.NewSessionStore(),
+		proxyRepo:    proxyRepo,
+		oidcBase:     kiro.OIDCBase,
+		socialBase:   kiro.SocialBase,
+	}
+}
+
+// WithSessionStore 替换会话存储。Redis 接线留在 wire providers 里，
+// 因为 depguard 禁止本包 import go-redis。
+func (s *KiroOAuthService) WithSessionStore(store *kiro.SessionStore) *KiroOAuthService {
+	if s != nil && store != nil {
+		if s.sessionStore != nil {
+			s.sessionStore.Stop()
+		}
+		s.sessionStore = store
+	}
+	return s
+}
+
+// Stop 释放会话存储的后台清理。
+func (s *KiroOAuthService) Stop() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Stop()
+	}
+}
+
+// KiroAuthURLInput 是发起 IdC 授权所需的参数。
+type KiroAuthURLInput struct {
+	ProxyID *int64
+	// RedirectURI 必须是本服务可公开访问的回调地址。
+	RedirectURI string
+	// IssuerURL 是组织的 SSO 门户地址，如 https://d-xxxx.awsapps.com/start。
+	IssuerURL string
+	Region    string
+}
+
+// KiroAuthURLResult 是授权跳转信息。
+type KiroAuthURLResult struct {
+	SessionID    string `json:"session_id"`
+	AuthorizeURL string `json:"authorize_url"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+// GenerateAuthURL 动态注册客户端、生成 PKCE，并返回授权跳转地址。
+// 管理员在浏览器打开它，用组织的用户名/密码在 AWS 门户完成登录。
+func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthURLInput) (*KiroAuthURLResult, error) {
+	if input == nil || strings.TrimSpace(input.RedirectURI) == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_REDIRECT_REQUIRED", "redirect URI is required")
+	}
+	if strings.TrimSpace(input.IssuerURL) == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_ISSUER_REQUIRED", "issuer URL is required")
+	}
+
+	hc, err := s.httpClient(ctx, input.ProxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	base := s.oidcBase(input.Region)
+	reg, err := kiro.RegisterOIDCClient(ctx, hc, base, input.IssuerURL, input.RedirectURI, false)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_REGISTER_FAILED", "client registration failed: %v", err)
+	}
+
+	pkce, err := kiro.NewPKCE()
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_PKCE_FAILED", "failed to generate PKCE: %v", err)
+	}
+	state, err := kiro.GenerateSessionID()
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_STATE_FAILED", "failed to generate state: %v", err)
+	}
+	sessionID, err := kiro.GenerateSessionID()
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_SESSION_FAILED", "failed to generate session id: %v", err)
+	}
+
+	s.sessionStore.Set(ctx, sessionID, &kiro.OAuthSession{
+		Method:       kiro.AuthIdC,
+		ClientID:     reg.ClientID,
+		ClientSecret: reg.ClientSecret,
+		Verifier:     pkce.Verifier,
+		State:        state,
+		Region:       input.Region,
+		IssuerURL:    input.IssuerURL,
+		RedirectURI:  input.RedirectURI,
+		ExpiresAt:    time.Now().Add(kiro.SessionTTL),
+	})
+
+	return &KiroAuthURLResult{
+		SessionID:    sessionID,
+		AuthorizeURL: kiro.BuildAuthorizeURL(base, reg.ClientID, input.RedirectURI, state, pkce.Challenge),
+		ExpiresIn:    int(kiro.SessionTTL / time.Second),
+	}, nil
+}
+
+// KiroExchangeCodeInput 是回调兑换所需的参数。
+type KiroExchangeCodeInput struct {
+	SessionID string
+	Code      string
+	State     string
+	ProxyID   *int64
+}
+
+// ExchangeCode 用回调拿到的授权码换取令牌。
+//
+// 两道安全闸：state 必须匹配（防 CSRF），会话必须能被 TryConsume
+// （防重放 —— 回调 URL 会留在浏览器历史里）。
+func (s *KiroOAuthService) ExchangeCode(ctx context.Context, input *KiroExchangeCodeInput) (*kiro.TokenSet, *kiro.OAuthSession, error) {
+	if input == nil {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_INVALID_INPUT", "exchange input is required")
+	}
+
+	sess, ok := s.sessionStore.Get(ctx, input.SessionID)
+	if !ok {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_SESSION_NOT_FOUND", "authorization session not found or expired")
+	}
+
+	if subtle.ConstantTimeCompare([]byte(sess.State), []byte(input.State)) != 1 {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_STATE_MISMATCH", "authorization state mismatch")
+	}
+	if strings.TrimSpace(input.Code) == "" {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_CODE_REQUIRED", "authorization code is required")
+	}
+
+	// 单次消费：失败说明这个回调已经被兑换过。
+	if !s.sessionStore.TryConsume(ctx, input.SessionID) {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_SESSION_CONSUMED", "authorization session was already used")
+	}
+
+	hc, err := s.httpClient(ctx, input.ProxyID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ts, err := kiro.ExchangeAuthorizationCode(ctx, hc, s.oidcBase(sess.Region),
+		sess.ClientID, sess.ClientSecret, input.Code, sess.Verifier, sess.RedirectURI)
+	if err != nil {
+		return nil, nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_EXCHANGE_FAILED", "code exchange failed: %v", err)
+	}
+	return ts, sess, nil
+}
+
+// KiroDeviceAuthResult 是设备码授权的展示信息。
+type KiroDeviceAuthResult struct {
+	SessionID               string `json:"session_id"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+// StartDeviceAuth 发起 Builder ID 的设备码授权。
+// 管理员在任意设备打开 VerificationURIComplete 并用账号密码登录批准。
+func (s *KiroOAuthService) StartDeviceAuth(ctx context.Context, proxyID *int64, region string) (*KiroDeviceAuthResult, error) {
+	hc, err := s.httpClient(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	base := s.oidcBase(region)
+	reg, err := kiro.RegisterOIDCClient(ctx, hc, base, kiro.BuilderIDStartURL, "", true)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_REGISTER_FAILED", "client registration failed: %v", err)
+	}
+
+	da, err := kiro.StartDeviceAuthorization(ctx, hc, base, reg.ClientID, reg.ClientSecret, kiro.BuilderIDStartURL)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_DEVICE_START_FAILED", "device authorization failed: %v", err)
+	}
+
+	sessionID, err := kiro.GenerateSessionID()
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_SESSION_FAILED", "failed to generate session id: %v", err)
+	}
+
+	ttl := time.Duration(da.ExpiresIn) * time.Second
+	if ttl <= 0 || ttl > kiro.SessionTTL {
+		ttl = kiro.SessionTTL
+	}
+
+	s.sessionStore.Set(ctx, sessionID, &kiro.OAuthSession{
+		Method:       kiro.AuthBuilderID,
+		ClientID:     reg.ClientID,
+		ClientSecret: reg.ClientSecret,
+		Region:       region,
+		IssuerURL:    kiro.BuilderIDStartURL,
+		DeviceCode:   da.DeviceCode,
+		Interval:     da.Interval,
+		ExpiresAt:    time.Now().Add(ttl),
+	})
+
+	return &KiroDeviceAuthResult{
+		SessionID:               sessionID,
+		UserCode:                da.UserCode,
+		VerificationURI:         da.VerificationURI,
+		VerificationURIComplete: da.VerificationURIComplete,
+		ExpiresIn:               int(ttl / time.Second),
+		Interval:                da.Interval,
+	}, nil
+}
+
+// PollDeviceAuth 轮询设备码。
+//
+// 返回 kiro.ErrAuthorizationPending / ErrSlowDown 时**保留会话**供继续轮询；
+// 成功或过期后销毁会话。
+func (s *KiroOAuthService) PollDeviceAuth(ctx context.Context, sessionID string, proxyID *int64) (*kiro.TokenSet, *kiro.OAuthSession, error) {
+	sess, ok := s.sessionStore.Get(ctx, sessionID)
+	if !ok {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_SESSION_NOT_FOUND", "device authorization session not found or expired")
+	}
+
+	hc, err := s.httpClient(ctx, proxyID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ts, err := kiro.PollDeviceToken(ctx, hc, s.oidcBase(sess.Region), sess.ClientID, sess.ClientSecret, sess.DeviceCode)
+	if err != nil {
+		// 非终态：保留会话，让前端按 Interval 继续轮询。
+		if errors.Is(err, kiro.ErrAuthorizationPending) || errors.Is(err, kiro.ErrSlowDown) {
+			return nil, nil, err
+		}
+		s.sessionStore.Delete(ctx, sessionID)
+		return nil, nil, err
+	}
+
+	s.sessionStore.Delete(ctx, sessionID)
+	return ts, sess, nil
+}
+
+// RefreshAccountToken 按账号的 auth_method 分派到对应刷新端点。
+func (s *KiroOAuthService) RefreshAccountToken(ctx context.Context, account *Account) (*kiro.TokenSet, error) {
+	if account == nil {
+		return nil, errors.New("kiro: account is required")
+	}
+
+	method := account.KiroAuthMethod()
+	if method == kiro.AuthAPIKey {
+		return nil, errors.New("kiro: api_key accounts do not support token refresh")
+	}
+
+	refreshToken := account.KiroRefreshToken()
+	if refreshToken == "" {
+		return nil, errors.New("kiro: account has no refresh token")
+	}
+
+	hc, err := s.httpClient(ctx, account.ProxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	region := account.KiroRegion()
+	if method.UsesOIDCRefresh() {
+		clientID, clientSecret := account.KiroClientCredentials()
+		return kiro.RefreshOIDC(ctx, hc, s.oidcBase(region), clientID, clientSecret, refreshToken)
+	}
+	return kiro.RefreshSocial(ctx, hc, s.socialBase(region), refreshToken)
+}
+
+// KiroCredentialInput 是构造账号 credentials 的输入。
+type KiroCredentialInput struct {
+	TokenSet     *kiro.TokenSet
+	Method       kiro.AuthMethod
+	Region       string
+	IssuerURL    string
+	ClientID     string
+	ClientSecret string
+}
+
+// BuildAccountCredentials 把令牌与授权上下文组装成账号 credentials。
+//
+// profile_arn 必须写入 —— 漏写会导致账号运行一段时间后 403（设计文档 §5.5 第 1 点）。
+// machine_id 在此固化，之后永不变更（§5.5 第 2 点）。
+func (s *KiroOAuthService) BuildAccountCredentials(in KiroCredentialInput) map[string]any {
+	if in.TokenSet == nil {
+		return nil
+	}
+
+	creds := map[string]any{
+		"auth_method":  string(in.Method),
+		"access_token": in.TokenSet.AccessToken,
+	}
+	if in.TokenSet.RefreshToken != "" {
+		creds["refresh_token"] = in.TokenSet.RefreshToken
+	}
+	if in.TokenSet.ProfileArn != "" {
+		creds["profile_arn"] = in.TokenSet.ProfileArn
+	}
+	if !in.TokenSet.ExpiresAt.IsZero() {
+		creds["expires_at"] = in.TokenSet.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if region := strings.TrimSpace(in.Region); region != "" {
+		creds["region"] = region
+	}
+	if issuer := strings.TrimSpace(in.IssuerURL); issuer != "" {
+		creds["issuer_url"] = issuer
+	}
+	if id := strings.TrimSpace(in.ClientID); id != "" {
+		creds["client_id"] = id
+	}
+	if secret := strings.TrimSpace(in.ClientSecret); secret != "" {
+		creds["client_secret"] = secret
+	}
+
+	// 首次建号即固化设备指纹，之后永不变更。
+	EnsureKiroMachineID(creds)
+
+	return creds
+}
+
+// httpClient 返回按账号代理配置构建的客户端。
+func (s *KiroOAuthService) httpClient(ctx context.Context, proxyID *int64) (*http.Client, error) {
+	proxyURL, err := s.proxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	hc, err := httpclient.GetClient(httpclient.Options{
+		ProxyURL: proxyURL,
+		Timeout:  kiroOAuthHTTPTimeout,
+	})
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusServiceUnavailable, "KIRO_OAUTH_CLIENT_FAILED", "failed to build HTTP client: %v", err)
+	}
+	return hc, nil
+}
+
+func (s *KiroOAuthService) proxyURL(ctx context.Context, proxyID *int64) (string, error) {
+	if proxyID == nil {
+		return "", nil
+	}
+	if s.proxyRepo == nil {
+		return "", infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_PROXY_NOT_AVAILABLE", "proxy repository is not available")
+	}
+	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+	if err != nil {
+		if errors.Is(err, ErrProxyNotFound) {
+			return "", infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_PROXY_NOT_FOUND", "configured proxy was not found")
+		}
+		return "", infraerrors.New(http.StatusServiceUnavailable, "KIRO_OAUTH_PROXY_LOOKUP_FAILED", "proxy lookup is temporarily unavailable")
+	}
+	if proxy == nil {
+		return "", infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_PROXY_NOT_FOUND", "configured proxy was not found")
+	}
+	return proxy.URL(), nil
+}
+```
+
+> **实现提示**：若 `Account` 没有 `ProxyID *int64` 字段，改用账号上实际的代理字段名
+> （`grep -n "ProxyID" backend/internal/service/account.go`）。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run TestKiro -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd backend && gofmt -w internal/service/kiro_oauth_service.go && go build ./... && go test -tags=unit ./internal/service/ -count=1
+git add backend/internal/service/kiro_oauth_service.go backend/internal/service/kiro_oauth_service_test.go
+git commit -m "feat(kiro): 授权流服务（IdC PKCE + Builder ID 设备码 + 令牌刷新）
+
+state 常量时间比较防 CSRF，TryConsume 防授权码重放，
+profile_arn 与 machine_id 在建号时固化。"
+```
+
+---
+
+### Task 13: 令牌刷新器与后台刷新接线
+
+**Files:**
+- Create: `backend/internal/service/kiro_token_refresher.go`
+- Test: `backend/internal/service/kiro_token_refresher_test.go`
+- Modify: `backend/internal/service/token_refresh_service.go`（registrations 表，约 139 行附近）
+
+**Interfaces:**
+- Consumes: Task 10 的 `KiroTokenCacheKey` 与 Account 访问器；Task 12 的 `KiroOAuthService.RefreshAccountToken` / `BuildAccountCredentials`；现有 `MergeCredentials`、`TokenRefresher`、`OAuthRefreshExecutor`
+- Produces:
+  - `type KiroTokenRefresher struct { ... }`
+  - `func NewKiroTokenRefresher(oauthService *KiroOAuthService) *KiroTokenRefresher`
+  - `func (r *KiroTokenRefresher) CacheKey(account *Account) string`
+  - `func (r *KiroTokenRefresher) CanRefresh(account *Account) bool`
+  - `func (r *KiroTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool`
+  - `func (r *KiroTokenRefresher) Refresh(ctx context.Context, account *Account) (map[string]any, error)`
+
+**接口契约**：`OAuthRefreshExecutor` = `TokenRefresher`（`CanRefresh` / `NeedsRefresh` / `Refresh`）+ `CacheKey`。
+
+**两个要点：**
+
+1. **API Key 账号不参与刷新** —— `CanRefresh` 必须对 `IsKiroAPIKeyAccount()` 返回 false，
+   否则后台刷新循环会不断对它报错。
+2. **`Refresh` 必须保留原有 credentials 字段** —— 用 `MergeCredentials(account.Credentials, newCreds)`。
+   `machine_id`、`fake_thinking`、`issuer_url` 等都不在刷新响应里，丢了就等于换设备。
+
+`NeedsRefresh` 照 `GrokTokenRefresher` 的确定性 jitter 写法（`hash/fnv` 按账号 ID 散开），
+避免同批导入的账号在同一个刷新周期一起打上游。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/service/kiro_token_refresher_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestKiroRefresherCanRefresh(t *testing.T) {
+	r := NewKiroTokenRefresher(nil)
+
+	oauth := &Account{Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social", "refresh_token": "rt",
+	}}
+	require.True(t, r.CanRefresh(oauth))
+
+	// API Key 账号不刷新 —— 否则后台循环会持续报错。
+	apiKey := &Account{Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "api_key", "api_key": "k",
+	}}
+	require.False(t, r.CanRefresh(apiKey))
+
+	// 无 refresh token。
+	require.False(t, r.CanRefresh(&Account{Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method": "social",
+	}}))
+
+	// 别的平台。
+	require.False(t, r.CanRefresh(&Account{Platform: PlatformAnthropic, Credentials: map[string]any{
+		"refresh_token": "rt",
+	}}))
+
+	require.False(t, r.CanRefresh(nil))
+}
+
+func TestKiroRefresherNeedsRefresh(t *testing.T) {
+	r := NewKiroTokenRefresher(nil)
+	window := time.Hour
+
+	// 没有 access token → 需要刷新。
+	require.True(t, r.NeedsRefresh(&Account{ID: 1, Credentials: map[string]any{
+		"refresh_token": "rt",
+	}}, window))
+
+	// 没有 expires_at → 需要刷新。
+	require.True(t, r.NeedsRefresh(&Account{ID: 1, Credentials: map[string]any{
+		"refresh_token": "rt", "access_token": "at",
+	}}, window))
+
+	// 远未过期 → 不需要。
+	require.False(t, r.NeedsRefresh(&Account{ID: 1, Credentials: map[string]any{
+		"refresh_token": "rt", "access_token": "at",
+		"expires_at": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+	}}, window))
+
+	// 即将过期 → 需要。
+	require.True(t, r.NeedsRefresh(&Account{ID: 1, Credentials: map[string]any{
+		"refresh_token": "rt", "access_token": "at",
+		"expires_at": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+	}}, window))
+
+	// 无 refresh token 时不参与刷新判定。
+	require.False(t, r.NeedsRefresh(&Account{ID: 1, Credentials: map[string]any{
+		"access_token": "at",
+	}}, window))
+}
+
+// TestKiroRefresherPreservesExistingCredentials 覆盖关键回归：
+// machine_id / fake_thinking / issuer_url 都不在刷新响应里，丢了等于换设备。
+func TestKiroRefresherPreservesExistingCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accessToken":"at_new","refreshToken":"rt_new",
+			"expiresIn":3600,"profileArn":"arn:new"}`))
+	}))
+	defer srv.Close()
+
+	oauthSvc := newTestKiroOAuthService(t, srv)
+	r := NewKiroTokenRefresher(oauthSvc)
+
+	account := &Account{ID: 7, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":   "social",
+		"refresh_token": "rt_old",
+		"access_token":  "at_old",
+		"machine_id":    "fixed-machine-id",
+		"fake_thinking": true,
+		"region":        "us-east-1",
+	}}
+
+	got, err := r.Refresh(context.Background(), account)
+	require.NoError(t, err)
+
+	require.Equal(t, "at_new", got["access_token"])
+	require.Equal(t, "rt_new", got["refresh_token"])
+	require.Equal(t, "arn:new", got["profile_arn"], "profile_arn 必须回写")
+
+	require.Equal(t, "fixed-machine-id", got["machine_id"], "设备指纹不得因刷新而改变")
+	require.Equal(t, true, got["fake_thinking"], "账号级开关不得丢失")
+	require.Equal(t, "us-east-1", got["region"])
+}
+
+func TestKiroRefresherCacheKey(t *testing.T) {
+	r := NewKiroTokenRefresher(nil)
+	require.Equal(t, "kiro:account:9", r.CacheKey(&Account{ID: 9}))
+}
+
+// TestKiroRefresherImplementsExecutorInterface 保证注册表能接受它。
+func TestKiroRefresherImplementsExecutorInterface(t *testing.T) {
+	var _ TokenRefresher = (*KiroTokenRefresher)(nil)
+	var _ OAuthRefreshExecutor = (*KiroTokenRefresher)(nil)
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run TestKiroRefresher -v
+```
+
+Expected: FAIL —— `undefined: NewKiroTokenRefresher`。
+
+- [ ] **Step 3: 实现 `kiro_token_refresher.go`**
+
+```go
+package service
+
+import (
+	"context"
+	"errors"
+	"hash/fnv"
+	"strings"
+	"time"
+)
+
+// kiroTokenRefreshSkew 是基础预热窗口：剩余寿命低于此值就刷新。
+// Kiro 的 access token 通常 1 小时，提前刷新可让请求路径少走缓存未命中。
+const kiroTokenRefreshSkew = 30 * time.Minute
+
+// kiroTokenRefreshJitterMax 把同批导入账号的刷新时刻散开，
+// 避免它们在同一个 TokenRefreshService 周期一起打上游。
+const kiroTokenRefreshJitterMax = 3 * time.Minute
+
+// kiroTokenRefreshSkewMin 是 jitter 之后的窗口下限。
+const kiroTokenRefreshSkewMin = 10 * time.Minute
+
+// KiroTokenRefresher 实现 OAuthRefreshExecutor，接入后台刷新循环。
+type KiroTokenRefresher struct {
+	oauthService *KiroOAuthService
+}
+
+// NewKiroTokenRefresher 创建刷新器。
+func NewKiroTokenRefresher(oauthService *KiroOAuthService) *KiroTokenRefresher {
+	return &KiroTokenRefresher{oauthService: oauthService}
+}
+
+// CacheKey 返回分布式刷新锁使用的键。
+func (r *KiroTokenRefresher) CacheKey(account *Account) string {
+	return KiroTokenCacheKey(account)
+}
+
+// CanRefresh 判断该账号是否由本刷新器负责。
+//
+// API Key 账号必须排除 —— 它们没有 refresh token，纳入后台循环只会持续报错。
+func (r *KiroTokenRefresher) CanRefresh(account *Account) bool {
+	if account == nil || account.Platform != PlatformKiro {
+		return false
+	}
+	if account.IsKiroAPIKeyAccount() {
+		return false
+	}
+	return strings.TrimSpace(account.KiroRefreshToken()) != ""
+}
+
+// NeedsRefresh 判断是否到了预热刷新的时刻。
+func (r *KiroTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
+	if account == nil || strings.TrimSpace(account.KiroRefreshToken()) == "" {
+		return false
+	}
+	if strings.TrimSpace(account.KiroAccessToken()) == "" {
+		return true
+	}
+
+	expiresAt := account.GetCredentialAsTime("expires_at")
+	if expiresAt == nil {
+		return true
+	}
+
+	if refreshWindow < kiroTokenRefreshSkew {
+		refreshWindow = kiroTokenRefreshSkew
+	}
+	refreshWindow = kiroTokenRefreshWindowWithJitter(account.ID, refreshWindow)
+
+	return time.Until(*expiresAt) < refreshWindow
+}
+
+// kiroTokenRefreshWindowWithJitter 按账号 ID 做确定性抖动，
+// 用哈希而非随机数，保证测试可复现。
+func kiroTokenRefreshWindowWithJitter(accountID int64, refreshWindow time.Duration) time.Duration {
+	if accountID <= 0 || refreshWindow <= kiroTokenRefreshSkewMin {
+		return refreshWindow
+	}
+
+	h := fnv.New32a()
+	var b [8]byte
+	id := uint64(accountID)
+	for i := 0; i < 8; i++ {
+		b[i] = byte(id >> (8 * i))
+	}
+	_, _ = h.Write(b[:])
+
+	jitter := time.Duration(h.Sum32()%uint32(kiroTokenRefreshJitterMax/time.Second)) * time.Second
+	out := refreshWindow - jitter
+	if out < kiroTokenRefreshSkewMin {
+		return kiroTokenRefreshSkewMin
+	}
+	return out
+}
+
+// Refresh 刷新令牌并返回完整的新 credentials。
+//
+// 必须用 MergeCredentials 保留原有字段 —— machine_id / fake_thinking /
+// issuer_url 等都不在刷新响应里，丢失 machine_id 等于每次刷新都换一台设备。
+func (r *KiroTokenRefresher) Refresh(ctx context.Context, account *Account) (map[string]any, error) {
+	if r == nil || r.oauthService == nil {
+		return nil, errors.New("kiro oauth service is not configured")
+	}
+
+	ts, err := r.oauthService.RefreshAccountToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	clientID, clientSecret := account.KiroClientCredentials()
+	newCreds := r.oauthService.BuildAccountCredentials(KiroCredentialInput{
+		TokenSet:     ts,
+		Method:       account.KiroAuthMethod(),
+		Region:       account.KiroRegion(),
+		IssuerURL:    account.KiroIssuerURL(),
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	})
+
+	return MergeCredentials(account.Credentials, newCreds), nil
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run TestKiroRefresher -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 接入后台刷新注册表**
+
+打开 `backend/internal/service/token_refresh_service.go`，在构造函数里
+`grokRefresher := NewGrokTokenRefresher(grokOAuthService)` 之后加一行：
+
+```go
+	kiroRefresher := NewKiroTokenRefresher(kiroOAuthService)
+```
+
+并在 `s.registrations` 切片末尾追加：
+
+```go
+		{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher},
+```
+
+构造函数需要新增 `kiroOAuthService *KiroOAuthService` 参数 ——
+按现有参数顺序追加到末尾，并同步更新所有调用点（`grep -rn "NewTokenRefreshService" backend/`）。
+
+- [ ] **Step 6: 验证构建与全模块回归**
+
+```bash
+cd backend && gofmt -w internal/service/ && go build ./... && go test -tags=unit ./...
+```
+
+Expected: 构建通过，测试全绿。若有测试桩实现了 `TokenRefresher` 相关接口而未更新，
+按 CLAUDE.md 的提示 `grep -r "Stub\|Mock" backend/internal/` 逐个补齐。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add backend/internal/service/kiro_token_refresher.go \
+        backend/internal/service/kiro_token_refresher_test.go \
+        backend/internal/service/token_refresh_service.go
+git commit -m "feat(kiro): 令牌刷新器接入后台刷新循环
+
+API Key 账号排除在刷新之外；MergeCredentials 保留 machine_id 等
+不在刷新响应中的字段，避免每次刷新都变成新设备。"
+```
+
+---
+
+### Task 14: 管理端授权接口与回调路由
+
+**Files:**
+- Create: `backend/internal/handler/admin/kiro_oauth_handler.go`
+- Test: `backend/internal/handler/admin/kiro_oauth_handler_test.go`
+- Modify: `backend/internal/server/routes/admin.go`（注册路由）
+- Modify: `backend/internal/service/wire.go`（注入 Redis 会话存储 + provider）
+- Modify: `backend/internal/handler/wire.go`、`backend/cmd/server/wire.go`（provider set）
+
+**Interfaces:**
+- Consumes: Task 12 的 `KiroOAuthService` 全部导出方法
+- Produces:
+  - `type KiroOAuthHandler struct { ... }`
+  - `func NewKiroOAuthHandler(svc *service.KiroOAuthService) *KiroOAuthHandler`
+  - `func (h *KiroOAuthHandler) AuthorizeURL(c *gin.Context)` → `POST /admin/kiro/oauth/authorize-url`
+  - `func (h *KiroOAuthHandler) Callback(c *gin.Context)` → `GET /admin/kiro/oauth/callback`
+  - `func (h *KiroOAuthHandler) DeviceStart(c *gin.Context)` → `POST /admin/kiro/oauth/device/start`
+  - `func (h *KiroOAuthHandler) DevicePoll(c *gin.Context)` → `POST /admin/kiro/oauth/device/poll`
+
+**关键点：**
+
+1. **回调返回的是给人看的页面，不是 JSON** —— 浏览器会直接落在这个地址上。
+   成功时渲染一个「授权成功，请回到管理后台」的极简 HTML；失败时渲染错误原因。
+   **绝不能把 `code` / `client_secret` 回显到页面上。**
+2. **`DevicePoll` 的 pending 不是错误** —— 返回 `200` + `{"status":"pending","interval":N}`，
+   让前端按 interval 继续轮询；只有终态失败才返回 4xx/5xx。
+3. **凭证不落日志** —— handler 里不要 log 请求体。
+
+- [ ] **Step 1: 先读现有 handler 与路由约定**
+
+```bash
+sed -n 1,60p backend/internal/handler/admin/grok_oauth_handler.go
+grep -n "grok/oauth\|registerGrokOAuthRoutes\|GrokOAuth" backend/internal/server/routes/admin.go | head -10
+```
+
+照它的响应封装（`response.Success` / `response.Error` 之类）与路由分组写法实现，
+**不要自创响应格式**。
+
+- [ ] **Step 2: 写失败测试**
+
+创建 `backend/internal/handler/admin/kiro_oauth_handler_test.go`，用 `httptest` +
+`gin.CreateTestContext` 覆盖四个端点的**契约**（不打真网，`KiroOAuthService`
+的 base URL 指向本地 `httptest.Server`）：
+
+```go
+//go:build unit
+
+package admin
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+func TestKiroAuthorizeURLRequiresIssuerAndRedirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewKiroOAuthHandler(nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/authorize-url",
+		strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.AuthorizeURL(c)
+	require.GreaterOrEqual(t, w.Code, 400, "缺少必填参数必须报错")
+}
+
+// TestKiroCallbackRendersHTMLWithoutLeakingSecrets 覆盖回调页的两条要求：
+// 返回给人看的 HTML，且不回显任何敏感值。
+func TestKiroCallbackRendersHTMLWithoutLeakingSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewKiroOAuthHandler(nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/admin/kiro/oauth/callback?error=access_denied&state=st", nil)
+
+	h.Callback(c)
+
+	require.Contains(t, w.Header().Get("Content-Type"), "text/html")
+	body := w.Body.String()
+	require.NotContains(t, body, "client_secret")
+	require.NotContains(t, body, "code=")
+}
+
+func TestKiroDevicePollPendingIsNotAnError(t *testing.T) {
+	// 见 Step 4 的实现说明：pending 必须返回 200 + status=pending，
+	// 否则前端轮询会被当成失败中止。
+	t.Skip("在 Step 4 完成 handler 后取消 skip 并补齐 service 注入")
+}
+```
+
+> **注意**：上面第三个测试是**占位骨架**，Step 4 实现 handler 后必须回来
+> 取消 `t.Skip` 并补全（注入一个 base URL 指向 httptest 的 `KiroOAuthService`，
+> 断言 pending 时 `w.Code == 200` 且响应含 `"status":"pending"`）。
+> 这一步不能跳过 —— 它是「pending 不是错误」这条契约的唯一守卫。
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/handler/admin/ -run TestKiro -v
+```
+
+Expected: FAIL —— `undefined: NewKiroOAuthHandler`。
+
+- [ ] **Step 4: 实现 handler**
+
+按 Step 1 读到的响应封装实现四个方法：
+
+- `AuthorizeURL`：绑定 `{proxy_id?, redirect_uri, issuer_url, region?}`，
+  调 `svc.GenerateAuthURL`，返回 `{session_id, authorize_url, expires_in}`。
+- `Callback`：读 query 的 `code` / `state` / `error` / `session_id`；
+  有 `error` 或兑换失败 → 渲染错误 HTML（只展示错误码与人类可读原因）；
+  成功 → 调 `svc.ExchangeCode`，把结果暂存到一次性凭据（供前端下一步建号读取），
+  渲染成功 HTML。**Content-Type 必须是 `text/html; charset=utf-8`。**
+- `DeviceStart`：绑定 `{proxy_id?, region?}`，调 `svc.StartDeviceAuth`，
+  返回 `{session_id, user_code, verification_uri_complete, expires_in, interval}`。
+- `DevicePoll`：绑定 `{session_id, proxy_id?}`，调 `svc.PollDeviceAuth`；
+  `errors.Is(err, kiro.ErrAuthorizationPending)` 或 `kiro.ErrSlowDown` →
+  **`200` + `{"status":"pending","interval":N}`**；成功 → `{"status":"ok", ...凭证}`；
+  其余 → 错误响应。
+
+- [ ] **Step 5: 注册路由**
+
+在 `backend/internal/server/routes/admin.go` 里，参照 Grok OAuth 的注册位置加入：
+
+```go
+	kiroOAuth := admin.Group("/kiro/oauth")
+	{
+		kiroOAuth.POST("/authorize-url", h.KiroOAuth.AuthorizeURL)
+		kiroOAuth.GET("/callback", h.KiroOAuth.Callback)
+		kiroOAuth.POST("/device/start", h.KiroOAuth.DeviceStart)
+		kiroOAuth.POST("/device/poll", h.KiroOAuth.DevicePoll)
+	}
+```
+
+> **回调路由的鉴权**：`/callback` 是浏览器从 AWS 门户跳回来的地址，
+> 可能不带管理端的鉴权头。按 Grok 回调的现有做法处理（读 `admin.go` 里
+> Grok 回调所在的分组），**不要**因为方便就把它放到完全公开的分组里 ——
+> `session_id` + `state` 是它仅有的防护。
+
+- [ ] **Step 6: Wire 接线**
+
+在 `backend/internal/service/wire.go` 里加入 provider，并注入 Redis 会话存储
+（这里是 depguard 豁免文件，可以 import go-redis）：
+
+```go
+func ProvideKiroOAuthService(proxyRepo ProxyRepository, redisClient *redis.Client) *KiroOAuthService {
+	svc := NewKiroOAuthService(proxyRepo)
+	if redisClient != nil {
+		svc = svc.WithSessionStore(kiro.NewRedisSessionStore(redisClient))
+	}
+	return svc
+}
+```
+
+把 `ProvideKiroOAuthService`、`NewKiroTokenRefresher`、`NewKiroOAuthHandler`
+加进对应的 provider set。
+
+- [ ] **Step 7: 验证构建（不要盲目 regen）**
+
+```bash
+cd backend && go build ./...
+```
+
+> **`wire_gen.go` 的 invoice 块是手工维护的** —— `go generate ./cmd/server` 会在
+> invoice 的 `NotificationService` 上失败。手动把新 provider 加进 `wire_gen.go`，
+> 以 `go build ./...` 通过为准。
+
+- [ ] **Step 8: 补齐 Step 2 跳过的测试并全量回归**
+
+回到 `kiro_oauth_handler_test.go`，取消 `TestKiroDevicePollPendingIsNotAnError`
+的 `t.Skip` 并补全断言，然后：
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./...
+```
+
+Expected: 全绿，无 skip。
+
+- [ ] **Step 9: 提交**
+
+```bash
+cd backend && gofmt -w ./internal/... && golangci-lint run ./internal/handler/... ./internal/service/...
+git add backend/internal/handler/admin/kiro_oauth_handler.go \
+        backend/internal/handler/admin/kiro_oauth_handler_test.go \
+        backend/internal/server/routes/admin.go \
+        backend/internal/service/wire.go \
+        backend/internal/handler/wire.go \
+        backend/cmd/server/wire.go \
+        backend/cmd/server/wire_gen.go
+git commit -m "feat(kiro): 管理端授权接口与回调页
+
+B 组完成：账号可通过 IdC 授权码或 Builder ID 设备码建立，
+token 由后台循环自动刷新。"
+```
+
+---
+
+> **计划文档状态：** **A 组（Task 1-8）+ B 组（Task 9-14）已全部完整展开。**
+> 至此账号可建、可授权、可自动刷新。C/D/E 组见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
-
-### B 组剩余
-
-| Task | 交付物 | 关键接口 |
-|---|---|---|
-| 12 | `service/kiro_oauth_service.go` 授权流服务 | 照 `GrokOAuthService` 形状：`NewKiroOAuthService(proxyRepo ProxyRepository)`、`WithSessionStore(*kiro.SessionStore)`；`GenerateAuthURL(ctx, *KiroAuthURLInput) (*KiroAuthURLResult, error)`（IdC：`RegisterOIDCClient` → `NewPKCE` → `BuildAuthorizeURL`，会话入库）；`ExchangeCode(ctx, *KiroExchangeCodeInput) (*kiro.TokenSet, error)`（**必须校验 state 且 `TryConsume` 防重放**）；`StartDeviceAuth` / `PollDeviceAuth`（Builder ID）；`RefreshAccountToken(ctx, *Account)` 按 `KiroAuthMethod()` 分派到 `kiro.RefreshSocial` / `kiro.RefreshOIDC`，对 `AuthAPIKey` 返回明确错误；`BuildAccountCredentials(...)` **必须写入 `profile_arn`**。HTTP 客户端用 `httpclient.GetClient(httpclient.Options{ProxyURL: ..., Timeout: ...})`；base URL 做成结构体字段（默认 `kiro.OIDCBase` / `kiro.SocialBase`）以便 httptest 注入 |
-| 13 | `service/kiro_token_refresher.go` + 注册接线 | 实现 `OAuthRefreshExecutor`：`CacheKey` 用 Task 10 的 `KiroTokenCacheKey`；`CanRefresh` 要求 `Platform==PlatformKiro && !IsKiroAPIKeyAccount() && KiroRefreshToken()!=""`；`NeedsRefresh` 照 `GrokTokenRefresher` 的确定性 jitter 写法（避免同批导入账号同周期刷新）；`Refresh` 调 `RefreshAccountToken` 后 `MergeCredentials(account.Credentials, newCreds)`。接线：`token_refresh_service.go:139` 后加 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}` |
-| 14 | `handler/admin/kiro_oauth_handler.go` + 路由 + wire | `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；provider set 加入后用 `go build ./...` 验证（**不要盲目 regen —— `wire_gen.go` 的 invoice 块是手工维护的**）；`service/wire.go` 内注入 `kiro.NewRedisSessionStore(redisClient)` |
 
 ### C 组：平台与网关（Task 15-18）
 
