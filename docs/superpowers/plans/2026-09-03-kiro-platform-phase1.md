@@ -5079,8 +5079,407 @@ git commit -m "feat(kiro): Account 凭证访问器与稳定设备指纹"
 
 ---
 
-> **计划文档状态：** A 组（Task 1-8）+ Task 9-10 已完整展开。
-> Task 11-20 见下方接口契约，逐组补齐。
+### Task 11: OAuth 会话存储（内存 + Redis 回退）
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/session.go`
+- Test: `backend/internal/pkg/kiro/session_test.go`
+
+**Interfaces:**
+- Consumes: `internal/pkg/redissession` 的 `New(rdb, prefix, ttl)` / `Set` / `Get` / `Delete` / `TryConsume`；Task 9 的 `AuthMethod`
+- Produces:
+  - `const SessionTTL = 10 * time.Minute`
+  - `type OAuthSession struct { Method AuthMethod; ClientID, ClientSecret, Verifier, State, Region, IssuerURL, RedirectURI, DeviceCode string; Interval int; ExpiresAt time.Time }`
+  - `type SessionStore struct { ... }`
+  - `func NewSessionStore() *SessionStore`
+  - `func NewRedisSessionStore(rdb *redis.Client) *SessionStore`
+  - `func (s *SessionStore) Set(ctx context.Context, id string, sess *OAuthSession)`
+  - `func (s *SessionStore) Get(ctx context.Context, id string) (*OAuthSession, bool)`
+  - `func (s *SessionStore) Delete(ctx context.Context, id string)`
+  - `func (s *SessionStore) TryConsume(ctx context.Context, id string) bool`
+  - `func (s *SessionStore) Stop()`
+  - `func GenerateSessionID() (string, error)`
+
+**⚠️ 为什么放在 `pkg/kiro` 而不是 `service/`：** depguard 禁止 `internal/service/**`
+import `github.com/redis/go-redis/v9`，而 Redis 后端需要 `*redis.Client`。
+仓库的既定解法是把带 Redis 的会话存储放进 `pkg/`，再在 **depguard 豁免的
+`internal/service/wire.go`** 里注入 —— 见 `internal/pkg/xai/oauth.go` 的 `SessionStore`
+与 `service/wire.go:24` 的 `svc.WithSessionStore(xai.NewRedisSessionStore(redisClient))`。
+**本任务照 `pkg/xai/oauth.go` 的 SessionStore 结构实现**，不要试图在 service 层建 Redis 客户端。
+
+**为什么不用进程内存**（设计文档 §5.5 第 4 点）：IdC 与 social 走**自建回调页**，
+多副本部署时浏览器回调可能落到另一个副本，进程内存里的会话直接丢失，授权必然失败。
+Redis 不可用时回退到内存 —— 单副本部署仍可工作。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/pkg/kiro/session_test.go`：
+
+```go
+package kiro
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestGenerateSessionIDIsUniqueAndURLSafe(t *testing.T) {
+	t.Parallel()
+
+	a, err := GenerateSessionID()
+	require.NoError(t, err)
+	require.NotEmpty(t, a)
+	require.NotContains(t, a, "=")
+	require.NotContains(t, a, "/")
+	require.NotContains(t, a, "+")
+
+	b, err := GenerateSessionID()
+	require.NoError(t, err)
+	require.NotEqual(t, a, b)
+}
+
+func TestSessionStoreSetGetDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewSessionStore()
+	defer store.Stop()
+
+	sess := &OAuthSession{
+		Method:      AuthIdC,
+		ClientID:    "cid",
+		Verifier:    "ver",
+		State:       "st",
+		Region:      "us-east-1",
+		IssuerURL:   "https://d-90667b4f8e.awsapps.com/start",
+		RedirectURI: "https://gw.example.com/cb",
+		ExpiresAt:   time.Now().Add(SessionTTL),
+	}
+	store.Set(ctx, "sid-1", sess)
+
+	got, ok := store.Get(ctx, "sid-1")
+	require.True(t, ok)
+	require.Equal(t, AuthIdC, got.Method)
+	require.Equal(t, "ver", got.Verifier)
+	require.Equal(t, "https://d-90667b4f8e.awsapps.com/start", got.IssuerURL)
+
+	store.Delete(ctx, "sid-1")
+	_, ok = store.Get(ctx, "sid-1")
+	require.False(t, ok)
+}
+
+func TestSessionStoreGetMissing(t *testing.T) {
+	t.Parallel()
+
+	store := NewSessionStore()
+	defer store.Stop()
+
+	_, ok := store.Get(context.Background(), "nope")
+	require.False(t, ok)
+}
+
+func TestSessionStoreExpiredSessionIsNotReturned(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewSessionStore()
+	defer store.Stop()
+
+	store.Set(ctx, "old", &OAuthSession{
+		Method:    AuthIdC,
+		ExpiresAt: time.Now().Add(-time.Minute),
+	})
+
+	_, ok := store.Get(ctx, "old")
+	require.False(t, ok, "过期会话不得返回")
+}
+
+// TestSessionStoreTryConsumeIsSingleUse 保证授权码只能兑换一次，
+// 防止回调 URL 被重放。
+func TestSessionStoreTryConsumeIsSingleUse(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewSessionStore()
+	defer store.Stop()
+
+	store.Set(ctx, "sid", &OAuthSession{
+		Method:    AuthIdC,
+		ExpiresAt: time.Now().Add(SessionTTL),
+	})
+
+	require.True(t, store.TryConsume(ctx, "sid"), "首次消费应成功")
+	require.False(t, store.TryConsume(ctx, "sid"), "重复消费必须失败")
+}
+
+func TestSessionStoreTryConsumeUnknownSession(t *testing.T) {
+	t.Parallel()
+
+	store := NewSessionStore()
+	defer store.Stop()
+
+	require.False(t, store.TryConsume(context.Background(), "never-existed"))
+}
+
+func TestSessionStoreDeviceFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewSessionStore()
+	defer store.Stop()
+
+	store.Set(ctx, "dev", &OAuthSession{
+		Method:       AuthBuilderID,
+		ClientID:     "cid",
+		ClientSecret: "csec",
+		DeviceCode:   "dc",
+		Interval:     5,
+		Region:       "us-east-1",
+		ExpiresAt:    time.Now().Add(SessionTTL),
+	})
+
+	got, ok := store.Get(ctx, "dev")
+	require.True(t, ok)
+	require.Equal(t, AuthBuilderID, got.Method)
+	require.Equal(t, "dc", got.DeviceCode)
+	require.Equal(t, 5, got.Interval)
+	require.Equal(t, "csec", got.ClientSecret)
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run 'TestSessionStore|TestGenerateSessionID' -v
+```
+
+Expected: FAIL —— `undefined: NewSessionStore`。
+
+- [ ] **Step 3: 先读现有实现**
+
+```bash
+sed -n 80,230p backend/internal/pkg/xai/oauth.go
+```
+
+照它的 `SessionStore` 结构实现（内存 map + 可选 `*redissession.Store` 远端 +
+后台清理 goroutine + Redis 失败时回退内存）。
+
+- [ ] **Step 4: 实现 `session.go`**
+
+```go
+package kiro
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/redissession"
+	"github.com/redis/go-redis/v9"
+)
+
+// SessionTTL 是一次授权流程的存活时间。
+// AWS 的设备码通常 10 分钟过期，授权码流程也在同一量级。
+const SessionTTL = 10 * time.Minute
+
+// sessionCleanupInterval 是内存回退存储的清理周期。
+const sessionCleanupInterval = time.Minute
+
+// OAuthSession 保存一次进行中的授权流程状态。
+//
+// 注意：它带 ClientSecret，属于敏感数据。Redis 键有 TTL，消费后立即删除。
+type OAuthSession struct {
+	Method       AuthMethod `json:"method"`
+	ClientID     string     `json:"client_id"`
+	ClientSecret string     `json:"client_secret"`
+	// Verifier 是 PKCE 的 code_verifier（仅 idc 路径）。
+	Verifier string `json:"verifier"`
+	// State 用于校验回调，防 CSRF（仅 idc 路径）。
+	State       string `json:"state"`
+	Region      string `json:"region"`
+	IssuerURL   string `json:"issuer_url"`
+	RedirectURI string `json:"redirect_uri"`
+	// DeviceCode 仅 builder_id 路径使用。
+	DeviceCode string    `json:"device_code"`
+	Interval   int       `json:"interval"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+func (s *OAuthSession) expired() bool {
+	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
+}
+
+// SessionStore 管理授权会话，优先用 Redis，失败时回退进程内存。
+//
+// 必须支持 Redis：IdC 与 social 走自建回调页，多副本部署时浏览器回调
+// 可能落到另一个副本，进程内存里的会话会直接丢失。
+type SessionStore struct {
+	mu     sync.RWMutex
+	memory map[string]*OAuthSession
+	remote *redissession.Store
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
+}
+
+// NewSessionStore 创建仅内存的存储（单副本部署可用）。
+func NewSessionStore() *SessionStore {
+	s := &SessionStore{
+		memory: make(map[string]*OAuthSession),
+		stopCh: make(chan struct{}),
+	}
+	go s.cleanupLoop()
+	return s
+}
+
+// NewRedisSessionStore 创建带 Redis 后端的存储。
+// 由 internal/service/wire.go 调用 —— service 包本身被 depguard 禁止 import redis。
+func NewRedisSessionStore(rdb *redis.Client) *SessionStore {
+	s := NewSessionStore()
+	if rdb != nil {
+		s.remote = redissession.New(rdb, "oauth:session:kiro:", SessionTTL)
+	}
+	return s
+}
+
+// Set 写入会话。Redis 写失败时降级为内存，保证单机仍可完成授权。
+func (s *SessionStore) Set(ctx context.Context, id string, sess *OAuthSession) {
+	if sess == nil {
+		return
+	}
+	if sess.ExpiresAt.IsZero() {
+		sess.ExpiresAt = time.Now().Add(SessionTTL)
+	}
+
+	if s.remote != nil {
+		if err := s.remote.Set(ctx, id, sess); err == nil {
+			return
+		} else {
+			slog.Warn("kiro oauth session redis write failed; falling back to memory", "error", err)
+		}
+	}
+
+	s.mu.Lock()
+	s.memory[id] = sess
+	s.mu.Unlock()
+}
+
+// Get 读取会话，过期的视为不存在。
+func (s *SessionStore) Get(ctx context.Context, id string) (*OAuthSession, bool) {
+	if s.remote != nil {
+		var sess OAuthSession
+		if found, err := s.remote.Get(ctx, id, &sess); err == nil && found {
+			if sess.expired() {
+				return nil, false
+			}
+			return &sess, true
+		}
+	}
+
+	s.mu.RLock()
+	sess, ok := s.memory[id]
+	s.mu.RUnlock()
+	if !ok || sess.expired() {
+		return nil, false
+	}
+	return sess, true
+}
+
+// Delete 删除会话。
+func (s *SessionStore) Delete(ctx context.Context, id string) {
+	if s.remote != nil {
+		_ = s.remote.Delete(ctx, id)
+	}
+	s.mu.Lock()
+	delete(s.memory, id)
+	s.mu.Unlock()
+}
+
+// TryConsume 原子地把会话标记为已使用，返回是否是首次消费。
+// 用于保证一个授权码只能兑换一次，防止回调 URL 被重放。
+func (s *SessionStore) TryConsume(ctx context.Context, id string) bool {
+	if s.remote != nil {
+		if ok, err := s.remote.TryConsume(ctx, id); err == nil {
+			return ok
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.memory[id]
+	if !ok || sess.expired() {
+		return false
+	}
+	delete(s.memory, id)
+	return true
+}
+
+// Stop 结束后台清理。重复调用安全。
+func (s *SessionStore) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
+}
+
+func (s *SessionStore) cleanupLoop() {
+	ticker := time.NewTicker(sessionCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			for id, sess := range s.memory {
+				if sess.expired() {
+					delete(s.memory, id)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
+// GenerateSessionID 生成一个 URL 安全的随机会话 ID。
+func GenerateSessionID() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("kiro: generate session id: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+```
+
+- [ ] **Step 5: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -v -race
+```
+
+Expected: 全部 PASS，`-race` 无告警（存储会被并发访问）。
+
+- [ ] **Step 6: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/
+git add backend/internal/pkg/kiro/session.go backend/internal/pkg/kiro/session_test.go
+git commit -m "feat(kiro): OAuth 会话存储（Redis 优先，内存回退）
+
+自建回调页在多副本部署下会跨副本，进程内存会话必然丢失，因此需要
+Redis 后端。放在 pkg/ 是因为 depguard 禁止 service 层 import redis，
+注入点在豁免的 service/wire.go —— 与 pkg/xai 的 SessionStore 一致。"
+```
+
+---
+
+> **计划文档状态：** A 组（Task 1-8）+ Task 9-11 已完整展开。
+> Task 12 起见下方接口契约，逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -5088,8 +5487,32 @@ git commit -m "feat(kiro): Account 凭证访问器与稳定设备指纹"
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 11 | `service/kiro_oauth_service.go` + `service/kiro_token_refresher.go` | OAuth 服务照 `GrokOAuthService` 形状：`GenerateAuthURL(ctx, proxyID, redirectURI, issuerURL)` / `ExchangeCode(ctx, input)` / `StartDeviceAuth(ctx, proxyID)` / `PollDeviceAuth(ctx, sessionID)` / `RefreshAccountToken(ctx, account)` / `BuildAccountCredentials(ts *kiro.TokenSet, method kiro.AuthMethod)`；会话暂存用 `internal/pkg/redissession`（`New(rdb, prefix, ttl)` + `Set`/`Get`/`Delete`/`TryConsume`）而非进程内存 —— 自建回调页在多副本下会跨副本（§5.5 第 4 点）。刷新器实现 `OAuthRefreshExecutor`（= `TokenRefresher` 的 `CanRefresh`/`NeedsRefresh`/`Refresh` 加上 `CacheKey`）：`CanRefresh` 对 `kiro.AuthAPIKey` 返回 false；`Refresh` 用 `MergeCredentials(account.Credentials, newCreds)` 保留原字段并**回写 `profile_arn`** |
-| 12 | 接线：注册表 + admin handler + 回调路由 + wire | `token_refresh_service.go:139` 后加 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}`；`handler/admin/kiro_oauth_handler.go` 暴露 `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；wire provider set 后用 `go build ./...` 验证（**不要盲目 regen —— `wire_gen.go` 的 invoice 块是手工维护的**） |
+| 12 | `service/kiro_oauth_service.go` 授权流服务 | 照 `GrokOAuthService` 形状：`NewKiroOAuthService(proxyRepo ProxyRepository)`、`WithSessionStore(*kiro.SessionStore)`；`GenerateAuthURL(ctx, *KiroAuthURLInput) (*KiroAuthURLResult, error)`（IdC：`RegisterOIDCClient` → `NewPKCE` → `BuildAuthorizeURL`，会话入库）；`ExchangeCode(ctx, *KiroExchangeCodeInput) (*kiro.TokenSet, error)`（**必须校验 state 且 `TryConsume` 防重放**）；`StartDeviceAuth` / `PollDeviceAuth`（Builder ID）；`RefreshAccountToken(ctx, *Account)` 按 `KiroAuthMethod()` 分派到 `kiro.RefreshSocial` / `kiro.RefreshOIDC`，对 `AuthAPIKey` 返回明确错误；`BuildAccountCredentials(...)` **必须写入 `profile_arn`**。HTTP 客户端用 `httpclient.GetClient(httpclient.Options{ProxyURL: ..., Timeout: ...})`；base URL 做成结构体字段（默认 `kiro.OIDCBase` / `kiro.SocialBase`）以便 httptest 注入 |
+| 13 | `service/kiro_token_refresher.go` + 注册接线 | 实现 `OAuthRefreshExecutor`：`CacheKey` 用 Task 10 的 `KiroTokenCacheKey`；`CanRefresh` 要求 `Platform==PlatformKiro && !IsKiroAPIKeyAccount() && KiroRefreshToken()!=""`；`NeedsRefresh` 照 `GrokTokenRefresher` 的确定性 jitter 写法（避免同批导入账号同周期刷新）；`Refresh` 调 `RefreshAccountToken` 后 `MergeCredentials(account.Credentials, newCreds)`。接线：`token_refresh_service.go:139` 后加 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}` |
+| 14 | `handler/admin/kiro_oauth_handler.go` + 路由 + wire | `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；provider set 加入后用 `go build ./...` 验证（**不要盲目 regen —— `wire_gen.go` 的 invoice 块是手工维护的**）；`service/wire.go` 内注入 `kiro.NewRedisSessionStore(redisClient)` |
+
+### C 组：平台与网关（Task 15-18）
+
+| Task | 交付物 |
+|---|---|
+| 15 | `PlatformKiro` 提升为一等常量 + `AllowedQuotaPlatforms` + `migrations/234_kiro_platform.sql`（**必须同 PR**，见 spec §4.4 的生产事故） |
+| 16 | `service/kiro_gateway_service.go` 转发主流程 + 端点 fallback + 请求头指纹（`KiroIDE-{ver}-{machineId}`、`x-amzn-codewhisperer-optout: true`、API Key 账号的 `tokentype` 头） |
+| 17 | 错误分类接入调度：`kiro.Classify` → 403 刷新重试、429 换端点、credits 耗尽写 `model_rate_limits["KiroCredits"]`；**`Failoverable()` 为 false 时不得进入账号转移循环** |
+| 18 | `routes/gateway.go:195` 的 `/v1/messages` kiro 分支 + `handler/kiro_gateway_handler.go` + wire |
+
+### D 组：额度与计费（Task 19-20）
+
+| Task | 交付物 |
+|---|---|
+| 19 | `service/kiro_quota_fetcher.go`：`CanFetch` / `FetchQuota` / `GetProxyURL`，调 `getUsageLimits` |
+| 20 | 计费接入：cache token 用 `meteringEvent` 真实值，input/output 用 `kiro.EstimateRequestInput` / `StreamTranslator.Usage()`，`billing_mode="token"` |
+
+### E 组：前端（Task 21-22）
+
+| Task | 交付物 |
+|---|---|
+| 21 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
+| 22 | 额度展示 + 分组平台选项 |
 
 
 ### B 组：凭证与授权
