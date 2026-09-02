@@ -1675,9 +1675,771 @@ git commit -m "feat(kiro): 消息规整链与 Anthropic 内容块转换"
 
 ---
 
-> **计划文档状态：** Task 1-4 已完整展开（含可直接运行的测试与实现代码）。
-> Task 5-20 的接口契约见下方「后续任务概览」，按同样详细程度逐组补齐 ——
-> 一次补一组，避免一份超长文档中的接口签名在编写过程中互相漂移。
+### Task 5: 请求构造（Anthropic → Kiro conversationState）
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/request.go`
+- Test: `backend/internal/pkg/kiro/request_test.go`
+
+**Interfaces:**
+- Consumes: Task 3 的 `SanitizeSchema`；Task 4 的 `Msg`、`Image`、`ToolCall`、`ToolResult`、`FlattenSystem`、`FromAnthropic`、`MergeAdjacent`、`EnsureFirstIsUser`、`EnsureAlternating`、`StripToolContent`
+- Produces:
+  - `type Request struct { ConversationState ConversationState; ProfileArn string }`
+  - `type ConversationState struct { ChatTriggerType, ConversationID string; CurrentMessage CurrentMessage; History []HistoryEntry }`
+  - `type CurrentMessage struct { UserInputMessage UserInputMessage }`
+  - `type UserInputMessage struct { Content, ModelID, Origin string; Images []KiroImage; UserInputMessageContext *UserInputMessageContext }`
+  - `type KiroImage struct { Format string; Source ImageSource }`、`type ImageSource struct { Bytes string }`
+  - `type UserInputMessageContext struct { Tools []Tool; ToolResults []KiroToolResult }`
+  - `type Tool struct { ToolSpecification ToolSpecification }`、`type ToolSpecification struct { Name, Description string; InputSchema InputSchema }`、`type InputSchema struct { JSON map[string]any }`
+  - `type KiroToolResult struct { ToolUseID, Status string; Content []ToolResultContent }`、`type ToolResultContent struct { Text string }`
+  - `type HistoryEntry struct { UserInputMessage *UserInputMessage; AssistantResponseMessage *AssistantResponseMessage }`
+  - `type AssistantResponseMessage struct { Content string; ToolUses []KiroToolUse }`、`type KiroToolUse struct { Name string; Input json.RawMessage; ToolUseID string }`
+  - `type Options struct { ModelID, ConversationID, ProfileArn, Origin string; FakeThinking bool; FakeThinkingMaxTokens, ToolDescMaxLen int }`
+  - `func BuildRequest(req *apicompat.AnthropicRequest, opts Options) (*Request, error)`
+  - `var ErrNoMessages`
+
+**流水线（spec §6.1，实现必须严格按此顺序）：**
+
+```
+1. 模型解析        opts.ModelID 已由调用方解析好，直接用
+2. 工具预处理      description > ToolDescMaxLen → 移入 system prompt；InputSchema 走 SanitizeSchema
+3. system 拼接     FlattenSystem → 加上工具文档 → 拼到第一条 user message 之前
+4. 消息规整链      无 tools 时 StripToolContent → MergeAdjacent → EnsureFirstIsUser → EnsureAlternating
+5. history 构造    除最后一条外 → []HistoryEntry
+6. currentMessage  最后一条；若为 assistant → 移入 history，content 顶替为 "Continue"
+7. 假思考注入      opts.FakeThinking 且 current 是 user 时注入
+8. images/toolResults → UserInputMessageContext
+9. 固定字段        Origin、ChatTriggerType="MANUAL"、ConversationID、ProfileArn
+```
+
+**注意**：`Origin` 由调用方按端点决定（`AI_EDITOR` 或 `KIRO_CLI`），
+`opts.Origin` 为空时默认 `AI_EDITOR`。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/pkg/kiro/request_test.go`：
+
+```go
+package kiro
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/stretchr/testify/require"
+)
+
+func baseOpts() Options {
+	return Options{
+		ModelID:        "claude-sonnet-4.6",
+		ConversationID: "conv-1",
+		ProfileArn:     "arn:aws:codewhisperer:::profile/ABC",
+		ToolDescMaxLen: 10000,
+	}
+}
+
+func TestBuildRequestFixedFields(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"hello"`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+	require.Equal(t, "MANUAL", out.ConversationState.ChatTriggerType)
+	require.Equal(t, "conv-1", out.ConversationState.ConversationID)
+	require.Equal(t, "arn:aws:codewhisperer:::profile/ABC", out.ProfileArn)
+
+	um := out.ConversationState.CurrentMessage.UserInputMessage
+	require.Equal(t, "hello", um.Content)
+	require.Equal(t, "claude-sonnet-4.6", um.ModelID)
+	require.Equal(t, "AI_EDITOR", um.Origin)
+	require.Empty(t, out.ConversationState.History)
+}
+
+// TestBuildRequestSystemPrependedToFirstUser 覆盖 spec §6.3 的头号有损项：
+// Kiro 没有 system 角色，system 必须拼进第一条 user message。
+func TestBuildRequestSystemPrependedToFirstUser(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		System: rawJSON(t, `"SYSTEM RULES"`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"first"`)},
+			{Role: "assistant", Content: rawJSON(t, `"ack"`)},
+			{Role: "user", Content: rawJSON(t, `"second"`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	// 有 history 时，system 拼到 history 里的第一条 user，而不是 current。
+	require.Len(t, out.ConversationState.History, 2)
+	firstUser := out.ConversationState.History[0].UserInputMessage
+	require.NotNil(t, firstUser)
+	require.True(t, strings.HasPrefix(firstUser.Content, "SYSTEM RULES"))
+	require.Contains(t, firstUser.Content, "first")
+
+	// current 保持原样。
+	require.Equal(t, "second", out.ConversationState.CurrentMessage.UserInputMessage.Content)
+}
+
+func TestBuildRequestSystemGoesToCurrentWhenNoHistory(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		System: rawJSON(t, `"SYSTEM RULES"`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"only"`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+	require.Empty(t, out.ConversationState.History)
+
+	content := out.ConversationState.CurrentMessage.UserInputMessage.Content
+	require.True(t, strings.HasPrefix(content, "SYSTEM RULES"))
+	require.Contains(t, content, "only")
+}
+
+// TestBuildRequestTrailingAssistantBecomesContinue 覆盖 assistant prefill 的有损转换。
+func TestBuildRequestTrailingAssistantBecomesContinue(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"q"`)},
+			{Role: "assistant", Content: rawJSON(t, `"partial answer"`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+	require.Equal(t, "Continue", out.ConversationState.CurrentMessage.UserInputMessage.Content)
+
+	last := out.ConversationState.History[len(out.ConversationState.History)-1]
+	require.NotNil(t, last.AssistantResponseMessage)
+	require.Equal(t, "partial answer", last.AssistantResponseMessage.Content)
+}
+
+func TestBuildRequestToolsConvertedAndSanitized(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"go"`)},
+		},
+		Tools: []apicompat.AnthropicTool{{
+			Name:        "Read",
+			Description: "read a file",
+			InputSchema: rawJSON(t, `{"type":"object","additionalProperties":false,"required":[],"properties":{"p":{"type":"string"}}}`),
+		}},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	require.NotNil(t, ctx)
+	require.Len(t, ctx.Tools, 1)
+
+	spec := ctx.Tools[0].ToolSpecification
+	require.Equal(t, "Read", spec.Name)
+	require.Equal(t, "read a file", spec.Description)
+	require.NotContains(t, spec.InputSchema.JSON, "additionalProperties", "schema 必须经过 SanitizeSchema")
+	require.NotContains(t, spec.InputSchema.JSON, "required")
+}
+
+func TestBuildRequestLongToolDescriptionMovedToSystem(t *testing.T) {
+	t.Parallel()
+
+	longDesc := strings.Repeat("x", 200)
+	opts := baseOpts()
+	opts.ToolDescMaxLen = 50
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"go"`)},
+		},
+		Tools: []apicompat.AnthropicTool{{
+			Name:        "Bash",
+			Description: longDesc,
+			InputSchema: rawJSON(t, `{"type":"object"}`),
+		}},
+	}
+
+	out, err := BuildRequest(req, opts)
+	require.NoError(t, err)
+
+	content := out.ConversationState.CurrentMessage.UserInputMessage.Content
+	require.Contains(t, content, "## Tool: Bash", "长描述应移入 system prompt")
+	require.Contains(t, content, longDesc)
+
+	spec := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools[0].ToolSpecification
+	require.Contains(t, spec.Description, "Full documentation in system prompt")
+	require.NotContains(t, spec.Description, longDesc)
+}
+
+// TestBuildRequestStripsToolContentWhenNoTools 覆盖：请求未声明 tools 时，
+// 历史里的工具调用/结果必须清空，否则上游会因引用未声明的工具而拒绝。
+func TestBuildRequestStripsToolContentWhenNoTools(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"q"`)},
+			{Role: "assistant", Content: rawJSON(t, `[{"type":"tool_use","id":"tu_1","name":"Read","input":{}}]`)},
+			{Role: "user", Content: rawJSON(t, `[{"type":"tool_result","tool_use_id":"tu_1","content":"r"}]`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	for _, h := range out.ConversationState.History {
+		if h.AssistantResponseMessage != nil {
+			require.Empty(t, h.AssistantResponseMessage.ToolUses)
+		}
+		if h.UserInputMessage != nil && h.UserInputMessage.UserInputMessageContext != nil {
+			require.Empty(t, h.UserInputMessage.UserInputMessageContext.ToolResults)
+		}
+	}
+	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	if ctx != nil {
+		require.Empty(t, ctx.ToolResults)
+	}
+}
+
+func TestBuildRequestToolResultsMappedWithStatus(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"q"`)},
+			{Role: "assistant", Content: rawJSON(t, `[{"type":"tool_use","id":"tu_1","name":"Read","input":{}}]`)},
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"tool_result","tool_use_id":"tu_1","content":"ok"},
+				{"type":"tool_result","tool_use_id":"tu_2","content":"bad","is_error":true}
+			]`)},
+		},
+		Tools: []apicompat.AnthropicTool{{Name: "Read", InputSchema: rawJSON(t, `{"type":"object"}`)}},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	require.NotNil(t, ctx)
+	require.Len(t, ctx.ToolResults, 2)
+	require.Equal(t, "success", ctx.ToolResults[0].Status)
+	require.Equal(t, "ok", ctx.ToolResults[0].Content[0].Text)
+	require.Equal(t, "error", ctx.ToolResults[1].Status)
+}
+
+func TestBuildRequestImagesMapped(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{{
+			Role: "user",
+			Content: rawJSON(t, `[
+				{"type":"text","text":"see"},
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}
+			]`),
+		}},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	imgs := out.ConversationState.CurrentMessage.UserInputMessage.Images
+	require.Len(t, imgs, 1)
+	require.Equal(t, "png", imgs[0].Format)
+	require.Equal(t, "QUJD", imgs[0].Source.Bytes)
+}
+
+func TestBuildRequestEmptyContentBecomesContinue(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `""`)},
+		},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+	require.Equal(t, "Continue", out.ConversationState.CurrentMessage.UserInputMessage.Content)
+}
+
+func TestBuildRequestFakeThinkingInjection(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"solve it"`)},
+		},
+	}
+
+	opts := baseOpts()
+	opts.FakeThinking = true
+	opts.FakeThinkingMaxTokens = 4000
+
+	out, err := BuildRequest(req, opts)
+	require.NoError(t, err)
+
+	content := out.ConversationState.CurrentMessage.UserInputMessage.Content
+	require.Contains(t, content, "<thinking_mode>enabled</thinking_mode>")
+	require.Contains(t, content, "<max_thinking_length>4000</max_thinking_length>")
+	require.Contains(t, content, "solve it")
+
+	// 关闭时不得注入。
+	opts.FakeThinking = false
+	out, err = BuildRequest(req, opts)
+	require.NoError(t, err)
+	require.NotContains(t, out.ConversationState.CurrentMessage.UserInputMessage.Content, "<thinking_mode>")
+}
+
+func TestBuildRequestNoUsableMessages(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildRequest(&apicompat.AnthropicRequest{}, baseOpts())
+	require.ErrorIs(t, err, ErrNoMessages)
+
+	// 全是 assistant → EnsureFirstIsUser 清空 → 同样是 ErrNoMessages。
+	_, err = BuildRequest(&apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{{Role: "assistant", Content: rawJSON(t, `"x"`)}},
+	}, baseOpts())
+	require.ErrorIs(t, err, ErrNoMessages)
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run TestBuildRequest -v
+```
+
+Expected: FAIL —— `undefined: BuildRequest` / `undefined: Options`。
+
+- [ ] **Step 3: 实现 `request.go`**
+
+```go
+package kiro
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+)
+
+// ErrNoMessages 表示规整后没有任何可发送的消息。
+var ErrNoMessages = errors.New("kiro: no usable messages after normalization")
+
+// defaultOrigin 是 Kiro IDE 路径的 origin；API Key 路径由调用方传 KIRO_CLI。
+const defaultOrigin = "AI_EDITOR"
+
+// continuePlaceholder 用于顶替空内容或 assistant 结尾的场景。
+// Kiro 不接受空 content，也没有 assistant prefill 语义。
+const continuePlaceholder = "Continue"
+
+// Request 是 generateAssistantResponse 的请求体。
+type Request struct {
+	ConversationState ConversationState `json:"conversationState"`
+	ProfileArn        string            `json:"profileArn,omitempty"`
+}
+
+// ConversationState 承载完整会话。
+type ConversationState struct {
+	ChatTriggerType string         `json:"chatTriggerType"`
+	ConversationID  string         `json:"conversationId"`
+	CurrentMessage  CurrentMessage `json:"currentMessage"`
+	History         []HistoryEntry `json:"history,omitempty"`
+}
+
+// CurrentMessage 是本轮要发送的消息。
+type CurrentMessage struct {
+	UserInputMessage UserInputMessage `json:"userInputMessage"`
+}
+
+// UserInputMessage 是 Kiro 的用户消息形态。注意它没有 system 角色，
+// 也没有 temperature / top_p / max_tokens 等采样参数的槽位。
+type UserInputMessage struct {
+	Content                 string                   `json:"content"`
+	ModelID                 string                   `json:"modelId"`
+	Origin                  string                   `json:"origin"`
+	Images                  []KiroImage              `json:"images,omitempty"`
+	UserInputMessageContext *UserInputMessageContext `json:"userInputMessageContext,omitempty"`
+}
+
+// KiroImage 是 Kiro 的图片形态：格式名 + base64 字节。
+type KiroImage struct {
+	Format string      `json:"format"`
+	Source ImageSource `json:"source"`
+}
+
+// ImageSource 承载 base64 字节。
+type ImageSource struct {
+	Bytes string `json:"bytes"`
+}
+
+// UserInputMessageContext 携带工具声明与工具结果。
+type UserInputMessageContext struct {
+	Tools       []Tool           `json:"tools,omitempty"`
+	ToolResults []KiroToolResult `json:"toolResults,omitempty"`
+}
+
+// Tool 是一条工具声明。
+type Tool struct {
+	ToolSpecification ToolSpecification `json:"toolSpecification"`
+}
+
+// ToolSpecification 是工具的名称/描述/入参 schema。
+type ToolSpecification struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema InputSchema `json:"inputSchema"`
+}
+
+// InputSchema 包住 JSON Schema。
+type InputSchema struct {
+	JSON map[string]any `json:"json"`
+}
+
+// KiroToolResult 是一个工具执行结果。
+type KiroToolResult struct {
+	ToolUseID string              `json:"toolUseId"`
+	Status    string              `json:"status"`
+	Content   []ToolResultContent `json:"content"`
+}
+
+// ToolResultContent 是工具结果的一段文本。
+type ToolResultContent struct {
+	Text string `json:"text"`
+}
+
+// HistoryEntry 是历史里的一条消息，两个字段互斥。
+type HistoryEntry struct {
+	UserInputMessage         *UserInputMessage         `json:"userInputMessage,omitempty"`
+	AssistantResponseMessage *AssistantResponseMessage `json:"assistantResponseMessage,omitempty"`
+}
+
+// AssistantResponseMessage 是历史里的助手消息。
+type AssistantResponseMessage struct {
+	Content  string        `json:"content"`
+	ToolUses []KiroToolUse `json:"toolUses,omitempty"`
+}
+
+// KiroToolUse 是历史里的一次工具调用。
+type KiroToolUse struct {
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"toolUseId"`
+}
+
+// Options 控制请求构造的可变部分。
+type Options struct {
+	// ModelID 是已解析好的 Kiro 上游模型名。
+	ModelID string
+	// ConversationID 必须与粘性会话一致；换账号时调用方需重新生成。
+	ConversationID string
+	// ProfileArn 对 API Key 账号应留空。
+	ProfileArn string
+	// Origin 为空时默认 AI_EDITOR；API Key 路径传 KIRO_CLI。
+	Origin string
+	// FakeThinking 开启后向 prompt 注入思考指令，并由 StreamTranslator 剥离。
+	FakeThinking bool
+	// FakeThinkingMaxTokens 是注入指令里声明的思考预算。
+	FakeThinkingMaxTokens int
+	// ToolDescMaxLen 超过此长度的工具描述移入 system prompt。
+	ToolDescMaxLen int
+}
+
+// BuildRequest 把 Anthropic 请求转换成 Kiro 的 conversationState。
+// 转换是有损的，完整清单见设计文档 §6.3。
+func BuildRequest(req *apicompat.AnthropicRequest, opts Options) (*Request, error) {
+	if req == nil {
+		return nil, ErrNoMessages
+	}
+
+	// 1-2. 工具预处理：长描述移入 system，schema 清洗。
+	tools, toolDocs := processTools(req.Tools, opts.ToolDescMaxLen)
+
+	// 3. system 拼接。
+	systemText, err := FlattenSystem(req.System)
+	if err != nil {
+		return nil, err
+	}
+	if toolDocs != "" {
+		if systemText == "" {
+			systemText = strings.TrimSpace(toolDocs)
+		} else {
+			systemText += toolDocs
+		}
+	}
+
+	// 4. 消息规整链。
+	msgs, err := FromAnthropic(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(tools) == 0 {
+		msgs = StripToolContent(msgs)
+	}
+	msgs = MergeAdjacent(msgs)
+	msgs = EnsureFirstIsUser(msgs)
+	msgs = EnsureAlternating(msgs)
+	if len(msgs) == 0 {
+		return nil, ErrNoMessages
+	}
+
+	origin := opts.Origin
+	if origin == "" {
+		origin = defaultOrigin
+	}
+
+	// 5. history 构造（除最后一条外）。system 拼到 history 首条 user。
+	historyMsgs := msgs[:len(msgs)-1]
+	current := msgs[len(msgs)-1]
+
+	if systemText != "" && len(historyMsgs) > 0 {
+		for i := range historyMsgs {
+			if historyMsgs[i].Role == "user" {
+				historyMsgs[i].Text = joinSystem(systemText, historyMsgs[i].Text)
+				break
+			}
+		}
+	}
+
+	history := buildHistory(historyMsgs, opts.ModelID, origin)
+
+	// 6. current message；assistant 结尾时移入 history 并顶替为 Continue。
+	currentContent := current.Text
+	if systemText != "" && len(historyMsgs) == 0 {
+		currentContent = joinSystem(systemText, currentContent)
+	}
+
+	if current.Role == "assistant" {
+		history = append(history, HistoryEntry{
+			AssistantResponseMessage: assistantEntry(current, currentContent),
+		})
+		current = Msg{Role: "user"}
+		currentContent = continuePlaceholder
+	}
+
+	if strings.TrimSpace(currentContent) == "" {
+		currentContent = continuePlaceholder
+	}
+
+	// 7. 假思考注入。
+	if opts.FakeThinking && current.Role == "user" {
+		currentContent = injectThinking(currentContent, opts.FakeThinkingMaxTokens)
+	}
+
+	// 8. images / toolResults / tools。
+	userInput := UserInputMessage{
+		Content: currentContent,
+		ModelID: opts.ModelID,
+		Origin:  origin,
+		Images:  toKiroImages(current.Images),
+	}
+	if ctx := buildContext(tools, current.ToolResults); ctx != nil {
+		userInput.UserInputMessageContext = ctx
+	}
+
+	// 9. 固定字段。
+	out := &Request{
+		ConversationState: ConversationState{
+			ChatTriggerType: "MANUAL",
+			ConversationID:  opts.ConversationID,
+			CurrentMessage:  CurrentMessage{UserInputMessage: userInput},
+			History:         history,
+		},
+		ProfileArn: opts.ProfileArn,
+	}
+	return out, nil
+}
+
+func joinSystem(system, content string) string {
+	if content == "" {
+		return system
+	}
+	return system + "\n\n" + content
+}
+
+// processTools 清洗 schema，并把超长描述移入 system prompt 文档段。
+func processTools(tools []apicompat.AnthropicTool, maxLen int) ([]Tool, string) {
+	if len(tools) == 0 {
+		return nil, ""
+	}
+
+	out := make([]Tool, 0, len(tools))
+	var docs []string
+
+	for _, tool := range tools {
+		var schema map[string]any
+		if len(tool.InputSchema) > 0 {
+			// 解析失败时退化为空对象，好过让上游 400。
+			_ = json.Unmarshal(tool.InputSchema, &schema)
+		}
+
+		desc := tool.Description
+		if desc == "" {
+			desc = "Tool: " + tool.Name
+		}
+		if maxLen > 0 && len(desc) > maxLen {
+			docs = append(docs, fmt.Sprintf("## Tool: %s\n\n%s", tool.Name, desc))
+			desc = fmt.Sprintf("[Full documentation in system prompt under '## Tool: %s']", tool.Name)
+		}
+
+		out = append(out, Tool{ToolSpecification: ToolSpecification{
+			Name:        tool.Name,
+			Description: desc,
+			InputSchema: InputSchema{JSON: SanitizeSchema(schema)},
+		}})
+	}
+
+	var toolDocs string
+	if len(docs) > 0 {
+		toolDocs = "\n\n---\n# Tool Documentation\n\n" + strings.Join(docs, "\n\n---\n\n")
+	}
+	return out, toolDocs
+}
+
+func buildHistory(msgs []Msg, modelID, origin string) []HistoryEntry {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	history := make([]HistoryEntry, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			history = append(history, HistoryEntry{
+				AssistantResponseMessage: assistantEntry(m, m.Text),
+			})
+			continue
+		}
+
+		content := m.Text
+		if content == "" {
+			content = "(empty)"
+		}
+		entry := &UserInputMessage{
+			Content: content,
+			ModelID: modelID,
+			Origin:  origin,
+			Images:  toKiroImages(m.Images),
+		}
+		if ctx := buildContext(nil, m.ToolResults); ctx != nil {
+			entry.UserInputMessageContext = ctx
+		}
+		history = append(history, HistoryEntry{UserInputMessage: entry})
+	}
+	return history
+}
+
+func assistantEntry(m Msg, content string) *AssistantResponseMessage {
+	if content == "" {
+		content = "(empty)"
+	}
+	out := &AssistantResponseMessage{Content: content}
+	for _, tc := range m.ToolCalls {
+		input := tc.Input
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		out.ToolUses = append(out.ToolUses, KiroToolUse{
+			Name:      tc.Name,
+			Input:     input,
+			ToolUseID: tc.ID,
+		})
+	}
+	return out
+}
+
+func buildContext(tools []Tool, results []ToolResult) *UserInputMessageContext {
+	if len(tools) == 0 && len(results) == 0 {
+		return nil
+	}
+
+	ctx := &UserInputMessageContext{Tools: tools}
+	for _, r := range results {
+		status := "success"
+		if r.IsError {
+			status = "error"
+		}
+		text := r.Text
+		if text == "" {
+			text = "(empty result)"
+		}
+		ctx.ToolResults = append(ctx.ToolResults, KiroToolResult{
+			ToolUseID: r.ToolUseID,
+			Status:    status,
+			Content:   []ToolResultContent{{Text: text}},
+		})
+	}
+	return ctx
+}
+
+func toKiroImages(images []Image) []KiroImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]KiroImage, 0, len(images))
+	for _, img := range images {
+		out = append(out, KiroImage{
+			Format: img.Format,
+			Source: ImageSource{Bytes: img.Data},
+		})
+	}
+	return out
+}
+
+// injectThinking 把思考指令注入到用户内容之前。
+// Kiro 没有原生 reasoning，这是四份参考实现一致采用的替代方案。
+func injectThinking(content string, maxTokens int) string {
+	if maxTokens <= 0 {
+		maxTokens = 4000
+	}
+	const instruction = `Think step by step. Make sure you fully understand what is being asked, ` +
+		`consider multiple approaches, think about edge cases, challenge your assumptions, ` +
+		`and verify your reasoning before concluding. ` +
+		`Wrap your reasoning in <thinking>...</thinking> tags before your final response.`
+
+	return fmt.Sprintf(
+		"<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>%d</max_thinking_length>\n<thinking_instruction>%s</thinking_instruction>\n\n%s",
+		maxTokens, instruction, content)
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -v
+```
+
+Expected: 全部 PASS（13 个 `TestBuildRequest*` 加上此前任务的测试）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/
+git add backend/internal/pkg/kiro/request.go backend/internal/pkg/kiro/request_test.go
+git commit -m "feat(kiro): Anthropic 请求 → Kiro conversationState 构造"
+```
+
+---
+
+> **计划文档状态：** Task 1-5 已完整展开。Task 6-20 见下方接口契约，逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
 
@@ -1685,10 +2447,9 @@ git commit -m "feat(kiro): 消息规整链与 Anthropic 内容块转换"
 
 | Task | 交付物 | 关键接口 |
 |---|---|---|
-| 5 | `request.go` 请求构造 | `type Options struct{ModelID, ConversationID, ProfileArn, Origin string; FakeThinking bool; FakeThinkingMaxTokens, ToolDescMaxLen int}`；`func BuildRequest(*apicompat.AnthropicRequest, Options) (*Request, error)`。按 spec §6.1 九步流水线，消费 Task 3 的 `SanitizeSchema` 与 Task 4 的全部导出函数 |
-| 6 | `stream.go` 流式转换 | `func NewStreamTranslator(model string) *StreamTranslator`；`func (*StreamTranslator) Feed([]byte) ([]apicompat.AnthropicStreamEvent, error)`；`func (*StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent`；`func (*StreamTranslator) Usage() apicompat.AnthropicUsage`；`func (*StreamTranslator) Credits() float64`。`toolUseEvent.Input` 分片累积 → `input_json_delta` |
-| 7 | `tokens.go` token 估算 | `func EstimateText(string) int`；`func EstimateRequestInput(*apicompat.AnthropicRequest) int`。移植 `Kiro-Go/proxy/token_estimator.go` 的分字符类加权公式（ascii/4.5 + digit/2 + symbol/1.5 + 非 ASCII/1.5） |
-| 8 | `models.go` + `endpoints.go` + `errors.go` | `func MapModel(string) string`；`func DefaultModels() []string`；`type Endpoint struct{URL, Origin, AmzTarget, Name string}`；`func EndpointsFor(isAPIKey bool, region string) []Endpoint`；`type Signal int` + `func Classify(status int, body []byte) Signal` —— **必测 `INVALID_MODEL_ID` 归类为网络问题（不标记账号故障）、400 归类为不可重试不可转移** |
+| 6 | `stream.go` 流式转换 | `func NewStreamTranslator(model string) *StreamTranslator`；`func (*StreamTranslator) Feed([]byte) ([]apicompat.AnthropicStreamEvent, error)`；`func (*StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent`；`func (*StreamTranslator) Usage() apicompat.AnthropicUsage`；`func (*StreamTranslator) Credits() float64`。`toolUseEvent.Input` 分片累积 → `input_json_delta`；`FakeThinking` 开启时剥离 `<thinking>` 为 thinking block（**不带 signature，不写回 history**） |
+| 7 | `tokens.go` token 估算 | `func EstimateText(string) int`；`func EstimateRequestInput(*apicompat.AnthropicRequest) int`。移植 `Kiro-Go/proxy/token_estimator.go`：长度 < 5 时 `ceil(n/3)`；否则 `ceil(ascii/4.5 + digit/2 + symbol/1.5 + 非ASCII/1.5)`，下限 1 |
+| 8 | `models.go` + `endpoints.go` + `errors.go` | `func MapModel(string) string`；`func DefaultModels() []string`；`type Endpoint struct{URL, Origin, AmzTarget, Name string}`；`func EndpointsFor(isAPIKey bool, region string) []Endpoint`（见 spec §7.1 四端点表）；`type Signal int` 常量 `SignalAuthExpired/SignalOverage/SignalRateLimited/SignalNetworkRegion/SignalBadRequest/SignalSuspended/SignalCreditsExhausted/SignalOK` + `func Classify(status int, body []byte) Signal` —— **必测 `INVALID_MODEL_ID` → `SignalNetworkRegion`（不标记账号故障）、400 → `SignalBadRequest`（不重试不转移）** |
 
 
 ### B 组：凭证与授权
