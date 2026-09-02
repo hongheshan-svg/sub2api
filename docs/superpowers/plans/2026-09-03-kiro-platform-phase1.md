@@ -9019,18 +9019,540 @@ billing_mode=token；credits 只记账号层不进 usage_log。"
 
 ---
 
-> **计划文档状态：** **A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ D 组（19-21）已全部完整展开。**
-> 至此后端完整：账号可建可授权可刷新、流量可转发、额度可见、计费落账。
-> E 组（前端）见下方接口契约。
+## E 组：前端
 
-## 后续任务概览（待补齐为完整步骤）
+### Task 22: 类型、平台常量与 Kiro 凭证构造
 
-### E 组：前端（Task 22-23）
+**Files:**
+- Modify: `frontend/src/types/index.ts:536`（`GroupPlatform`）、`:906`（`AccountPlatform`）、`:1373` 附近（`UsageInfo`）
+- Modify: `frontend/src/constants/platforms.ts`
+- Create: `frontend/src/components/account/kiroCredentials.ts`
+- Test: `frontend/src/components/account/__tests__/kiroCredentials.spec.ts`
 
-| Task | 交付物 | 关键点 |
-|---|---|---|
-| 22 | 账号表单 + 授权向导 | 平台下拉加 `kiro`；四种 `auth_method` 分支表单（social 粘 refreshToken / builder_id 走设备码向导 / idc 填 start URL 后跳转授权 / api_key 粘密钥）；授权向导对接 Task 14 的四个端点，设备码轮询按返回的 `interval` 节流。**参考 `frontend/src/**` 里 grok 与 antigravity 的账号表单实现**，凭证字段命名对齐 Task 10 的 credentials schema |
-| 23 | 额度展示 + 分组平台选项 | 账号详情展示 `kiro_credits` 进度条（`used_requests`/`limit_requests` 是**请求数**不是 token，文案不要写成 token）、`kiro_subscription_title`（KIRO FREE / KIRO PRO+）、`kiro_overage_status`；分组创建/编辑的平台选项加 kiro；模型白名单默认值用 `kiro.DefaultModels()` 的对应前端常量 |
+**Interfaces:**
+- Consumes: 后端 Task 10 的 credentials schema、Task 20 的 `UsageInfo` 新字段
+- Produces:
+  - `type KiroAuthMethod = 'social' | 'builder_id' | 'idc' | 'api_key'`
+  - `const KIRO_AUTH_METHOD_OPTIONS`
+  - `interface KiroCredentialForm`
+  - `function buildKiroCredentials(form: KiroCredentialForm): Record<string, unknown>`
+  - `function validateKiroCredentials(form: KiroCredentialForm): string | null`
+  - `function kiroRequiredFields(method: KiroAuthMethod): string[]`
+
+**⚠️ 字段命名必须与后端一致**（后端 Task 10 的 credentials schema）：
+`auth_method` / `refresh_token` / `access_token` / `client_id` / `client_secret` /
+`issuer_url` / `region` / `profile_arn` / `api_key` / `machine_id` / `fake_thinking`。
+命名漂移会导致账号建出来但转发时取不到凭证，且症状是 401 而非明显的表单错误。
+
+**⚠️ `machine_id` 前端不生成、不展示、不提交** —— 它由后端在建号时固化
+（Task 12 的 `BuildAccountCredentials`），前端插手会破坏设备指纹的稳定性。
+
+- [ ] **Step 1: 扩展类型**
+
+`frontend/src/types/index.ts`：
+
+```ts
+// :536
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'kiro' | 'composite'
+
+// :906
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'kiro'
+```
+
+在 `UsageInfo` 接口里（`grok_request_quota` 附近）加入后端 Task 20 新增的三个字段：
+
+```ts
+  /** Kiro credits 额度。used/limit 是**请求数**（AGENTIC_REQUEST），不是 token */
+  kiro_credits?: UsageProgress | null
+  /** 订阅档位，如 KIRO FREE / KIRO PRO+ */
+  kiro_subscription_title?: string
+  /** Overage 开关状态：ENABLED / DISABLED */
+  kiro_overage_status?: string
+```
+
+- [ ] **Step 2: 注册平台选项**
+
+`frontend/src/constants/platforms.ts` 的 `CONCRETE_PLATFORM_OPTIONS` 末尾加入：
+
+```ts
+  { value: 'kiro', label: 'Kiro' }
+```
+
+该文件的注释已写明「Keep platform selectors derived from this catalog so newly
+added providers do not silently disappear from list filters」——
+加在这里即可让分组平台下拉、账号列表筛选等一并生效，**不要在各组件里另开硬编码列表**。
+
+- [ ] **Step 3: 写失败测试**
+
+创建 `frontend/src/components/account/__tests__/kiroCredentials.spec.ts`：
+
+```ts
+import { describe, expect, it } from 'vitest'
+import {
+  buildKiroCredentials,
+  kiroRequiredFields,
+  validateKiroCredentials,
+  KIRO_AUTH_METHOD_OPTIONS,
+  type KiroCredentialForm
+} from '../kiroCredentials'
+
+const base: KiroCredentialForm = {
+  authMethod: 'social',
+  refreshToken: '',
+  accessToken: '',
+  clientId: '',
+  clientSecret: '',
+  issuerUrl: '',
+  region: '',
+  profileArn: '',
+  apiKey: '',
+  fakeThinking: false
+}
+
+describe('KIRO_AUTH_METHOD_OPTIONS', () => {
+  it('覆盖后端支持的四种接入方式', () => {
+    expect(KIRO_AUTH_METHOD_OPTIONS.map((o) => o.value)).toEqual([
+      'social',
+      'builder_id',
+      'idc',
+      'api_key'
+    ])
+  })
+})
+
+describe('buildKiroCredentials', () => {
+  it('social 只提交 refresh_token 与 region', () => {
+    const creds = buildKiroCredentials({ ...base, refreshToken: 'rt', region: 'us-east-1' })
+    expect(creds.auth_method).toBe('social')
+    expect(creds.refresh_token).toBe('rt')
+    expect(creds.region).toBe('us-east-1')
+    expect(creds).not.toHaveProperty('client_id')
+    expect(creds).not.toHaveProperty('api_key')
+  })
+
+  it('idc 提交客户端凭据与 issuer_url', () => {
+    const creds = buildKiroCredentials({
+      ...base,
+      authMethod: 'idc',
+      refreshToken: 'rt',
+      clientId: 'cid',
+      clientSecret: 'csec',
+      issuerUrl: 'https://d-90667b4f8e.awsapps.com/start',
+      region: 'us-east-1'
+    })
+    expect(creds.auth_method).toBe('idc')
+    expect(creds.client_id).toBe('cid')
+    expect(creds.client_secret).toBe('csec')
+    expect(creds.issuer_url).toBe('https://d-90667b4f8e.awsapps.com/start')
+  })
+
+  it('api_key 只提交 api_key，不带 token 字段', () => {
+    const creds = buildKiroCredentials({ ...base, authMethod: 'api_key', apiKey: 'kiro_ak_1' })
+    expect(creds.auth_method).toBe('api_key')
+    expect(creds.api_key).toBe('kiro_ak_1')
+    expect(creds).not.toHaveProperty('refresh_token')
+    expect(creds).not.toHaveProperty('access_token')
+  })
+
+  // machine_id 由后端在建号时固化，前端插手会破坏设备指纹的稳定性。
+  it('从不提交 machine_id', () => {
+    for (const m of ['social', 'builder_id', 'idc', 'api_key'] as const) {
+      expect(buildKiroCredentials({ ...base, authMethod: m, refreshToken: 'rt', apiKey: 'k' }))
+        .not.toHaveProperty('machine_id')
+    }
+  })
+
+  it('fake_thinking 默认不提交，开启时提交 true', () => {
+    expect(buildKiroCredentials({ ...base, refreshToken: 'rt' })).not.toHaveProperty('fake_thinking')
+    expect(buildKiroCredentials({ ...base, refreshToken: 'rt', fakeThinking: true }).fake_thinking).toBe(true)
+  })
+
+  it('去除字段首尾空白', () => {
+    const creds = buildKiroCredentials({ ...base, refreshToken: '  rt  ', region: ' us-east-1 ' })
+    expect(creds.refresh_token).toBe('rt')
+    expect(creds.region).toBe('us-east-1')
+  })
+})
+
+describe('validateKiroCredentials', () => {
+  it('social 缺 refresh_token 时报错', () => {
+    expect(validateKiroCredentials(base)).toBeTruthy()
+    expect(validateKiroCredentials({ ...base, refreshToken: 'rt' })).toBeNull()
+  })
+
+  it('idc 缺客户端凭据或 issuer_url 时报错', () => {
+    const idc: KiroCredentialForm = { ...base, authMethod: 'idc', refreshToken: 'rt' }
+    expect(validateKiroCredentials(idc)).toBeTruthy()
+    expect(validateKiroCredentials({ ...idc, clientId: 'c', clientSecret: 's' })).toBeTruthy()
+    expect(
+      validateKiroCredentials({ ...idc, clientId: 'c', clientSecret: 's', issuerUrl: 'https://x/start' })
+    ).toBeNull()
+  })
+
+  it('api_key 缺密钥时报错', () => {
+    expect(validateKiroCredentials({ ...base, authMethod: 'api_key' })).toBeTruthy()
+    expect(validateKiroCredentials({ ...base, authMethod: 'api_key', apiKey: 'k' })).toBeNull()
+  })
+})
+
+describe('kiroRequiredFields', () => {
+  it('按接入方式返回必填项，供表单标星', () => {
+    expect(kiroRequiredFields('social')).toEqual(['refreshToken'])
+    expect(kiroRequiredFields('api_key')).toEqual(['apiKey'])
+    expect(kiroRequiredFields('idc')).toEqual(['refreshToken', 'clientId', 'clientSecret', 'issuerUrl'])
+    expect(kiroRequiredFields('builder_id')).toEqual(['refreshToken', 'clientId', 'clientSecret'])
+  })
+})
+```
+
+- [ ] **Step 4: 运行测试确认失败**
+
+```bash
+pnpm --dir frontend vitest run src/components/account/__tests__/kiroCredentials.spec.ts
+```
+
+Expected: FAIL —— 模块不存在。
+
+- [ ] **Step 5: 实现 `kiroCredentials.ts`**
+
+```ts
+/**
+ * Kiro 账号凭证构造。
+ *
+ * 字段名必须与后端 credentials schema 严格一致
+ * （backend/internal/service/kiro_credentials.go）——
+ * 命名漂移会让账号建得出来但转发时取不到凭证，症状是 401 而非表单错误。
+ */
+
+export type KiroAuthMethod = 'social' | 'builder_id' | 'idc' | 'api_key'
+
+export const KIRO_AUTH_METHOD_OPTIONS: readonly { value: KiroAuthMethod; label: string }[] = [
+  { value: 'social', label: 'Social（粘贴 refreshToken）' },
+  { value: 'builder_id', label: 'AWS Builder ID（设备码授权）' },
+  { value: 'idc', label: 'IAM Identity Center（组织 SSO）' },
+  { value: 'api_key', label: 'Kiro API Key' }
+] as const
+
+export interface KiroCredentialForm {
+  authMethod: KiroAuthMethod
+  refreshToken: string
+  accessToken: string
+  clientId: string
+  clientSecret: string
+  issuerUrl: string
+  region: string
+  profileArn: string
+  apiKey: string
+  fakeThinking: boolean
+}
+
+const trim = (v: string | undefined): string => (v ?? '').trim()
+
+/** 按接入方式返回必填字段名，供表单标星与提交前校验共用。 */
+export function kiroRequiredFields(method: KiroAuthMethod): string[] {
+  switch (method) {
+    case 'api_key':
+      return ['apiKey']
+    case 'idc':
+      return ['refreshToken', 'clientId', 'clientSecret', 'issuerUrl']
+    case 'builder_id':
+      return ['refreshToken', 'clientId', 'clientSecret']
+    default:
+      return ['refreshToken']
+  }
+}
+
+/** 校验表单，返回错误提示；通过时返回 null。 */
+export function validateKiroCredentials(form: KiroCredentialForm): string | null {
+  const labels: Record<string, string> = {
+    refreshToken: 'Refresh Token',
+    clientId: 'Client ID',
+    clientSecret: 'Client Secret',
+    issuerUrl: 'SSO 门户地址',
+    apiKey: 'API Key'
+  }
+
+  for (const field of kiroRequiredFields(form.authMethod)) {
+    if (!trim((form as unknown as Record<string, string>)[field])) {
+      return `请填写 ${labels[field] ?? field}`
+    }
+  }
+  return null
+}
+
+/**
+ * 构造提交给后端的 credentials。
+ *
+ * 只提交当前接入方式实际需要的字段，避免残留字段让后端的 auth_method
+ * 分派产生歧义。machine_id 一律不提交 —— 它由后端在建号时固化，
+ * 前端插手会破坏设备指纹的稳定性。
+ */
+export function buildKiroCredentials(form: KiroCredentialForm): Record<string, unknown> {
+  const creds: Record<string, unknown> = { auth_method: form.authMethod }
+
+  const region = trim(form.region)
+  if (region) creds.region = region
+
+  const profileArn = trim(form.profileArn)
+  if (profileArn && form.authMethod !== 'api_key') creds.profile_arn = profileArn
+
+  if (form.authMethod === 'api_key') {
+    creds.api_key = trim(form.apiKey)
+  } else {
+    creds.refresh_token = trim(form.refreshToken)
+
+    const accessToken = trim(form.accessToken)
+    if (accessToken) creds.access_token = accessToken
+
+    if (form.authMethod === 'idc' || form.authMethod === 'builder_id') {
+      creds.client_id = trim(form.clientId)
+      creds.client_secret = trim(form.clientSecret)
+    }
+    if (form.authMethod === 'idc') {
+      creds.issuer_url = trim(form.issuerUrl)
+    }
+  }
+
+  // 假思考默认关闭，只在显式开启时提交。
+  if (form.fakeThinking) creds.fake_thinking = true
+
+  return creds
+}
+```
+
+- [ ] **Step 6: 运行测试与类型检查**
+
+```bash
+pnpm --dir frontend vitest run src/components/account/__tests__/kiroCredentials.spec.ts
+pnpm --dir frontend typecheck
+```
+
+Expected: 测试全绿；typecheck 通过。若 typecheck 报别处的平台联合类型不完整
+（某个 `switch` 没覆盖 `'kiro'`），逐个补齐 —— 这正是加宽联合类型的价值。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add frontend/src/types/index.ts \
+        frontend/src/constants/platforms.ts \
+        frontend/src/components/account/kiroCredentials.ts \
+        frontend/src/components/account/__tests__/kiroCredentials.spec.ts
+git commit -m "feat(kiro): 前端平台类型、平台选项与凭证构造
+
+字段名与后端 credentials schema 严格对齐；machine_id 一律不由前端
+提交，避免破坏设备指纹稳定性。"
+```
+
+---
+
+### Task 23: 账号表单分支、授权向导与额度展示
+
+**Files:**
+- Modify: `frontend/src/components/account/CreateAccountModal.vue`
+- Modify: `frontend/src/components/account/EditAccountModal.vue`
+- Create: `frontend/src/components/account/KiroCredentialFields.vue`
+- Create: `frontend/src/components/account/KiroAuthWizard.vue`
+- Modify: `frontend/src/components/account/AccountQuotaInfo.vue`
+- Modify: `frontend/src/composables/useModelWhitelist.ts`
+- Test: `frontend/src/components/account/__tests__/KiroCredentialFields.spec.ts`
+
+**Interfaces:**
+- Consumes: Task 22 的 `kiroCredentials.ts` 全部导出；后端 Task 14 的四个授权端点
+- Produces: 三个 Vue 组件与两处既有组件的 kiro 分支
+
+- [ ] **Step 1: 先读既有实现**
+
+```bash
+sed -n 1,80p frontend/src/components/account/OAuthAuthorizationFlow.vue
+grep -n "grok\|antigravity" frontend/src/components/account/CreateAccountModal.vue | head -20
+grep -n "grok_request_quota\|antigravity_quota" frontend/src/components/account/AccountQuotaInfo.vue | head -10
+```
+
+三件事照既有写法，不要自创：
+1. `OAuthAuthorizationFlow.vue` 已有的授权跳转/轮询 UI —— **优先复用或扩展它**，
+   只有在 kiro 的双流程（授权码 + 设备码）确实装不进去时才新建 `KiroAuthWizard.vue`
+2. `CreateAccountModal.vue` 里按 `platform` 切换凭证字段区的既有模式
+3. `AccountQuotaInfo.vue` 里 grok/antigravity 额度块的展示结构与进度条组件
+
+- [ ] **Step 2: 写凭证字段组件的测试**
+
+创建 `frontend/src/components/account/__tests__/KiroCredentialFields.spec.ts`，
+用 `@vue/test-utils` 挂载组件，覆盖：
+
+```ts
+import { mount } from '@vue/test-utils'
+import { describe, expect, it } from 'vitest'
+import KiroCredentialFields from '../KiroCredentialFields.vue'
+
+describe('KiroCredentialFields', () => {
+  it('social 只显示 refreshToken，不显示客户端凭据与 API Key', () => {
+    const wrapper = mount(KiroCredentialFields, {
+      props: { modelValue: { authMethod: 'social' } }
+    })
+    expect(wrapper.find('[data-test="kiro-refresh-token"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="kiro-client-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="kiro-api-key"]').exists()).toBe(false)
+  })
+
+  it('idc 显示 issuer_url 与客户端凭据', () => {
+    const wrapper = mount(KiroCredentialFields, {
+      props: { modelValue: { authMethod: 'idc' } }
+    })
+    expect(wrapper.find('[data-test="kiro-issuer-url"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="kiro-client-id"]').exists()).toBe(true)
+  })
+
+  it('api_key 只显示密钥输入', () => {
+    const wrapper = mount(KiroCredentialFields, {
+      props: { modelValue: { authMethod: 'api_key' } }
+    })
+    expect(wrapper.find('[data-test="kiro-api-key"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="kiro-refresh-token"]').exists()).toBe(false)
+  })
+
+  it('假思考开关默认关闭', () => {
+    const wrapper = mount(KiroCredentialFields, {
+      props: { modelValue: { authMethod: 'social' } }
+    })
+    const toggle = wrapper.find('[data-test="kiro-fake-thinking"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('aria-checked')).not.toBe('true')
+  })
+})
+```
+
+> 组件里对应元素必须带上这些 `data-test` 属性，测试才能定位。
+
+- [ ] **Step 3: 实现 `KiroCredentialFields.vue`**
+
+按 `authMethod` 条件渲染字段区，字段绑定到 Task 22 的 `KiroCredentialForm`：
+
+- `social`：Refresh Token（多行文本域，值很长）、Region（默认 `us-east-1`）
+- `builder_id`：Refresh Token / Client ID / Client Secret / Region，
+  并提示「可用上方的设备码授权自动获取」
+- `idc`：在 builder_id 基础上加 SSO 门户地址（`issuer_url`），
+  占位符写 `https://d-xxxxxxxxx.awsapps.com/start`
+- `api_key`：API Key（密码框）、Region
+
+底部统一放假思考开关，标签写清代价：
+**「Kiro 无原生 thinking。开启后会向每个请求注入约数百 token 的思考指令，
+产出的是模型自写文本而非真实 reasoning。默认关闭。」**
+
+- [ ] **Step 4: 实现授权向导**
+
+两条流程接后端 Task 14 的四个端点：
+
+- **IdC（授权码）**：填 `issuer_url` → `POST /admin/kiro/oauth/authorize-url`
+  → 新窗口打开返回的 `authorize_url`（管理员在 AWS 门户用**组织的用户名/密码**登录）
+  → 登录后浏览器落在 `GET /admin/kiro/oauth/callback` 的成功页
+  → 管理员回到后台点「我已完成授权」，前端凭 `session_id` 取回凭证并填入表单
+- **Builder ID（设备码）**：`POST /admin/kiro/oauth/device/start`
+  → 展示 `user_code` 与 `verification_uri_complete`（附复制按钮）
+  → 按返回的 `interval` 轮询 `POST /admin/kiro/oauth/device/poll`
+  → `{"status":"pending"}` 继续等，成功则填入表单
+
+**轮询必须按 `interval` 节流**，且在 `expires_in` 到期后停止 ——
+后端对 `slow_down` 有专门处理，前端抢跑会触发它。
+
+- [ ] **Step 5: 接入账号表单**
+
+在 `CreateAccountModal.vue` / `EditAccountModal.vue` 里，
+`platform === 'kiro'` 时渲染 `KiroCredentialFields`，
+提交前调 `validateKiroCredentials`，通过后用 `buildKiroCredentials` 构造 credentials。
+
+- [ ] **Step 6: 额度展示**
+
+在 `AccountQuotaInfo.vue` 里加 kiro 分支，展示 `kiro_credits`：
+
+- 进度条：`used_requests` / `limit_requests`
+  —— **文案必须写「请求数」不能写「token」**，Kiro 的 `AGENTIC_REQUEST`
+  口径是按请求计数的，写成 token 会让运营对不上账
+- 重置时间：`resets_at`
+- 订阅档位：`kiro_subscription_title`（KIRO FREE / KIRO PRO+）
+- Overage 状态：`kiro_overage_status` 为 `DISABLED` 时给一个提示
+  ——额度用尽后不会自动超额，账号会直接不可调度
+
+- [ ] **Step 7: 模型白名单默认值**
+
+在 `useModelWhitelist.ts` 里加 `kiroModels` 常量，与后端 `kiro.DefaultModels()` 保持一致：
+
+```ts
+const kiroModels = ['claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'claude-sonnet-4']
+```
+
+并在平台分派处加入 kiro 分支。
+
+> 该文件顶部已有注释要求与后端 `DefaultAntigravityModelMapping` 保持一致，
+> kiro 同理 —— 两边漂移会导致白名单里出现上游不认的模型名。
+
+- [ ] **Step 8: 运行前端全部检查**
+
+```bash
+pnpm --dir frontend vitest run
+pnpm --dir frontend typecheck
+pnpm --dir frontend lint
+```
+
+Expected: 全绿。**必须跑完整 vitest 而非只跑新增用例** ——
+加宽 `AccountPlatform` 联合类型可能让别处的穷举 `switch` 失效，
+只跑子集会漏掉（这类漂移在本仓库有先例）。
+
+- [ ] **Step 9: 提交**
+
+```bash
+git add frontend/src/components/account/ frontend/src/composables/useModelWhitelist.ts
+git commit -m "feat(kiro): 账号表单分支、授权向导与额度展示
+
+E 组完成。额度文案按请求数而非 token 表述——Kiro 的 AGENTIC_REQUEST
+口径是按请求计数的。"
+```
+
+---
+
+## 与设计文档的偏离记录
+
+计划完成后对照 spec 逐节核查，有两处**有意偏离**，在此登记而非默默吞掉。
+
+### 1. 不单独建 `kiro_token_provider.go`
+
+spec §4.2 列出的 service 文件里有 `kiro_token_provider.go`（对应
+`grok_token_provider.go` 那种「请求路径上按需取 token」的角色）。本计划没有它，
+取令牌的职责分散在两处：
+
+- **预热**：Task 13 的 `KiroTokenRefresher` 接入后台刷新循环，令牌在过期前就被换新
+- **兜底**：Task 17 的决策矩阵在 `SignalAuthExpired` 时强制刷新一次并重试同端点
+
+两者合起来覆盖了 token provider 的全部职责，且避免了第三处刷新入口（多入口是
+并发刷新与令牌互相覆盖的常见来源）。若后续发现请求路径确实需要独立的带缓存的
+取令牌入口（例如为了跨请求复用同一次刷新结果），再单独立项补上。
+
+### 2. `social` 走「粘贴 refreshToken」而非自建回调
+
+spec §5.3 的 ⚠️ 与 §10 第 6 条记录了一个待实测项：social 登录的 redirect_uri 是
+桌面端深链 `kiro://kiro.kiroAgent/authenticate-success`，未验证该端点是否接受
+任意 http(s) 回调。
+
+本计划直接采用 spec 给出的**退化方案**：Task 22 的表单里 social 是粘贴
+refreshToken，Task 12 的授权流只实现 `idc`（授权码 + PKCE）与 `builder_id`
+（设备码）两条。理由是这两条走的是标准 AWS SSO OIDC，协议明确、无未验证项；
+而 social 的自建回调可行性需要一个真实账号才能确认，不应成为阶段 1 的阻塞项。
+
+**若实测确认 social 接受自建回调**，补一个增量任务扩展 `KiroOAuthService`
+即可，`kiro.SessionStore` 与回调路由都已就位，改动很小。
+
+---
+
+## 全部任务完成后的验收
+
+- [ ] `cd backend && go build ./... && go test -tags=unit ./...` 全绿
+- [ ] `cd backend && golangci-lint run ./...` 无新增告警
+- [ ] `pnpm --dir frontend vitest run && pnpm --dir frontend typecheck && pnpm --dir frontend lint` 全绿
+- [ ] 用一个真实 Kiro 账号建号（至少验证 IdC 与 social 两条），确认 token 自动刷新
+- [ ] Claude Code 指向 kiro 分组，验证：普通对话、工具调用、多轮工具、图片输入、流式中断
+- [ ] 账号额度界面显示 credits 进度、订阅档位、重置时间
+- [ ] `usage_log` 中该请求 `billing_mode=token`，cache token 为上游真实值
+- [ ] 故意构造一个非法工具 schema，确认返回 400 且**未触发账号轮换**
+- [ ] 大陆直连（不挂代理）验证 `INVALID_MODEL_ID` **未导致账号被禁用**
 
 ### D 组：额度与计费（Task 19-20）
 
