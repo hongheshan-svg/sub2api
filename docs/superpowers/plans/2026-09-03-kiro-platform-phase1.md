@@ -8125,24 +8125,395 @@ C 组完成：Claude Code 可经 kiro 分组端到端跑通。"
 
 ---
 
-> **计划文档状态：** **A 组（1-8）+ B 组（9-14）+ C 组（15-18）已全部完整展开。**
-> 至此 Claude Code 可端到端跑通。D/E 组见下方接口契约。
+## D 组：额度与计费
+
+### Task 19: `getUsageLimits` 解析（纯函数层）
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/usage.go`
+- Test: `backend/internal/pkg/kiro/usage_test.go`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `type Bonus struct { CurrentUsage, UsageLimit float64; Status string }`
+  - `type FreeTrialInfo struct { Status string; ExpiryDate *time.Time }`
+  - `type UsageBreakdown struct { ResourceType string; CurrentUsage, UsageLimit, OverageCap, OverageRate, CurrentOverages float64; NextDateReset *time.Time; Bonuses []Bonus; FreeTrial *FreeTrialInfo }`
+  - `type UsageLimits struct { SubscriptionTitle, OverageStatus, OverageCapability string; NextDateReset *time.Time; Breakdowns []UsageBreakdown }`
+  - `func ParseUsageLimits(raw []byte) (*UsageLimits, error)`
+  - `func BuildUsageLimitsURL(qHost, profileArn string) string`
+  - `func (u *UsageLimits) AgenticRequest() *UsageBreakdown`
+  - `func (b *UsageBreakdown) EffectiveLimit() float64`
+  - `func (b *UsageBreakdown) Exhausted() bool`
+  - `func (b *UsageBreakdown) UtilizationPercent() float64`
+
+**背景：** `AGENTIC_REQUEST` 口径下 `currentUsage` / `usageLimit` 是**请求数**而非 token。
+`bonuses[]` 是额外赠送额度，状态为 `ACTIVE` 的应计入总额度 —— 只看 `usageLimit`
+会把有赠送额度的账号误判为已耗尽。`nextDateReset` 是 Unix 秒（浮点）。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/pkg/kiro/usage_test.go`：
+
+```go
+package kiro
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+const sampleUsageLimits = `{
+  "nextDateReset": 1789000000,
+  "subscriptionInfo": {"subscriptionTitle": "KIRO PRO+", "overageCapability": "OVERAGE_CAPABLE"},
+  "overageConfiguration": {"overageStatus": "ENABLED"},
+  "usageBreakdownList": [
+    {
+      "resourceType": "AGENTIC_REQUEST",
+      "currentUsage": 120,
+      "currentUsageWithPrecision": 120.5,
+      "usageLimit": 1000,
+      "usageLimitWithPrecision": 1000.0,
+      "nextDateReset": 1789000000,
+      "overageCap": 50.0,
+      "overageRate": 0.04,
+      "currentOverages": 1.2,
+      "bonuses": [
+        {"currentUsage": 0, "usageLimit": 200, "status": "ACTIVE"},
+        {"currentUsage": 50, "usageLimit": 50, "status": "EXPIRED"}
+      ]
+    },
+    {"resourceType": "CODE_COMPLETION", "currentUsage": 5, "usageLimit": 100}
+  ]
+}`
+
+func TestParseUsageLimits(t *testing.T) {
+	t.Parallel()
+
+	u, err := ParseUsageLimits([]byte(sampleUsageLimits))
+	require.NoError(t, err)
+	require.Equal(t, "KIRO PRO+", u.SubscriptionTitle)
+	require.Equal(t, "ENABLED", u.OverageStatus)
+	require.Equal(t, "OVERAGE_CAPABLE", u.OverageCapability)
+	require.NotNil(t, u.NextDateReset)
+	require.Len(t, u.Breakdowns, 2)
+}
+
+func TestUsageLimitsAgenticRequestPicksRightBreakdown(t *testing.T) {
+	t.Parallel()
+
+	u, err := ParseUsageLimits([]byte(sampleUsageLimits))
+	require.NoError(t, err)
+
+	b := u.AgenticRequest()
+	require.NotNil(t, b)
+	require.Equal(t, "AGENTIC_REQUEST", b.ResourceType)
+	require.InDelta(t, 120.5, b.CurrentUsage, 1e-9, "有精确值时优先用精确值")
+	require.InDelta(t, 1000.0, b.UsageLimit, 1e-9)
+	require.NotNil(t, b.NextDateReset)
+}
+
+// TestEffectiveLimitIncludesActiveBonuses 覆盖一个易错点：
+// 只看 usageLimit 会把有赠送额度的账号误判为已耗尽。
+func TestEffectiveLimitIncludesActiveBonuses(t *testing.T) {
+	t.Parallel()
+
+	u, err := ParseUsageLimits([]byte(sampleUsageLimits))
+	require.NoError(t, err)
+
+	b := u.AgenticRequest()
+	// 1000 基础 + 200 ACTIVE 赠送；EXPIRED 的 50 不计。
+	require.InDelta(t, 1200.0, b.EffectiveLimit(), 1e-9)
+}
+
+func TestExhaustedUsesEffectiveLimit(t *testing.T) {
+	t.Parallel()
+
+	b := &UsageBreakdown{CurrentUsage: 1100, UsageLimit: 1000,
+		Bonuses: []Bonus{{UsageLimit: 200, Status: "ACTIVE"}}}
+	require.False(t, b.Exhausted(), "1100 < 1000+200，未耗尽")
+
+	b.CurrentUsage = 1200
+	require.True(t, b.Exhausted())
+}
+
+func TestUtilizationPercent(t *testing.T) {
+	t.Parallel()
+
+	b := &UsageBreakdown{CurrentUsage: 600, UsageLimit: 1000}
+	require.InDelta(t, 60.0, b.UtilizationPercent(), 1e-9)
+
+	// 零额度不得除零。
+	require.Zero(t, (&UsageBreakdown{CurrentUsage: 5}).UtilizationPercent())
+}
+
+func TestParseUsageLimitsHandlesMissingFields(t *testing.T) {
+	t.Parallel()
+
+	u, err := ParseUsageLimits([]byte(`{}`))
+	require.NoError(t, err)
+	require.Empty(t, u.SubscriptionTitle)
+	require.Nil(t, u.AgenticRequest())
+
+	_, err = ParseUsageLimits([]byte(`not json`))
+	require.Error(t, err)
+}
+
+func TestBuildUsageLimitsURL(t *testing.T) {
+	t.Parallel()
+
+	got := BuildUsageLimitsURL("https://q.us-east-1.amazonaws.com", "arn:aws:x:::profile/A B")
+	require.Contains(t, got, "/getUsageLimits?")
+	require.Contains(t, got, "origin=AI_EDITOR")
+	require.Contains(t, got, "resourceType=AGENTIC_REQUEST")
+	require.Contains(t, got, "isEmailRequired=true")
+	require.Contains(t, got, "profileArn=arn%3Aaws%3Ax%3A%3A%3Aprofile%2FA+B",
+		"profileArn 必须 URL 编码")
+
+	// 无 profileArn（API Key 账号）时不带该参数。
+	require.NotContains(t, BuildUsageLimitsURL("https://q.us-east-1.amazonaws.com", ""), "profileArn=")
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run 'TestParseUsageLimits|TestUsageLimits|TestEffectiveLimit|TestExhausted|TestUtilization|TestBuildUsageLimitsURL' -v
+```
+
+Expected: FAIL —— `undefined: ParseUsageLimits`。
+
+- [ ] **Step 3: 实现 `usage.go`**
+
+```go
+package kiro
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// Bonus 是一份赠送额度。只有 status 为 ACTIVE 的才计入可用总额。
+type Bonus struct {
+	CurrentUsage float64 `json:"currentUsage"`
+	UsageLimit   float64 `json:"usageLimit"`
+	Status       string  `json:"status"`
+}
+
+// FreeTrialInfo 是免费试用信息。
+type FreeTrialInfo struct {
+	Status     string     `json:"freeTrialStatus"`
+	ExpiryDate *time.Time `json:"-"`
+	RawExpiry  float64    `json:"freeTrialExpiry"`
+}
+
+// UsageBreakdown 是某一资源类型的用量明细。
+// AGENTIC_REQUEST 口径下 CurrentUsage / UsageLimit 是**请求数**，不是 token。
+type UsageBreakdown struct {
+	ResourceType    string
+	CurrentUsage    float64
+	UsageLimit      float64
+	OverageCap      float64
+	OverageRate     float64
+	CurrentOverages float64
+	NextDateReset   *time.Time
+	Bonuses         []Bonus
+	FreeTrial       *FreeTrialInfo
+}
+
+// UsageLimits 是 getUsageLimits 的解析结果。
+type UsageLimits struct {
+	SubscriptionTitle string
+	OverageStatus     string
+	OverageCapability string
+	NextDateReset     *time.Time
+	Breakdowns        []UsageBreakdown
+}
+
+// rawUsageLimits 镜像上游响应，只保留需要的字段。
+type rawUsageLimits struct {
+	NextDateReset    *float64 `json:"nextDateReset"`
+	SubscriptionInfo *struct {
+		SubscriptionTitle string `json:"subscriptionTitle"`
+		OverageCapability string `json:"overageCapability"`
+	} `json:"subscriptionInfo"`
+	OverageConfiguration *struct {
+		OverageStatus string `json:"overageStatus"`
+	} `json:"overageConfiguration"`
+	UsageBreakdownList []struct {
+		ResourceType              string         `json:"resourceType"`
+		CurrentUsage              float64        `json:"currentUsage"`
+		CurrentUsageWithPrecision *float64       `json:"currentUsageWithPrecision"`
+		UsageLimit                float64        `json:"usageLimit"`
+		UsageLimitWithPrecision   *float64       `json:"usageLimitWithPrecision"`
+		OverageCap                float64        `json:"overageCap"`
+		OverageRate               float64        `json:"overageRate"`
+		CurrentOverages           float64        `json:"currentOverages"`
+		NextDateReset             *float64       `json:"nextDateReset"`
+		Bonuses                   []Bonus        `json:"bonuses"`
+		FreeTrialInfo             *FreeTrialInfo `json:"freeTrialInfo"`
+	} `json:"usageBreakdownList"`
+}
+
+func unixPtr(v *float64) *time.Time {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	t := time.Unix(int64(*v), 0).UTC()
+	return &t
+}
+
+// ParseUsageLimits 解析 getUsageLimits 响应。
+func ParseUsageLimits(raw []byte) (*UsageLimits, error) {
+	var r rawUsageLimits
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("kiro: decode getUsageLimits: %w", err)
+	}
+
+	out := &UsageLimits{NextDateReset: unixPtr(r.NextDateReset)}
+	if r.SubscriptionInfo != nil {
+		out.SubscriptionTitle = r.SubscriptionInfo.SubscriptionTitle
+		out.OverageCapability = r.SubscriptionInfo.OverageCapability
+	}
+	if r.OverageConfiguration != nil {
+		out.OverageStatus = r.OverageConfiguration.OverageStatus
+	}
+
+	for _, b := range r.UsageBreakdownList {
+		item := UsageBreakdown{
+			ResourceType:    b.ResourceType,
+			CurrentUsage:    b.CurrentUsage,
+			UsageLimit:      b.UsageLimit,
+			OverageCap:      b.OverageCap,
+			OverageRate:     b.OverageRate,
+			CurrentOverages: b.CurrentOverages,
+			NextDateReset:   unixPtr(b.NextDateReset),
+			Bonuses:         b.Bonuses,
+			FreeTrial:       b.FreeTrialInfo,
+		}
+		// 有精确值时优先，避免整数截断造成的额度误判。
+		if b.CurrentUsageWithPrecision != nil {
+			item.CurrentUsage = *b.CurrentUsageWithPrecision
+		}
+		if b.UsageLimitWithPrecision != nil {
+			item.UsageLimit = *b.UsageLimitWithPrecision
+		}
+		if item.FreeTrial != nil {
+			item.FreeTrial.ExpiryDate = unixPtr(&item.FreeTrial.RawExpiry)
+		}
+		out.Breakdowns = append(out.Breakdowns, item)
+	}
+
+	return out, nil
+}
+
+// AgenticRequest 返回 AGENTIC_REQUEST 明细，没有则返回 nil。
+func (u *UsageLimits) AgenticRequest() *UsageBreakdown {
+	if u == nil {
+		return nil
+	}
+	for i := range u.Breakdowns {
+		if strings.EqualFold(u.Breakdowns[i].ResourceType, "AGENTIC_REQUEST") {
+			return &u.Breakdowns[i]
+		}
+	}
+	return nil
+}
+
+// EffectiveLimit 返回基础额度加上全部 ACTIVE 赠送额度。
+//
+// 只看 UsageLimit 会把有赠送额度的账号误判为已耗尽，从而错误地冷却掉可用账号。
+func (b *UsageBreakdown) EffectiveLimit() float64 {
+	if b == nil {
+		return 0
+	}
+	total := b.UsageLimit
+	for _, bonus := range b.Bonuses {
+		if strings.EqualFold(bonus.Status, "ACTIVE") {
+			total += bonus.UsageLimit
+		}
+	}
+	return total
+}
+
+// Exhausted 判断额度是否已用尽。
+func (b *UsageBreakdown) Exhausted() bool {
+	if b == nil {
+		return false
+	}
+	limit := b.EffectiveLimit()
+	return limit > 0 && b.CurrentUsage >= limit
+}
+
+// UtilizationPercent 返回使用率百分比（0-100+）。
+func (b *UsageBreakdown) UtilizationPercent() float64 {
+	if b == nil {
+		return 0
+	}
+	limit := b.EffectiveLimit()
+	if limit <= 0 {
+		return 0
+	}
+	return b.CurrentUsage / limit * 100
+}
+
+// BuildUsageLimitsURL 拼出额度查询地址。profileArn 为空时省略该参数
+// （API Key 账号不使用 profileArn）。
+func BuildUsageLimitsURL(qHost, profileArn string) string {
+	q := url.Values{}
+	q.Set("origin", "AI_EDITOR")
+	q.Set("resourceType", "AGENTIC_REQUEST")
+	q.Set("isEmailRequired", "true")
+	if arn := strings.TrimSpace(profileArn); arn != "" {
+		q.Set("profileArn", arn)
+	}
+	return strings.TrimSuffix(qHost, "/") + "/getUsageLimits?" + q.Encode()
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -count=1
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/
+git add backend/internal/pkg/kiro/usage.go backend/internal/pkg/kiro/usage_test.go
+git commit -m "feat(kiro): getUsageLimits 解析
+
+EffectiveLimit 计入 ACTIVE 赠送额度——只看 usageLimit 会把有赠送
+额度的账号误判为已耗尽，从而错误冷却掉可用账号。"
+```
+
+---
+
+> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ C 组（15-18）+ Task 19 已完整展开。
+> Task 20 起见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
 
-### D 组：额度与计费（Task 19-20）
+### D 组剩余
+
+| Task | 交付物 | 关键接口 |
+|---|---|---|
+| 20 | `service/kiro_quota_fetcher.go` 额度获取与 credits 冷却 | 实现 `QuotaFetcher`（`CanFetch(account) bool` + `FetchQuota(ctx, account, proxyURL) (*QuotaResult, error)`，见 `service/quota_fetcher.go:8`）。用 Task 19 的 `BuildUsageLimitsURL` + `ParseUsageLimits`，请求头复用 Task 16 的 `kiro.BuildHeaders`。映射到 `UsageInfo`：新增字段 `KiroCredits *UsageProgress`（`UsedRequests`=`CurrentUsage`、`LimitRequests`=`EffectiveLimit()`、`Utilization`=`UtilizationPercent()`、`ResetsAt`=`NextDateReset`）、`KiroSubscriptionTitle string`、`KiroOverageStatus string`。`Exhausted()` 为真时写 `model_rate_limits["KiroCredits"]` 冷却至**真实 `NextDateReset`**（而非 antigravity 那样的固定 5h） |
+| 21 | 计费落账核实 | `ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账、`usage_log.billing_mode="token"`；**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办）—— `grep -rn "MaxTokens" backend/internal/service/billing_*.go backend/internal/handler/gateway_*.go`，若预扣费依赖它，kiro 用「`kiro.EstimateRequestInput` + 保守 output 上限」兜底 |
+
+### E 组：前端（Task 22-23）
 
 | Task | 交付物 |
 |---|---|
-| 19 | `service/kiro_quota_fetcher.go`：实现 `CanFetch` / `FetchQuota` / `GetProxyURL`（照 `antigravity_quota_fetcher.go`），调 `GET {q-host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true&profileArn=...`，解析 `usageBreakdownList[].{currentUsage,usageLimit,nextDateReset,bonuses,freeTrialInfo}`、`subscriptionInfo.subscriptionTitle`、`overageConfiguration.overageStatus`；credits 耗尽时写 `model_rate_limits["KiroCredits"]` 冷却至真实 `nextDateReset` |
-| 20 | 计费接入：`ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账，`billing_mode="token"`；**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办），kiro 拿不到该值时用「估算 input + 保守 output 上限」兜底 |
-
-### E 组：前端（Task 21-22）
-
-| Task | 交付物 |
-|---|---|
-| 21 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
-| 22 | 额度展示 + 分组平台选项 |
+| 22 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
+| 23 | 额度展示（`KiroCredits` 进度条 + 订阅档位 + overage 状态）+ 分组平台选项 |
 
 ### D 组：额度与计费（Task 19-20）
 
