@@ -3383,15 +3383,580 @@ git commit -m "feat(kiro): Kiro event-stream 转 Anthropic SSE 事件流"
 
 ---
 
-> **计划文档状态：** Task 1-7 已完整展开。Task 8-20 见下方接口契约，逐组补齐。
+### Task 8: 模型映射、端点表、错误分类
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/models.go`
+- Create: `backend/internal/pkg/kiro/endpoints.go`
+- Create: `backend/internal/pkg/kiro/errors.go`
+- Test: `backend/internal/pkg/kiro/models_test.go`
+- Test: `backend/internal/pkg/kiro/endpoints_test.go`
+- Test: `backend/internal/pkg/kiro/errors_test.go`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `func MapModel(requested string) string`
+  - `func DefaultModels() []string`
+  - `type Endpoint struct { URL, Origin, AmzTarget, Name string }`
+  - `func EndpointsFor(isAPIKey bool, region string) []Endpoint`
+  - `type Signal int` + 常量 `SignalOK`、`SignalAuthExpired`、`SignalOverage`、`SignalRateLimited`、`SignalNetworkRegion`、`SignalBadRequest`、`SignalSuspended`、`SignalCreditsExhausted`、`SignalUnknown`
+  - `func Classify(status int, body []byte) Signal`
+  - `func (Signal) String() string`
+  - `func (Signal) Retryable() bool`
+  - `func (Signal) Failoverable() bool`
+
+**⚠️ 本任务是整个集成的事故高发点，设计文档 §7.2 的两条红线在这里落地：**
+
+1. **`INVALID_MODEL_ID` 是网络/区域问题，不是账号问题。** 大陆直连 Kiro 必现此错。
+   若把它当账号故障，**首个请求就会把整个账号池禁掉**。它通常伴随 400 返回，
+   所以**必须在按状态码判 400 之前先查 body**。
+2. **400 不可重试、不可失败转移。** 400 意味着我们自己的 schema 清洗或角色规整有误，
+   换账号一样失败，重试只会烧光整池配额。
+
+这两条不靠调用方自觉 —— 用 `Retryable()` / `Failoverable()` 把决策编码进类型，
+让调用方拿不到「重试 400」这个选项。
+
+- [ ] **Step 1: 写失败测试 —— 错误分类（先写这个，风险最高）**
+
+创建 `backend/internal/pkg/kiro/errors_test.go`：
+
+```go
+package kiro
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestClassifyInvalidModelIDIsNetworkNotAccountFault 是红线回归测试。
+// 大陆直连 Kiro 必现 INVALID_MODEL_ID；若归类为账号故障，
+// 首个请求就会把整个账号池禁掉。
+func TestClassifyInvalidModelIDIsNetworkNotAccountFault(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"message":"Improperly formed request: INVALID_MODEL_ID"}`)
+
+	// 它通常伴随 400 返回 —— body 检查必须优先于状态码判断。
+	got := Classify(400, body)
+	require.Equal(t, SignalNetworkRegion, got)
+	require.NotEqual(t, SignalBadRequest, got, "不得误判为请求格式错误")
+
+	// 换个状态码也一样。
+	require.Equal(t, SignalNetworkRegion, Classify(403, body))
+
+	// 网络/区域问题可以换端点重试，但绝不是账号的错。
+	require.True(t, SignalNetworkRegion.Retryable())
+	require.False(t, SignalNetworkRegion.Failoverable(),
+		"换账号解决不了网络问题，不得触发账号转移")
+}
+
+// TestClassifyBadRequestIsNeitherRetryableNorFailoverable 是另一条红线：
+// 400 意味着我们自己的请求构造有误，换账号同样失败，重试只会烧光整池。
+func TestClassifyBadRequestIsNeitherRetryableNorFailoverable(t *testing.T) {
+	t.Parallel()
+
+	got := Classify(400, []byte(`{"message":"Improperly formed request"}`))
+	require.Equal(t, SignalBadRequest, got)
+	require.False(t, got.Retryable(), "400 重试只会重复失败")
+	require.False(t, got.Failoverable(), "400 换账号一样失败，会烧光整池")
+}
+
+func TestClassifyAuthAndOverageAndRateLimit(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, SignalAuthExpired, Classify(401, nil))
+	require.Equal(t, SignalAuthExpired, Classify(403, nil))
+	require.Equal(t, SignalOverage, Classify(402, nil))
+	require.Equal(t, SignalRateLimited, Classify(429, nil))
+
+	require.True(t, SignalAuthExpired.Retryable(), "刷新 token 后应重试一次")
+	require.True(t, SignalRateLimited.Retryable(), "先换端点，端点耗尽再交给限流冷却")
+	require.True(t, SignalRateLimited.Failoverable())
+	require.False(t, SignalOverage.Retryable())
+}
+
+func TestClassifySuspensionAndCreditsExhausted(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, SignalSuspended,
+		Classify(403, []byte(`{"message":"Your subscription has been suspended"}`)))
+	require.Equal(t, SignalCreditsExhausted,
+		Classify(429, []byte(`{"message":"Monthly request limit reached, credits exhausted"}`)))
+
+	require.False(t, SignalSuspended.Retryable())
+	require.False(t, SignalSuspended.Failoverable(), "账号被停用，换端点无意义；由上层禁用账号")
+	require.True(t, SignalCreditsExhausted.Failoverable(), "额度耗尽应换账号")
+}
+
+func TestClassifySuccessAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, SignalOK, Classify(200, nil))
+	require.Equal(t, SignalOK, Classify(204, nil))
+
+	require.Equal(t, SignalUnknown, Classify(500, nil))
+	require.True(t, SignalUnknown.Retryable(), "5xx 允许重试")
+	require.True(t, SignalUnknown.Failoverable())
+}
+
+func TestSignalStringIsStable(t *testing.T) {
+	t.Parallel()
+
+	// 这些字符串会进日志与告警，改动会破坏既有检索。
+	require.Equal(t, "network_region", SignalNetworkRegion.String())
+	require.Equal(t, "bad_request", SignalBadRequest.String())
+	require.Equal(t, "credits_exhausted", SignalCreditsExhausted.String())
+}
+```
+
+- [ ] **Step 2: 写失败测试 —— 模型与端点**
+
+创建 `backend/internal/pkg/kiro/models_test.go`：
+
+```go
+package kiro
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestMapModelKnownAliases(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "claude-sonnet-4.6", MapModel("claude-sonnet-4-6"))
+	require.Equal(t, "claude-sonnet-4.5", MapModel("claude-sonnet-4-5"))
+	require.Equal(t, "claude-haiku-4.5", MapModel("claude-haiku-4-5"))
+}
+
+func TestMapModelStripsDateSuffix(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "claude-sonnet-4.5", MapModel("claude-sonnet-4-5-20250929"))
+	require.Equal(t, "claude-haiku-4.5", MapModel("claude-haiku-4-5-20251001"))
+}
+
+func TestMapModelPassesThroughKiroNativeNames(t *testing.T) {
+	t.Parallel()
+
+	// 已经是 Kiro 形态（点号版本号）的直接透传，
+	// 这样上游新增型号无需改代码。
+	require.Equal(t, "claude-sonnet-4.6", MapModel("claude-sonnet-4.6"))
+	require.Equal(t, "claude-sonnet-9.9", MapModel("claude-sonnet-9.9"))
+	require.Equal(t, "auto", MapModel("auto"))
+}
+
+func TestMapModelUnknownFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, defaultKiroModel, MapModel("gpt-4o"))
+	require.Equal(t, defaultKiroModel, MapModel(""))
+}
+
+func TestMapModelIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "claude-sonnet-4.6", MapModel("Claude-Sonnet-4-6"))
+}
+
+func TestDefaultModelsNonEmptyAndContainsDefault(t *testing.T) {
+	t.Parallel()
+
+	models := DefaultModels()
+	require.NotEmpty(t, models)
+	require.Contains(t, models, defaultKiroModel)
+}
+```
+
+创建 `backend/internal/pkg/kiro/endpoints_test.go`：
+
+```go
+package kiro
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestEndpointsForOAuthAccountHasThreeFallbacks(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(false, "us-east-1")
+	require.Len(t, eps, 3, "OAuth 账号有三个可回退端点")
+
+	require.Equal(t, "Kiro IDE", eps[0].Name)
+	require.Empty(t, eps[0].AmzTarget, "首选端点不带 x-amz-target")
+
+	require.Contains(t, eps[1].URL, "codewhisperer.")
+	require.Equal(t, "AmazonCodeWhispererStreamingService.GenerateAssistantResponse", eps[1].AmzTarget)
+
+	require.Equal(t, "AmazonQDeveloperStreamingService.SendMessage", eps[2].AmzTarget)
+
+	for _, ep := range eps {
+		require.Equal(t, "AI_EDITOR", ep.Origin)
+		require.True(t, strings.HasSuffix(ep.URL, "/generateAssistantResponse"))
+	}
+}
+
+// TestEndpointsForAPIKeyUsesCLIRuntimeOnly 覆盖 API Key 账号的独立路径：
+// 走 runtime.{region}.kiro.dev，origin 是 KIRO_CLI，且不带 profileArn（由调用方保证）。
+func TestEndpointsForAPIKeyUsesCLIRuntimeOnly(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(true, "us-east-1")
+	require.Len(t, eps, 1)
+	require.Equal(t, "Kiro CLI", eps[0].Name)
+	require.Equal(t, "KIRO_CLI", eps[0].Origin)
+	require.Contains(t, eps[0].URL, "runtime.us-east-1.kiro.dev")
+}
+
+func TestEndpointsForRegionalization(t *testing.T) {
+	t.Parallel()
+
+	eps := EndpointsFor(false, "eu-central-1")
+	require.Contains(t, eps[0].URL, "q.eu-central-1.amazonaws.com")
+
+	// 空 region 退回默认。
+	eps = EndpointsFor(false, "")
+	require.Contains(t, eps[0].URL, "q."+defaultRegion+".amazonaws.com")
+}
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run 'TestClassify|TestSignal|TestMapModel|TestDefaultModels|TestEndpointsFor' -v
+```
+
+Expected: FAIL —— `undefined: Classify` / `undefined: MapModel` / `undefined: EndpointsFor`。
+
+- [ ] **Step 4: 实现 `errors.go`**
+
+```go
+package kiro
+
+import (
+	"bytes"
+	"strings"
+)
+
+// Signal 是对一次上游响应的语义分类，决定调度侧的动作。
+//
+// 分类结果通过 Retryable / Failoverable 把「能不能重试、能不能换账号」编码进类型，
+// 而不是交给每个调用点自行判断 —— 设计文档 §7.2 记录的两次事故都源于误判。
+type Signal int
+
+const (
+	// SignalOK 表示成功。
+	SignalOK Signal = iota
+	// SignalAuthExpired 表示 token 失效，应刷新后重试一次。
+	SignalAuthExpired
+	// SignalOverage 表示 overage 未开启或已超上限。
+	SignalOverage
+	// SignalRateLimited 表示该端点额度耗尽，应先换端点。
+	SignalRateLimited
+	// SignalNetworkRegion 表示网络/区域问题（典型是 INVALID_MODEL_ID）。
+	// 这不是账号的错，绝不能据此禁用账号。
+	SignalNetworkRegion
+	// SignalBadRequest 表示我们自己构造的请求不合法。
+	// 不可重试、不可换账号 —— 换了一样失败。
+	SignalBadRequest
+	// SignalSuspended 表示订阅被停用或 profile 不可用，应禁用账号。
+	SignalSuspended
+	// SignalCreditsExhausted 表示账号额度耗尽，应冷却并换账号。
+	SignalCreditsExhausted
+	// SignalUnknown 是兜底（含 5xx）。
+	SignalUnknown
+)
+
+// String 返回稳定的短名，用于日志与告警检索。改动会破坏既有检索。
+func (s Signal) String() string {
+	switch s {
+	case SignalOK:
+		return "ok"
+	case SignalAuthExpired:
+		return "auth_expired"
+	case SignalOverage:
+		return "overage"
+	case SignalRateLimited:
+		return "rate_limited"
+	case SignalNetworkRegion:
+		return "network_region"
+	case SignalBadRequest:
+		return "bad_request"
+	case SignalSuspended:
+		return "suspended"
+	case SignalCreditsExhausted:
+		return "credits_exhausted"
+	default:
+		return "unknown"
+	}
+}
+
+// Retryable 表示是否值得就当前账号再试一次（可能换端点）。
+func (s Signal) Retryable() bool {
+	switch s {
+	case SignalAuthExpired, SignalRateLimited, SignalNetworkRegion, SignalUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Failoverable 表示是否应该换一个账号重试。
+//
+// SignalBadRequest 恒为 false：请求本身不合法，换账号只会把整池配额烧光。
+// SignalNetworkRegion 恒为 false：网络问题与账号无关，换账号无济于事。
+func (s Signal) Failoverable() bool {
+	switch s {
+	case SignalRateLimited, SignalCreditsExhausted, SignalAuthExpired, SignalUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// 错误 body 中的特征串。全部小写比较。
+var (
+	invalidModelIDMarkers = [][]byte{
+		[]byte("invalid_model_id"),
+		[]byte("invalid model id"),
+	}
+	suspensionMarkers = [][]byte{
+		[]byte("suspend"),
+		[]byte("account is disabled"),
+		[]byte("profile is not available"),
+		[]byte("profilearn is not available"),
+	}
+	creditsExhaustedMarkers = [][]byte{
+		[]byte("credits exhausted"),
+		[]byte("insufficient credits"),
+		[]byte("not enough credits"),
+		[]byte("monthly request limit"),
+		[]byte("usage limit reached"),
+	}
+)
+
+func containsAny(haystack []byte, needles [][]byte) bool {
+	for _, n := range needles {
+		if bytes.Contains(haystack, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// Classify 把一次上游响应归类。
+//
+// 检查顺序是有意为之：body 特征优先于状态码。INVALID_MODEL_ID 通常伴随 400
+// 返回，若先按状态码判成 SignalBadRequest，就会掩盖「这其实是网络问题」这一事实。
+func Classify(status int, body []byte) Signal {
+	lower := bytes.ToLower(bytes.TrimSpace(body))
+
+	if len(lower) > 0 {
+		// 网络/区域问题必须最先识别 —— 它伪装成 400。
+		if containsAny(lower, invalidModelIDMarkers) {
+			return SignalNetworkRegion
+		}
+		if containsAny(lower, creditsExhaustedMarkers) {
+			return SignalCreditsExhausted
+		}
+		if containsAny(lower, suspensionMarkers) {
+			return SignalSuspended
+		}
+	}
+
+	switch {
+	case status >= 200 && status < 300:
+		return SignalOK
+	case status == 401 || status == 403:
+		return SignalAuthExpired
+	case status == 402:
+		return SignalOverage
+	case status == 429:
+		return SignalRateLimited
+	case status == 400:
+		return SignalBadRequest
+	default:
+		return SignalUnknown
+	}
+}
+
+// IsBadRequestBody 供调用方在记录诊断日志时判断是否需要打印请求摘要。
+// 400 是我们自己的构造错误，日志里必须留下足以定位的请求形状。
+func IsBadRequestBody(body []byte) bool {
+	return strings.Contains(strings.ToLower(string(body)), "improperly formed request")
+}
+```
+
+- [ ] **Step 5: 实现 `models.go`**
+
+```go
+package kiro
+
+import (
+	"regexp"
+	"strings"
+)
+
+// defaultKiroModel 是未知模型名的兜底目标。
+const defaultKiroModel = "claude-sonnet-4.6"
+
+// kiroModelAliases 把 Anthropic 风格的模型名映射到 Kiro 上游名。
+// Kiro 用点号版本号（claude-sonnet-4.6），Anthropic 客户端用连字符。
+var kiroModelAliases = map[string]string{
+	"claude-sonnet-4":   "claude-sonnet-4",
+	"claude-sonnet-4-5": "claude-sonnet-4.5",
+	"claude-sonnet-4-6": "claude-sonnet-4.6",
+	"claude-haiku-4-5":  "claude-haiku-4.5",
+	"claude-opus-4-5":   "claude-sonnet-4.6",
+	"claude-opus-4-6":   "claude-sonnet-4.6",
+}
+
+// dateSuffix 匹配 Anthropic 模型名尾部的日期版本，如 -20250929。
+var dateSuffix = regexp.MustCompile(`-\d{8}$`)
+
+// kiroNativeName 匹配已经是 Kiro 形态的名字（版本号带点）。
+var kiroNativeName = regexp.MustCompile(`^claude-[a-z]+-\d+\.\d+$`)
+
+// MapModel 把客户端请求的模型名转换为 Kiro 上游可识别的名字。
+//
+// 规则按优先级：
+//  1. 已是 Kiro 形态（claude-xxx-N.M）或 "auto" → 原样透传（上游新增型号无需改代码）
+//  2. 命中别名表 → 映射
+//  3. 去掉日期后缀后命中别名表 → 映射
+//  4. 其余 → 兜底到 defaultKiroModel
+func MapModel(requested string) string {
+	name := strings.ToLower(strings.TrimSpace(requested))
+	if name == "" {
+		return defaultKiroModel
+	}
+
+	if name == "auto" || kiroNativeName.MatchString(name) {
+		return name
+	}
+
+	if mapped, ok := kiroModelAliases[name]; ok {
+		return mapped
+	}
+
+	if stripped := dateSuffix.ReplaceAllString(name, ""); stripped != name {
+		if mapped, ok := kiroModelAliases[stripped]; ok {
+			return mapped
+		}
+	}
+
+	return defaultKiroModel
+}
+
+// DefaultModels 返回未从上游拉到模型清单时对外暴露的兜底列表。
+func DefaultModels() []string {
+	return []string{
+		"claude-sonnet-4.6",
+		"claude-sonnet-4.5",
+		"claude-haiku-4.5",
+		"claude-sonnet-4",
+	}
+}
+```
+
+- [ ] **Step 6: 实现 `endpoints.go`**
+
+```go
+package kiro
+
+import "fmt"
+
+// defaultRegion 是账号未指定 region 时的默认值。
+const defaultRegion = "us-east-1"
+
+// Endpoint 是一个可用的上游转发目标。
+type Endpoint struct {
+	// URL 是完整请求地址。
+	URL string
+	// Origin 填进 userInputMessage.origin。
+	Origin string
+	// AmzTarget 为空表示不发送 x-amz-target 头。
+	AmzTarget string
+	// Name 用于日志与监控。
+	Name string
+}
+
+// EndpointsFor 返回按优先级排序的端点列表。
+//
+// OAuth 账号有三个可回退端点（429 时逐个尝试）；API Key 账号只有 CLI runtime
+// 一条路径，且不使用 profileArn —— 调用方需据此清空 Options.ProfileArn。
+func EndpointsFor(isAPIKey bool, region string) []Endpoint {
+	if region == "" {
+		region = defaultRegion
+	}
+
+	if isAPIKey {
+		return []Endpoint{{
+			URL:       fmt.Sprintf("https://runtime.%s.kiro.dev/", region),
+			Origin:    "KIRO_CLI",
+			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+			Name:      "Kiro CLI",
+		}}
+	}
+
+	qHost := fmt.Sprintf("https://q.%s.amazonaws.com", region)
+	cwHost := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com", region)
+
+	return []Endpoint{
+		{
+			URL:    qHost + "/generateAssistantResponse",
+			Origin: "AI_EDITOR",
+			Name:   "Kiro IDE",
+		},
+		{
+			URL:       cwHost + "/generateAssistantResponse",
+			Origin:    "AI_EDITOR",
+			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+			Name:      "CodeWhisperer",
+		},
+		{
+			URL:       qHost + "/generateAssistantResponse",
+			Origin:    "AI_EDITOR",
+			AmzTarget: "AmazonQDeveloperStreamingService.SendMessage",
+			Name:      "AmazonQ",
+		},
+	}
+}
+```
+
+- [ ] **Step 7: 运行 A 组全量测试**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/ && go test ./internal/pkg/kiro/ -count=1 -v
+```
+
+Expected: 全部 PASS。A 组至此交付一个完整、自包含、可单测的 Kiro 协议库。
+
+- [ ] **Step 8: 跑全模块回归并提交**
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./...
+git add backend/internal/pkg/kiro/
+git commit -m "feat(kiro): 模型映射、端点表与错误分类
+
+错误分类把「能否重试/能否换账号」编码进 Signal 类型：
+- INVALID_MODEL_ID 归类为网络问题，不标记账号故障、不触发账号转移
+- 400 既不可重试也不可转移，避免换账号烧光整池配额"
+```
+
+---
+
+> **计划文档状态：** **A 组（Task 1-8）已全部完整展开** —— `internal/pkg/kiro`
+> 协议库自包含、零外部依赖，可独立交付并验收。
+> Task 9-20（B/C/D/E 组）见下方接口契约，在 A 组验收后逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
-
-### A 组剩余
-
-| Task | 交付物 | 关键接口 |
-|---|---|---|
-| 8 | `models.go` + `endpoints.go` + `errors.go` | `func MapModel(string) string`；`func DefaultModels() []string`；`type Endpoint struct{URL, Origin, AmzTarget, Name string}`；`func EndpointsFor(isAPIKey bool, region string) []Endpoint`（见 spec §7.1 四端点表）；`type Signal int` 常量 `SignalOK/SignalAuthExpired/SignalOverage/SignalRateLimited/SignalNetworkRegion/SignalBadRequest/SignalSuspended/SignalCreditsExhausted` + `func Classify(status int, body []byte) Signal` —— **必测 `INVALID_MODEL_ID` → `SignalNetworkRegion`（不标记账号故障）、400 → `SignalBadRequest`（不重试不转移）** |
 
 
 ### B 组：凭证与授权
