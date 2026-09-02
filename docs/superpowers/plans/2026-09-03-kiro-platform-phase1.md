@@ -6755,10 +6755,327 @@ token 由后台循环自动刷新。"
 
 ---
 
-> **计划文档状态：** **A 组（Task 1-8）+ B 组（Task 9-14）已全部完整展开。**
-> 至此账号可建、可授权、可自动刷新。C/D/E 组见下方接口契约。
+## C 组：平台常量、网关转发、路由接线
+
+### Task 15: `PlatformKiro` 提升为一等平台（含迁移）
+
+**Files:**
+- Modify: `backend/internal/domain/constants.go`
+- Modify: `backend/internal/service/domain_constants.go:51-53`（删 legacy 注释）与 `:102`（`AllowedQuotaPlatforms`）
+- Modify: `backend/ent/schema/user_platform_quota.go:44-46`（Validate 白名单）
+- Modify: `backend/internal/model/error_passthrough_rule.go:46,59`
+- Modify: `backend/internal/service/channel_service.go:360`
+- Create: `backend/migrations/234_kiro_platform.sql`
+- Test: `backend/internal/service/kiro_platform_test.go`
+- Test: `backend/migrations/kiro_platform_migration_test.go`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `domain.PlatformKiro`、`service.PlatformKiro`（由 domain 转出）
+
+**⚠️⚠️ 本任务是整个阶段 1 风险最高的一处，四个地方必须在同一个 PR 里一起改：**
+
+迁移 `224_user_platform_quotas_add_cn_providers.sql` 的头注释记录了一次**生产事故**：
+平台进了 `AllowedQuotaPlatforms` 但 CHECK 约束没扩 → `BulkInsertInitial` 是**单条多行
+INSERT**，一行违约整条语句中止 → 注册路径 fail-open 吞错 → **新用户拿到零条配额行
+= 无限额**。grok 在 `157` 号迁移踩过同一个坑。
+
+| # | 位置 | 改什么 | 漏了会怎样 |
+|---|---|---|---|
+| 1 | `service/domain_constants.go` `AllowedQuotaPlatforms` | 加 `PlatformKiro` | kiro 配额无法设置 |
+| 2 | `migrations/234_*.sql` 的两个 CHECK | 加 `'kiro'` | **新用户零配额行 = 无限额（生产事故）** |
+| 3 | `ent/schema/user_platform_quota.go` 的 `Validate` | 加 `"kiro"` | 写入被 Ent 在应用层拒绝 |
+| 4 | `migrations/234_*.sql` 的 composite CHECK | 加 `'kiro'` | composite 分组无法路由到 kiro |
+
+第 3 处改完**必须** `go generate ./ent` 并提交生成物。
+
+**关于调度阈值**：`service/domain_constants.go:51-53` 现有注释说
+「PlatformKiro is retained for unsupported-platform threshold tests and legacy
+account rows」，这句话在本任务后就过时了，必须重写。
+**但 kiro 仍然不进 `AllowedSchedulingThresholdPlatforms`** —— 该列表针对的是有原生
+token 用量窗口的平台，而 Kiro 是 credits 制，额度由 `getUsageLimits` 与
+`model_rate_limits["KiroCredits"]` 管（Task 17、19），不走阈值评估。
+注释要把「legacy」改成这个真实理由。
+
+- [ ] **Step 1: 写失败测试 —— 平台常量一致性**
+
+创建 `backend/internal/service/kiro_platform_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPlatformKiroIsPromotedToDomain(t *testing.T) {
+	require.Equal(t, "kiro", domain.PlatformKiro)
+	require.Equal(t, domain.PlatformKiro, PlatformKiro,
+		"service 侧常量必须由 domain 转出，不得再是本地字面量")
+}
+
+// TestKiroIsAllowedQuotaPlatform 是生产事故回归的一半。
+// 另一半在 migrations/kiro_platform_migration_test.go —— 两者必须同时通过，
+// 否则重现迁移 224 记载的「新用户零配额行 = 无限额」。
+func TestKiroIsAllowedQuotaPlatform(t *testing.T) {
+	require.True(t, IsAllowedQuotaPlatform(PlatformKiro))
+	require.Contains(t, AllowedQuotaPlatforms, PlatformKiro)
+}
+
+// TestKiroStaysOutOfSchedulingThresholds 固化一个有意的排除：
+// 阈值列表针对有原生 token 用量窗口的平台，Kiro 是 credits 制，
+// 额度由 getUsageLimits + model_rate_limits["KiroCredits"] 管。
+func TestKiroStaysOutOfSchedulingThresholds(t *testing.T) {
+	require.NotContains(t, AllowedSchedulingThresholdPlatforms, PlatformKiro)
+}
+
+func TestKiroInChannelServicePlatformList(t *testing.T) {
+	// channel_service.go 的平台清单驱动渠道管理界面的下拉。
+	require.Contains(t, allChannelPlatforms(), PlatformKiro)
+}
+```
+
+> **实现提示**：`allChannelPlatforms()` 是 `channel_service.go:360` 那个返回平台切片的
+> 函数的实际名字，先 `sed -n 355,365p backend/internal/service/channel_service.go`
+> 确认，再据此写测试。
+
+- [ ] **Step 2: 写失败测试 —— 迁移**
+
+创建 `backend/migrations/kiro_platform_migration_test.go`，照同目录既有迁移测试
+（`ls backend/migrations/*_test.go`）的写法。核心断言是**迁移 SQL 文本里两个 CHECK
+都包含 `'kiro'`**，这样即使没有数据库也能守住这条红线：
+
+```go
+package migrations
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestKiroPlatformMigrationExtendsBothChecks 是生产事故回归的另一半。
+// 迁移 224 的头注释记载：平台进了 AllowedQuotaPlatforms 但 CHECK 没扩，
+// BulkInsertInitial 单条多行 INSERT 整条中止，注册路径 fail-open 吞错，
+// 新用户拿到零条配额行 = 无限额。
+func TestKiroPlatformMigrationExtendsBothChecks(t *testing.T) {
+	raw, err := os.ReadFile("234_kiro_platform.sql")
+	require.NoError(t, err)
+	sql := string(raw)
+
+	require.Contains(t, sql, "user_platform_quotas_platform_check")
+	require.Contains(t, sql, "composite_model_routes_target_platform_check")
+
+	// 两个 CHECK 都必须列入 kiro。
+	require.GreaterOrEqual(t, strings.Count(sql, "'kiro'"), 2,
+		"两个 CHECK 约束都必须包含 'kiro'")
+
+	// 可重入：必须先 DROP ... IF EXISTS。
+	require.Equal(t, 2, strings.Count(sql, "DROP CONSTRAINT IF EXISTS"),
+		"两个约束都要可重入")
+
+	// 新约束必须是旧约束的超集，存量行才能瞬时校验通过。
+	for _, existing := range []string{
+		"'anthropic'", "'openai'", "'gemini'", "'antigravity'", "'grok'",
+		"'kimi'", "'zhipu'", "'deepseek'",
+	} {
+		require.GreaterOrEqual(t, strings.Count(sql, existing), 2,
+			"存量平台 %s 必须保留在两个约束里", existing)
+	}
+}
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestPlatformKiro|TestKiroIs|TestKiroStays|TestKiroInChannel' -v
+go test ./migrations/ -run TestKiroPlatformMigration -v
+```
+
+Expected: 均 FAIL。
+
+- [ ] **Step 4: 提升 `domain.PlatformKiro`**
+
+在 `backend/internal/domain/constants.go` 的 Platform 常量块里加入：
+
+```go
+	// PlatformKiro 是 Kiro（Amazon Q Developer / AWS CodeWhisperer 后端），
+	// 提供 Claude 系模型。协议与其他平台都不同，走独立的 kiro 网关。
+	PlatformKiro = "kiro"
+```
+
+- [ ] **Step 5: 更新 `service/domain_constants.go`**
+
+把第 51-53 行那段替换掉：
+
+```go
+	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
+	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
+	PlatformKiro = "kiro"
+```
+
+改为由 domain 转出（放进上面的常量块，与其他平台并列）：
+
+```go
+	PlatformKiro = domain.PlatformKiro
+```
+
+并在 `AllowedQuotaPlatforms` 末尾加入 `PlatformKiro`。
+
+在 `AllowedSchedulingThresholdPlatforms` 的注释里补一句说明 kiro 为何被排除：
+
+```go
+// ... deepseek 为余额型，走余额检测而非阈值。
+// kiro 是 credits 制：额度由 getUsageLimits 快照与 model_rate_limits["KiroCredits"]
+// 冷却管理，没有可用于阈值评估的 token 用量窗口，因此不纳入本列表。
+```
+
+- [ ] **Step 6: 更新 Ent schema 并重新生成**
+
+`backend/ent/schema/user_platform_quota.go` 第 44-46 行的 switch 加入 `"kiro"`：
+
+```go
+			case "anthropic", "openai", "gemini", "antigravity", "grok",
+				"kimi", "zhipu", "deepseek", "kiro":
+				return nil
+```
+
+然后**必须**重新生成并提交生成物：
+
+```bash
+cd backend && go generate ./ent
+```
+
+- [ ] **Step 7: 更新其余平台清单**
+
+```bash
+# 逐处确认后加入 PlatformKiro
+sed -n 40,65p backend/internal/model/error_passthrough_rule.go
+sed -n 355,365p backend/internal/service/channel_service.go
+sed -n 635,645p backend/internal/handler/admin/channel_handler.go
+```
+
+- `model/error_passthrough_rule.go`：常量转出 + 平台切片各加一处
+- `service/channel_service.go:360`：平台清单加 `PlatformKiro`
+- `handler/admin/channel_handler.go:639` 附近的平台→标签映射加 `service.PlatformKiro: "kiro"`
+
+> `handler/gateway_handler.go:1232` 与 `:1473` 的两处平台切片属于 composite 展开，
+> **本任务先不动** —— composite 纳入 kiro 是阶段 2 的范围（见设计文档 §2 非目标）。
+> 若此处遗漏导致编译或测试失败，说明该切片是必需的，再补进来并在提交信息里说明。
+
+- [ ] **Step 8: 编写迁移**
+
+创建 `backend/migrations/234_kiro_platform.sql`：
+
+```sql
+-- 把 kiro 平台加入 user_platform_quotas 与 composite_model_routes 的 CHECK 约束。
+--
+-- 背景：kiro 进入 AllowedQuotaPlatforms（internal/service/domain_constants.go）后，
+-- 注册时 GetDefaultPlatformQuotas 会为全部 9 个平台预填充默认配额行。若 CHECK 仍只
+-- 允许 8 个平台，BulkInsertInitial 的单条多行 INSERT 会因一行违约而整条中止 →
+-- 注册路径 fail-open 吞错 → 新用户拿到零条配额记录（含原有 8 平台，缺失配额行 =
+-- 无限额）。与 157（grok）、224（国产供应商）两号迁移记载的事故同型。
+--
+-- 修复：把约束与代码平台列表对齐。DROP ... IF EXISTS 保证可重入；
+-- 新约束是旧约束的超集，存量行瞬时校验通过。
+ALTER TABLE user_platform_quotas
+    DROP CONSTRAINT IF EXISTS user_platform_quotas_platform_check;
+
+ALTER TABLE user_platform_quotas
+    ADD CONSTRAINT user_platform_quotas_platform_check
+    CHECK (platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok',
+                        'kimi', 'zhipu', 'deepseek', 'kiro'));
+
+-- Composite 分组需要能把模型路由到 kiro 账号。
+ALTER TABLE composite_model_routes
+    DROP CONSTRAINT IF EXISTS composite_model_routes_target_platform_check;
+
+ALTER TABLE composite_model_routes
+    ADD CONSTRAINT composite_model_routes_target_platform_check
+    CHECK (target_platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok',
+                               'kimi', 'zhipu', 'deepseek', 'kiro'));
+```
+
+- [ ] **Step 9: 运行测试确认通过**
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./internal/service/ -run 'TestPlatformKiro|TestKiroIs|TestKiroStays|TestKiroInChannel' -v
+go test ./migrations/ -run TestKiroPlatformMigration -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 10: 全模块回归**
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./...
+```
+
+Expected: 全绿。若有测试断言「平台列表长度」或「不支持的平台」而把 kiro 当作
+反例，需要一并更新 —— 特别是
+`service/account_scheduling_threshold_eval_test.go` 与
+`service/setting_service_platform_threshold_test.go`（它们正是当初把
+`PlatformKiro` 留作 legacy 常量的原因）。
+
+- [ ] **Step 11: 提交**
+
+```bash
+git add backend/internal/domain/constants.go \
+        backend/internal/service/domain_constants.go \
+        backend/internal/service/kiro_platform_test.go \
+        backend/ent/schema/user_platform_quota.go \
+        backend/ent/ \
+        backend/internal/model/error_passthrough_rule.go \
+        backend/internal/service/channel_service.go \
+        backend/internal/handler/admin/channel_handler.go \
+        backend/migrations/234_kiro_platform.sql \
+        backend/migrations/kiro_platform_migration_test.go
+git commit -m "feat(kiro): PlatformKiro 提升为一等平台
+
+四处平台清单同步：AllowedQuotaPlatforms、两个 SQL CHECK 约束、
+Ent schema 的 Validate 白名单。迁移 157/224 记载过同型事故——
+CHECK 未扩会让新用户注册时配额行整批插入失败并被 fail-open 吞掉，
+结果是零配额行 = 无限额。
+
+kiro 有意不纳入 AllowedSchedulingThresholdPlatforms：它是 credits 制，
+额度由 getUsageLimits 与 model_rate_limits 管，没有 token 用量窗口。"
+```
+
+---
+
+> **计划文档状态：** A 组（Task 1-8）+ B 组（Task 9-14）+ Task 15 已完整展开。
+> Task 16 起见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
+
+### C 组剩余
+
+| Task | 交付物 | 关键接口 |
+|---|---|---|
+| 16 | `service/kiro_gateway_service.go` 转发主流程 | `func NewKiroGatewayService(...) *KiroGatewayService`；`func (s *KiroGatewayService) Messages(ctx, *GatewayRequest) error`（流式写出）。要点：用 Task 8 的 `kiro.EndpointsFor` 按序尝试；请求头指纹 `User-Agent: aws-sdk-js/{ver} ... KiroIDE-{ver}-{machineId}`、`x-amz-user-agent`、`x-amzn-codewhisperer-optout: true`、API Key 账号加 `tokentype: API_KEY`、非首选端点加 `x-amz-target`；请求体用 `kiro.BuildRequest`，响应用 `kiro.NewStreamTranslator`；`conversationId` 接粘性会话，**换账号时必须重新生成** |
+| 17 | 错误分类接入调度 | `kiro.Classify(status, body)` → `Signal`；403 → 强制刷新一次并重试同端点；429 → 换端点，端点耗尽后交 `ratelimit_service.go:1129 handle429`；`SignalCreditsExhausted` → 写 `model_rate_limits["KiroCredits"]` 冷却至 `getUsageLimits.nextDateReset`；**`Signal.Failoverable()` 为 false 时不得进入账号转移循环**（`SignalBadRequest` / `SignalNetworkRegion` / `SignalSuspended`）；`StreamTranslator.SawContent()` 为 true 时一律不可重试 |
+| 18 | 路由分派 + handler + wire | `routes/gateway.go:195` 的 `/v1/messages` 分支加 `case service.PlatformKiro: h.KiroGateway.Messages(c)`；`handler/kiro_gateway_handler.go`；provider set 后 `go build ./...` 验证（`wire_gen.go` 的 invoice 块手工维护） |
+
+### D 组：额度与计费（Task 19-20）
+
+| Task | 交付物 |
+|---|---|
+| 19 | `service/kiro_quota_fetcher.go`：`CanFetch` / `FetchQuota` / `GetProxyURL`，调 `getUsageLimits`（见 spec §7.3 的查询串与响应字段） |
+| 20 | 计费接入：cache token 用 `meteringEvent` 真实值，input/output 用 `kiro.EstimateRequestInput` 与 `StreamTranslator.Usage()`，`billing_mode="token"`；credits 只记账号层不进 `usage_log` |
+
+### E 组：前端（Task 21-22）
+
+| Task | 交付物 |
+|---|---|
+| 21 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
+| 22 | 额度展示 + 分组平台选项 |
 
 ### C 组：平台与网关（Task 15-18）
 
