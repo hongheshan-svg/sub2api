@@ -3952,11 +3952,796 @@ git commit -m "feat(kiro): 模型映射、端点表与错误分类
 
 ---
 
-> **计划文档状态：** **A 组（Task 1-8）已全部完整展开** —— `internal/pkg/kiro`
-> 协议库自包含、零外部依赖，可独立交付并验收。
-> Task 9-20（B/C/D/E 组）见下方接口契约，在 A 组验收后逐组补齐。
+## B 组：凭证与授权生命周期
+
+### Task 9: 认证协议层（三条刷新路径 + OIDC 授权流）
+
+**Files:**
+- Create: `backend/internal/pkg/kiro/auth.go`
+- Test: `backend/internal/pkg/kiro/auth_test.go`
+
+**Interfaces:**
+- Consumes: 无（纯 HTTP 协议层）
+- Produces:
+  - `type AuthMethod string` + 常量 `AuthSocial`、`AuthBuilderID`、`AuthIdC`、`AuthAPIKey`
+  - `func ParseAuthMethod(s string) AuthMethod`
+  - `type TokenSet struct { AccessToken, RefreshToken, ProfileArn string; ExpiresAt time.Time }`
+  - `func OIDCBase(region string) string`、`func SocialBase(region string) string`
+  - `func RefreshSocial(ctx context.Context, hc *http.Client, base, refreshToken string) (*TokenSet, error)`
+  - `func RefreshOIDC(ctx context.Context, hc *http.Client, base, clientID, clientSecret, refreshToken string) (*TokenSet, error)`
+  - `type ClientRegistration struct { ClientID, ClientSecret string }`
+  - `func RegisterOIDCClient(ctx context.Context, hc *http.Client, base, issuerURL, redirectURI string, deviceFlow bool) (*ClientRegistration, error)`
+  - `type PKCE struct { Verifier, Challenge string }` + `func NewPKCE() (*PKCE, error)`
+  - `func BuildAuthorizeURL(base, clientID, redirectURI, state, challenge string) string`
+  - `func ExchangeAuthorizationCode(ctx context.Context, hc *http.Client, base, clientID, clientSecret, code, verifier, redirectURI string) (*TokenSet, error)`
+  - `type DeviceAuth struct { DeviceCode, UserCode, VerificationURI, VerificationURIComplete string; ExpiresIn, Interval int }`
+  - `func StartDeviceAuthorization(ctx context.Context, hc *http.Client, base, clientID, clientSecret, startURL string) (*DeviceAuth, error)`
+  - `func PollDeviceToken(ctx context.Context, hc *http.Client, base, clientID, clientSecret, deviceCode string) (*TokenSet, error)`
+  - `var ErrAuthorizationPending`、`var ErrSlowDown`、`var ErrDeviceCodeExpired`
+  - `var DefaultScopes []string`、`const BuilderIDStartURL`
+
+**设计说明（实现者必读）：**
+
+所有网络函数都接收 **`base` 而不是 region**，region → base 由 `OIDCBase` /
+`SocialBase` 单独负责。这样测试能用 `httptest.Server` 完整覆盖真实的请求体与响应解析，
+不需要打真网。
+
+**三条刷新路径**（设计文档 §5.3）：
+
+| auth_method | 端点 | 请求体 |
+|---|---|---|
+| `social` | `{socialBase}/refreshToken` | `{"refreshToken": "..."}` |
+| `builder_id` / `idc` | `{oidcBase}/token` | `{"clientId","clientSecret","refreshToken","grantType":"refresh_token"}` |
+| `api_key` | —— | 不刷新 |
+
+**两种初始授权**：
+
+- `idc`：`/client/register`（`grantTypes: ["authorization_code","refresh_token"]`，
+  `issuerUrl` = 组织 start URL）→ PKCE → `/authorize` → 自建回调页 → `/token`
+- `builder_id`：`/client/register`（`grantTypes` 含 `device_code`，
+  `issuerUrl` = `https://view.awsapps.com/start`）→ `/device_authorization`
+  → 展示 userCode → 轮询 `/token`
+
+**⚠️ `profileArn` 必须从刷新响应里取出并回传给调用方**（设计文档 §5.5 第 1 点）。
+Kiro-Go 的 `RefreshToken` 返回值签名就是 `(access, refresh, expiresAt, profileArn, err)`。
+漏掉会导致账号运行一段时间后 403。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `backend/internal/pkg/kiro/auth_test.go`：
+
+```go
+package kiro
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, AuthSocial, ParseAuthMethod("social"))
+	require.Equal(t, AuthBuilderID, ParseAuthMethod("builder_id"))
+	require.Equal(t, AuthIdC, ParseAuthMethod("idc"))
+	require.Equal(t, AuthAPIKey, ParseAuthMethod("api_key"))
+	require.Equal(t, AuthSocial, ParseAuthMethod("  SOCIAL  "))
+	// 未知值退回 social —— 历史账号多数是 social 导入的。
+	require.Equal(t, AuthSocial, ParseAuthMethod("whatever"))
+}
+
+func TestBaseURLs(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "https://oidc.us-east-1.amazonaws.com", OIDCBase("us-east-1"))
+	require.Equal(t, "https://prod.us-east-1.auth.desktop.kiro.dev", SocialBase("us-east-1"))
+	// 空 region 用默认。
+	require.Contains(t, OIDCBase(""), defaultRegion)
+	require.Contains(t, SocialBase(""), defaultRegion)
+}
+
+// TestRefreshSocialReturnsProfileArn 覆盖 §5.5 第 1 点：
+// profileArn 必须从刷新响应回传，漏掉会导致账号跑一段时间后 403。
+func TestRefreshSocialReturnsProfileArn(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/refreshToken", r.URL.Path)
+		require.Equal(t, http.MethodPost, r.Method)
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "rt_old", body["refreshToken"])
+		require.NotContains(t, body, "clientId", "social 刷新不带 clientId")
+
+		_, _ = w.Write([]byte(`{
+			"accessToken":"at_new","refreshToken":"rt_new",
+			"expiresIn":3600,"profileArn":"arn:aws:codewhisperer:::profile/XYZ"
+		}`))
+	}))
+	defer srv.Close()
+
+	ts, err := RefreshSocial(context.Background(), srv.Client(), srv.URL, "rt_old")
+	require.NoError(t, err)
+	require.Equal(t, "at_new", ts.AccessToken)
+	require.Equal(t, "rt_new", ts.RefreshToken)
+	require.Equal(t, "arn:aws:codewhisperer:::profile/XYZ", ts.ProfileArn)
+	require.WithinDuration(t, time.Now().Add(time.Hour), ts.ExpiresAt, 30*time.Second)
+}
+
+func TestRefreshSocialKeepsOldRefreshTokenWhenUpstreamOmitsIt(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accessToken":"at","expiresIn":600}`))
+	}))
+	defer srv.Close()
+
+	ts, err := RefreshSocial(context.Background(), srv.Client(), srv.URL, "rt_old")
+	require.NoError(t, err)
+	require.Equal(t, "rt_old", ts.RefreshToken, "上游不回 refreshToken 时必须沿用旧值")
+}
+
+func TestRefreshOIDCSendsClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/token", r.URL.Path)
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "cid", body["clientId"])
+		require.Equal(t, "csecret", body["clientSecret"])
+		require.Equal(t, "rt", body["refreshToken"])
+		require.Equal(t, "refresh_token", body["grantType"])
+
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt2","expiresIn":1800}`))
+	}))
+	defer srv.Close()
+
+	ts, err := RefreshOIDC(context.Background(), srv.Client(), srv.URL, "cid", "csecret", "rt")
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+	require.Equal(t, "rt2", ts.RefreshToken)
+}
+
+func TestRefreshOIDCRequiresClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshOIDC(context.Background(), http.DefaultClient, "http://unused", "", "", "rt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "clientId")
+}
+
+func TestRefreshPropagatesUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+
+	_, err := RefreshSocial(context.Background(), srv.Client(), srv.URL, "rt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_grant")
+}
+
+func TestRegisterOIDCClientIdCFlow(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/client/register", r.URL.Path)
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "https://d-90667b4f8e.awsapps.com/start", body["issuerUrl"])
+		require.Equal(t, "public", body["clientType"])
+
+		grants := body["grantTypes"].([]any)
+		require.Contains(t, grants, "authorization_code")
+		require.Contains(t, grants, "refresh_token")
+		require.NotContains(t, grants, "urn:ietf:params:oauth:grant-type:device_code")
+
+		redirects := body["redirectUris"].([]any)
+		require.Equal(t, []any{"https://gw.example.com/admin/kiro/oauth/callback"}, redirects)
+
+		_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+	}))
+	defer srv.Close()
+
+	reg, err := RegisterOIDCClient(context.Background(), srv.Client(), srv.URL,
+		"https://d-90667b4f8e.awsapps.com/start",
+		"https://gw.example.com/admin/kiro/oauth/callback", false)
+	require.NoError(t, err)
+	require.Equal(t, "cid", reg.ClientID)
+	require.Equal(t, "csec", reg.ClientSecret)
+}
+
+func TestRegisterOIDCClientDeviceFlowRequestsDeviceGrant(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+
+		grants := body["grantTypes"].([]any)
+		require.Contains(t, grants, "urn:ietf:params:oauth:grant-type:device_code")
+		require.Contains(t, grants, "refresh_token")
+
+		_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+	}))
+	defer srv.Close()
+
+	_, err := RegisterOIDCClient(context.Background(), srv.Client(), srv.URL, BuilderIDStartURL, "", true)
+	require.NoError(t, err)
+}
+
+func TestNewPKCEProducesValidChallenge(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewPKCE()
+	require.NoError(t, err)
+	require.NotEmpty(t, p.Verifier)
+	require.NotEmpty(t, p.Challenge)
+	require.NotEqual(t, p.Verifier, p.Challenge)
+	// base64url 无填充。
+	require.NotContains(t, p.Challenge, "=")
+	require.NotContains(t, p.Challenge, "+")
+	require.NotContains(t, p.Challenge, "/")
+
+	other, err := NewPKCE()
+	require.NoError(t, err)
+	require.NotEqual(t, p.Verifier, other.Verifier, "每次必须不同")
+}
+
+func TestBuildAuthorizeURLCarriesPKCEAndScopes(t *testing.T) {
+	t.Parallel()
+
+	raw := BuildAuthorizeURL("https://oidc.us-east-1.amazonaws.com", "cid",
+		"https://gw.example.com/cb", "state-1", "chal-1")
+
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, "/authorize", u.Path)
+
+	q := u.Query()
+	require.Equal(t, "code", q.Get("response_type"))
+	require.Equal(t, "cid", q.Get("client_id"))
+	require.Equal(t, "https://gw.example.com/cb", q.Get("redirect_uri"))
+	require.Equal(t, "state-1", q.Get("state"))
+	require.Equal(t, "chal-1", q.Get("code_challenge"))
+	require.Equal(t, "S256", q.Get("code_challenge_method"))
+	require.Contains(t, q.Get("scopes"), "codewhisperer:conversations")
+}
+
+func TestExchangeAuthorizationCode(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/token", r.URL.Path)
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "authorization_code", body["grantType"])
+		require.Equal(t, "the-code", body["code"])
+		require.Equal(t, "the-verifier", body["codeVerifier"])
+
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))
+	}))
+	defer srv.Close()
+
+	ts, err := ExchangeAuthorizationCode(context.Background(), srv.Client(), srv.URL,
+		"cid", "csec", "the-code", "the-verifier", "https://gw.example.com/cb")
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+	require.Equal(t, "arn:x", ts.ProfileArn)
+}
+
+func TestStartDeviceAuthorization(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/device_authorization", r.URL.Path)
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "cid", body["clientId"])
+		require.Equal(t, BuilderIDStartURL, body["startUrl"])
+
+		_, _ = w.Write([]byte(`{
+			"deviceCode":"dc","userCode":"ABCD-EFGH",
+			"verificationUri":"https://view.awsapps.com/start/#/device",
+			"verificationUriComplete":"https://view.awsapps.com/start/#/device?user_code=ABCD-EFGH",
+			"expiresIn":600,"interval":5
+		}`))
+	}))
+	defer srv.Close()
+
+	da, err := StartDeviceAuthorization(context.Background(), srv.Client(), srv.URL, "cid", "csec", BuilderIDStartURL)
+	require.NoError(t, err)
+	require.Equal(t, "dc", da.DeviceCode)
+	require.Equal(t, "ABCD-EFGH", da.UserCode)
+	require.Contains(t, da.VerificationURIComplete, "ABCD-EFGH")
+	require.Equal(t, 5, da.Interval)
+}
+
+// TestPollDeviceTokenPendingAndSlowDown 覆盖设备码轮询的三种非终态。
+func TestPollDeviceTokenPendingAndSlowDown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		errCode string
+		want    error
+	}{
+		{"pending", "authorization_pending", ErrAuthorizationPending},
+		{"slow_down", "slow_down", ErrSlowDown},
+		{"expired", "expired_token", ErrDeviceCodeExpired},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"` + tc.errCode + `"}`))
+			}))
+			defer srv.Close()
+
+			_, err := PollDeviceToken(context.Background(), srv.Client(), srv.URL, "cid", "csec", "dc")
+			require.ErrorIs(t, err, tc.want)
+		})
+	}
+}
+
+func TestPollDeviceTokenSuccess(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "urn:ietf:params:oauth:grant-type:device_code", body["grantType"])
+		require.Equal(t, "dc", body["deviceCode"])
+
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`))
+	}))
+	defer srv.Close()
+
+	ts, err := PollDeviceToken(context.Background(), srv.Client(), srv.URL, "cid", "csec", "dc")
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+}
+
+func TestDefaultScopesCoverCodeWhisperer(t *testing.T) {
+	t.Parallel()
+
+	joined := strings.Join(DefaultScopes, ",")
+	for _, want := range []string{
+		"codewhisperer:completions", "codewhisperer:analysis",
+		"codewhisperer:conversations", "codewhisperer:transformations",
+		"codewhisperer:taskassist",
+	} {
+		require.Contains(t, joined, want)
+	}
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -run 'TestParseAuthMethod|TestBaseURLs|TestRefresh|TestRegisterOIDC|TestNewPKCE|TestBuildAuthorize|TestExchange|TestStartDevice|TestPollDevice|TestDefaultScopes' -v
+```
+
+Expected: FAIL —— `undefined: ParseAuthMethod` 等。
+
+- [ ] **Step 3: 实现 `auth.go`**
+
+```go
+package kiro
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// BuilderIDStartURL 是 AWS Builder ID（个人账号）的 SSO 门户地址。
+const BuilderIDStartURL = "https://view.awsapps.com/start"
+
+// deviceCodeGrant 是设备码授权的 grant type。
+const deviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"
+
+// DefaultScopes 是 Kiro 需要的 CodeWhisperer 权限范围。
+var DefaultScopes = []string{
+	"codewhisperer:completions",
+	"codewhisperer:analysis",
+	"codewhisperer:conversations",
+	"codewhisperer:transformations",
+	"codewhisperer:taskassist",
+}
+
+// 设备码轮询的非终态错误。调用方据此决定继续等待、放慢频率还是中止。
+var (
+	ErrAuthorizationPending = errors.New("kiro: authorization pending")
+	ErrSlowDown             = errors.New("kiro: slow down polling")
+	ErrDeviceCodeExpired    = errors.New("kiro: device code expired")
+)
+
+// AuthMethod 是账号的凭证接入方式，存于 credentials["auth_method"]。
+type AuthMethod string
+
+const (
+	// AuthSocial 走 Kiro 自家认证服务刷新，只需 refreshToken。
+	AuthSocial AuthMethod = "social"
+	// AuthBuilderID 是个人 AWS Builder ID，初始授权走设备码。
+	AuthBuilderID AuthMethod = "builder_id"
+	// AuthIdC 是企业 IAM Identity Center，初始授权走 PKCE 授权码。
+	AuthIdC AuthMethod = "idc"
+	// AuthAPIKey 不刷新，直接用 API Key 作 Bearer。
+	AuthAPIKey AuthMethod = "api_key"
+)
+
+// ParseAuthMethod 解析 credentials 里的值。未知值退回 social ——
+// 历史账号多数是以 social 形态导入的。
+func ParseAuthMethod(s string) AuthMethod {
+	switch AuthMethod(strings.ToLower(strings.TrimSpace(s))) {
+	case AuthBuilderID:
+		return AuthBuilderID
+	case AuthIdC:
+		return AuthIdC
+	case AuthAPIKey:
+		return AuthAPIKey
+	default:
+		return AuthSocial
+	}
+}
+
+// UsesOIDCRefresh 返回该方式是否走 AWS SSO OIDC 的 /token 刷新。
+func (m AuthMethod) UsesOIDCRefresh() bool {
+	return m == AuthBuilderID || m == AuthIdC
+}
+
+// TokenSet 是一次刷新或授权换取到的凭证。
+type TokenSet struct {
+	AccessToken  string
+	RefreshToken string
+	// ProfileArn 必须回写到账号 credentials —— 漏写会导致一段时间后 403。
+	ProfileArn string
+	ExpiresAt  time.Time
+}
+
+// OIDCBase 返回 AWS SSO OIDC 的基地址。
+func OIDCBase(region string) string {
+	if region == "" {
+		region = defaultRegion
+	}
+	return fmt.Sprintf("https://oidc.%s.amazonaws.com", region)
+}
+
+// SocialBase 返回 Kiro 自家认证服务的基地址。
+func SocialBase(region string) string {
+	if region == "" {
+		region = defaultRegion
+	}
+	return fmt.Sprintf("https://prod.%s.auth.desktop.kiro.dev", region)
+}
+
+// tokenResponse 是三个 token 端点的公共响应形态。
+type tokenResponse struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresIn    int    `json:"expiresIn"`
+	ProfileArn   string `json:"profileArn"`
+	Error        string `json:"error"`
+	ErrorDesc    string `json:"error_description"`
+	Message      string `json:"message"`
+}
+
+func (r *tokenResponse) toTokenSet(fallbackRefresh string) *TokenSet {
+	ts := &TokenSet{
+		AccessToken:  r.AccessToken,
+		RefreshToken: r.RefreshToken,
+		ProfileArn:   r.ProfileArn,
+	}
+	if ts.RefreshToken == "" {
+		ts.RefreshToken = fallbackRefresh
+	}
+	if r.ExpiresIn > 0 {
+		ts.ExpiresAt = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
+	}
+	return ts
+}
+
+// postJSON 发送 JSON 请求并解析响应，非 2xx 时把响应体带进错误。
+func postJSON(ctx context.Context, hc *http.Client, endpoint string, payload any, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 限制读取量，防止畸形响应撑爆内存。
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("kiro: %s returned %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("kiro: decode response from %s: %w", endpoint, err)
+	}
+	return nil
+}
+
+// RefreshSocial 走 Kiro 自家认证服务刷新，请求体只有 refreshToken。
+func RefreshSocial(ctx context.Context, hc *http.Client, base, refreshToken string) (*TokenSet, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, errors.New("kiro: social refresh requires refreshToken")
+	}
+
+	var out tokenResponse
+	if err := postJSON(ctx, hc, base+"/refreshToken",
+		map[string]string{"refreshToken": refreshToken}, &out); err != nil {
+		return nil, err
+	}
+	return out.toTokenSet(refreshToken), nil
+}
+
+// RefreshOIDC 走 AWS SSO OIDC 刷新，需要注册时拿到的 clientId/clientSecret。
+func RefreshOIDC(ctx context.Context, hc *http.Client, base, clientID, clientSecret, refreshToken string) (*TokenSet, error) {
+	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(clientSecret) == "" {
+		return nil, errors.New("kiro: OIDC refresh requires clientId and clientSecret")
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, errors.New("kiro: OIDC refresh requires refreshToken")
+	}
+
+	var out tokenResponse
+	payload := map[string]string{
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
+		"refreshToken": refreshToken,
+		"grantType":    "refresh_token",
+	}
+	if err := postJSON(ctx, hc, base+"/token", payload, &out); err != nil {
+		return nil, err
+	}
+	return out.toTokenSet(refreshToken), nil
+}
+
+// ClientRegistration 是动态注册得到的客户端凭据，长期有效，需持久化。
+type ClientRegistration struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+}
+
+// RegisterOIDCClient 动态注册一个 OIDC 客户端。
+//
+// deviceFlow 为 true 时申请设备码授权（Builder ID 路径），
+// 否则申请授权码 + PKCE（IdC 路径，需提供 redirectURI）。
+func RegisterOIDCClient(ctx context.Context, hc *http.Client, base, issuerURL, redirectURI string, deviceFlow bool) (*ClientRegistration, error) {
+	grantTypes := []string{"authorization_code", "refresh_token"}
+	if deviceFlow {
+		grantTypes = []string{deviceCodeGrant, "refresh_token"}
+	}
+
+	payload := map[string]any{
+		"clientName": "Kiro",
+		"clientType": "public",
+		"scopes":     DefaultScopes,
+		"grantTypes": grantTypes,
+		"issuerUrl":  issuerURL,
+	}
+	if redirectURI != "" {
+		payload["redirectUris"] = []string{redirectURI}
+	}
+
+	var out ClientRegistration
+	if err := postJSON(ctx, hc, base+"/client/register", payload, &out); err != nil {
+		return nil, err
+	}
+	if out.ClientID == "" || out.ClientSecret == "" {
+		return nil, errors.New("kiro: client registration returned empty credentials")
+	}
+	return &out, nil
+}
+
+// PKCE 是一对 code_verifier / code_challenge。
+type PKCE struct {
+	Verifier  string
+	Challenge string
+}
+
+// NewPKCE 生成一对 PKCE 参数（S256）。
+func NewPKCE() (*PKCE, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, fmt.Errorf("kiro: generate PKCE verifier: %w", err)
+	}
+	verifier := base64.RawURLEncoding.EncodeToString(buf)
+	sum := sha256.Sum256([]byte(verifier))
+	return &PKCE{
+		Verifier:  verifier,
+		Challenge: base64.RawURLEncoding.EncodeToString(sum[:]),
+	}, nil
+}
+
+// BuildAuthorizeURL 拼出 IdC 的授权跳转地址。
+// 管理员在浏览器打开它，用组织的用户名/密码在 AWS 门户登录后跳回 redirectURI。
+func BuildAuthorizeURL(base, clientID, redirectURI, state, challenge string) string {
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("scopes", strings.Join(DefaultScopes, ","))
+	q.Set("state", state)
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	return base + "/authorize?" + q.Encode()
+}
+
+// ExchangeAuthorizationCode 用回调拿到的 code 换取 token。
+func ExchangeAuthorizationCode(ctx context.Context, hc *http.Client, base, clientID, clientSecret, code, verifier, redirectURI string) (*TokenSet, error) {
+	payload := map[string]string{
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
+		"grantType":    "authorization_code",
+		"code":         code,
+		"codeVerifier": verifier,
+		"redirectUri":  redirectURI,
+	}
+
+	var out tokenResponse
+	if err := postJSON(ctx, hc, base+"/token", payload, &out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken == "" {
+		return nil, errors.New("kiro: authorization code exchange returned no access token")
+	}
+	return out.toTokenSet(""), nil
+}
+
+// DeviceAuth 是设备码授权的第一步结果。
+type DeviceAuth struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	ExpiresIn               int    `json:"expiresIn"`
+	Interval                int    `json:"interval"`
+}
+
+// StartDeviceAuthorization 发起设备码授权（Builder ID 路径）。
+func StartDeviceAuthorization(ctx context.Context, hc *http.Client, base, clientID, clientSecret, startURL string) (*DeviceAuth, error) {
+	if startURL == "" {
+		startURL = BuilderIDStartURL
+	}
+
+	payload := map[string]string{
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
+		"startUrl":     startURL,
+	}
+
+	var out DeviceAuth
+	if err := postJSON(ctx, hc, base+"/device_authorization", payload, &out); err != nil {
+		return nil, err
+	}
+	if out.DeviceCode == "" {
+		return nil, errors.New("kiro: device authorization returned no device code")
+	}
+	if out.Interval <= 0 {
+		out.Interval = 5
+	}
+	return &out, nil
+}
+
+// PollDeviceToken 轮询设备码换取 token。
+//
+// 返回 ErrAuthorizationPending 表示用户尚未完成授权，应按 Interval 继续轮询；
+// ErrSlowDown 表示应放慢频率；ErrDeviceCodeExpired 表示应中止并让用户重新发起。
+func PollDeviceToken(ctx context.Context, hc *http.Client, base, clientID, clientSecret, deviceCode string) (*TokenSet, error) {
+	payload := map[string]string{
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
+		"grantType":    deviceCodeGrant,
+		"deviceCode":   deviceCode,
+	}
+
+	var out tokenResponse
+	err := postJSON(ctx, hc, base+"/token", payload, &out)
+	if err != nil {
+		// 非终态错误以 error code 形式出现在 4xx 响应体里。
+		msg := strings.ToLower(err.Error())
+		switch {
+		case strings.Contains(msg, "authorization_pending"):
+			return nil, ErrAuthorizationPending
+		case strings.Contains(msg, "slow_down"):
+			return nil, ErrSlowDown
+		case strings.Contains(msg, "expired_token"), strings.Contains(msg, "expired"):
+			return nil, ErrDeviceCodeExpired
+		}
+		return nil, err
+	}
+
+	if out.AccessToken == "" {
+		return nil, ErrAuthorizationPending
+	}
+	return out.toTokenSet(""), nil
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test ./internal/pkg/kiro/ -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd backend && gofmt -w internal/pkg/kiro/ && go vet ./internal/pkg/kiro/ && go test ./internal/pkg/kiro/ -count=1
+git add backend/internal/pkg/kiro/auth.go backend/internal/pkg/kiro/auth_test.go
+git commit -m "feat(kiro): 认证协议层（三条刷新路径 + IdC PKCE + 设备码授权）"
+```
+
+---
+
+> **计划文档状态：** A 组（Task 1-8）+ Task 9 已完整展开。
+> Task 10-20 见下方接口契约，逐组补齐。
 
 ## 后续任务概览（待补齐为完整步骤）
+
+### B 组剩余
+
+| Task | 交付物 | 关键接口 |
+|---|---|---|
+| 10 | `service/kiro_credentials.go` —— Account 的 kiro 凭证访问器 | `func (a *Account) KiroAuthMethod() kiro.AuthMethod`；`func (a *Account) KiroRegion() string`；`func (a *Account) KiroProfileArn() string`；`func (a *Account) KiroAPIKey() string`；`func (a *Account) KiroRefreshToken() string`；`func (a *Account) KiroAccessToken() string`；`func (a *Account) KiroClientCredentials() (id, secret string)`；`func (a *Account) KiroIssuerURL() string`；`func (a *Account) KiroFakeThinking() bool`；`func EnsureKiroMachineID(creds map[string]any) (string, bool)` —— **`machine_id` 一次生成永久持久化**（§5.5 第 2 点），返回的 bool 表示是否需要落库；`func KiroTokenCacheKey(*Account) string`（对齐 `GrokTokenCacheKey`） |
+| 11 | `service/kiro_oauth_service.go` + `service/kiro_token_refresher.go` | OAuth 服务照 `GrokOAuthService` 形状：`GenerateAuthURL` / `ExchangeCode` / `StartDeviceAuth` / `PollDeviceAuth` / `RefreshAccountToken` / `BuildAccountCredentials`；会话暂存用 `internal/pkg/redissession`（`New(rdb, prefix, ttl)` + `Set`/`Get`/`Delete`/`TryConsume`）而非进程内存 —— 自建回调页在多副本下会跨副本（§5.5 第 4 点）。刷新器实现 `OAuthRefreshExecutor`（即 `TokenRefresher` + `CacheKey`）：`CanRefresh` 对 `AuthAPIKey` 返回 false；`Refresh` 用 `MergeCredentials` 保留原字段并**回写 `profile_arn`** |
+| 12 | 接线：`token_refresh_service.go:139` 注册表加 kiro 行；`handler/admin/kiro_oauth_handler.go`；回调路由 | 注册行 `{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher}`；handler 暴露 `POST /admin/kiro/oauth/authorize-url`、`GET /admin/kiro/oauth/callback`、`POST /admin/kiro/oauth/device/start`、`POST /admin/kiro/oauth/device/poll`；wire provider set + `go build ./...` 验证 |
 
 
 ### B 组：凭证与授权
