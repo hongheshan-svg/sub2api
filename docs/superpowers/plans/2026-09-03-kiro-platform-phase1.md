@@ -7556,17 +7556,593 @@ machineId 取自账号 credentials 的稳定值并在首次调用时固化——
 
 ---
 
-> **计划文档状态：** A 组（1-8）+ B 组（9-14）+ Task 15-16 已完整展开。
-> Task 17 起见下方接口契约。
+### Task 17: 转发编排、失败决策与流式写出
+
+**Files:**
+- Create: `backend/internal/service/kiro_gateway_decision.go`
+- Test: `backend/internal/service/kiro_gateway_decision_test.go`
+- Create: `backend/internal/service/kiro_gateway_service.go`
+- Test: `backend/internal/service/kiro_gateway_service_test.go`
+
+**Interfaces:**
+- Consumes: Task 5 的 `kiro.BuildRequest` / `Options`；Task 7 的 `kiro.NewStreamTranslator`；Task 8 的 `kiro.EndpointsFor` / `Classify` / `Signal` / `MapModel`；Task 16 的 `callEndpoint`；现有 `ForwardResult` / `ClaudeUsage`
+- Produces:
+  - `type kiroAction int` + 常量 `kiroActionProceed`、`kiroActionRefreshAndRetry`、`kiroActionNextEndpoint`、`kiroActionFailoverAccount`、`kiroActionAbort`
+  - `func (a kiroAction) String() string`
+  - `func decideKiroAction(sig kiro.Signal, sawContent, alreadyRefreshed, hasMoreEndpoints bool) kiroAction`
+  - `func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error)`
+
+**设计要点：把红线做成纯函数。**
+
+设计文档 §7.2 的两条红线（`INVALID_MODEL_ID` 不得禁账号、400 不得重试或转移）
+如果散落在 HTTP 循环的 if 分支里，很容易在后续维护中被改坏，而且需要起真服务才能测。
+因此本任务把全部失败决策收口到 `decideKiroAction` 这一个**纯函数**里，
+HTTP 循环只负责执行决策。这样红线可以用表驱动测试穷举，一条都跑不掉。
+
+决策矩阵：
+
+| Signal | 已出内容 | 已刷新过 | 还有端点 | 动作 |
+|---|---|---|---|---|
+| 任意 | **是** | — | — | `Abort`（重试会产生重复内容） |
+| `OK` | 否 | — | — | `Proceed` |
+| `AuthExpired` | 否 | 否 | — | `RefreshAndRetry` |
+| `AuthExpired` | 否 | 是 | — | `FailoverAccount` |
+| `RateLimited` | 否 | — | 是 | `NextEndpoint` |
+| `RateLimited` | 否 | — | 否 | `FailoverAccount` |
+| `CreditsExhausted` | 否 | — | — | `FailoverAccount` |
+| `NetworkRegion` | 否 | — | 是 | `NextEndpoint` |
+| `NetworkRegion` | 否 | — | 否 | **`Abort`**（不是账号问题，换账号无用） |
+| `BadRequest` | 否 | — | — | **`Abort`**（换账号一样失败，会烧光整池） |
+| `Suspended` | 否 | — | — | `Abort`（由调用方禁用账号） |
+| `Overage` | 否 | — | — | `Abort` |
+| `Unknown` | 否 | — | 是 | `NextEndpoint` |
+| `Unknown` | 否 | — | 否 | `FailoverAccount` |
+
+- [ ] **Step 1: 写失败测试 —— 决策矩阵**
+
+创建 `backend/internal/service/kiro_gateway_decision_test.go`：
+
+```go
+//go:build unit
+
+package service
+
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDecideKiroActionMatrix(t *testing.T) {
+	cases := []struct {
+		name             string
+		sig              kiro.Signal
+		sawContent       bool
+		alreadyRefreshed bool
+		hasMoreEndpoints bool
+		want             kiroAction
+	}{
+		{"ok", kiro.SignalOK, false, false, true, kiroActionProceed},
+
+		{"auth first time", kiro.SignalAuthExpired, false, false, true, kiroActionRefreshAndRetry},
+		{"auth after refresh", kiro.SignalAuthExpired, false, true, true, kiroActionFailoverAccount},
+
+		{"429 with endpoints left", kiro.SignalRateLimited, false, false, true, kiroActionNextEndpoint},
+		{"429 endpoints exhausted", kiro.SignalRateLimited, false, false, false, kiroActionFailoverAccount},
+
+		{"credits exhausted", kiro.SignalCreditsExhausted, false, false, true, kiroActionFailoverAccount},
+
+		{"overage", kiro.SignalOverage, false, false, true, kiroActionAbort},
+		{"suspended", kiro.SignalSuspended, false, false, true, kiroActionAbort},
+
+		{"unknown with endpoints", kiro.SignalUnknown, false, false, true, kiroActionNextEndpoint},
+		{"unknown exhausted", kiro.SignalUnknown, false, false, false, kiroActionFailoverAccount},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideKiroAction(tc.sig, tc.sawContent, tc.alreadyRefreshed, tc.hasMoreEndpoints)
+			require.Equal(t, tc.want, got, "signal=%s", tc.sig)
+		})
+	}
+}
+
+// TestDecideKiroActionInvalidModelIDNeverFailsOver 是红线一：
+// INVALID_MODEL_ID 是网络/区域问题（大陆直连必现），不是账号的错。
+// 若触发账号转移，首个请求就会把整个账号池轮一遍并全部标记失败。
+func TestDecideKiroActionInvalidModelIDNeverFailsOver(t *testing.T) {
+	// 还有端点时可以换端点试试。
+	require.Equal(t, kiroActionNextEndpoint,
+		decideKiroAction(kiro.SignalNetworkRegion, false, false, true))
+
+	// 端点耗尽后必须中止，绝不能转移账号。
+	got := decideKiroAction(kiro.SignalNetworkRegion, false, false, false)
+	require.Equal(t, kiroActionAbort, got)
+	require.NotEqual(t, kiroActionFailoverAccount, got,
+		"网络问题换账号解决不了，只会把整池账号标记失败")
+}
+
+// TestDecideKiroActionBadRequestNeverRetriesOrFailsOver 是红线二：
+// 400 说明我们自己的 schema 清洗或角色规整有误，换账号一样失败。
+func TestDecideKiroActionBadRequestNeverRetriesOrFailsOver(t *testing.T) {
+	for _, hasMore := range []bool{true, false} {
+		for _, refreshed := range []bool{true, false} {
+			got := decideKiroAction(kiro.SignalBadRequest, false, refreshed, hasMore)
+			require.Equal(t, kiroActionAbort, got,
+				"400 在任何组合下都必须中止（hasMore=%v refreshed=%v）", hasMore, refreshed)
+		}
+	}
+}
+
+// TestDecideKiroActionSawContentAlwaysAborts 覆盖「已出字节不可重试」：
+// 客户端已经收到部分内容，任何重试都会产生重复输出。
+func TestDecideKiroActionSawContentAlwaysAborts(t *testing.T) {
+	signals := []kiro.Signal{
+		kiro.SignalAuthExpired, kiro.SignalRateLimited, kiro.SignalUnknown,
+		kiro.SignalCreditsExhausted, kiro.SignalNetworkRegion,
+	}
+	for _, sig := range signals {
+		require.Equal(t, kiroActionAbort,
+			decideKiroAction(sig, true, false, true),
+			"signal=%s 在已出内容后必须中止", sig)
+	}
+}
+
+func TestKiroActionStringIsStable(t *testing.T) {
+	// 这些字符串进日志与告警，改动会破坏既有检索。
+	require.Equal(t, "proceed", kiroActionProceed.String())
+	require.Equal(t, "refresh_and_retry", kiroActionRefreshAndRetry.String())
+	require.Equal(t, "next_endpoint", kiroActionNextEndpoint.String())
+	require.Equal(t, "failover_account", kiroActionFailoverAccount.String())
+	require.Equal(t, "abort", kiroActionAbort.String())
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestDecideKiroAction|TestKiroActionString' -v
+```
+
+Expected: FAIL —— `undefined: decideKiroAction`。
+
+- [ ] **Step 3: 实现 `kiro_gateway_decision.go`**
+
+```go
+package service
+
+import "github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+
+// kiroAction 是一次上游尝试失败后应采取的动作。
+//
+// 全部失败决策收口在本文件的纯函数里，HTTP 循环只负责执行。
+// 这样设计文档 §7.2 的两条红线可以被表驱动测试穷举，而不必起真服务。
+type kiroAction int
+
+const (
+	// kiroActionProceed 表示成功，继续处理响应。
+	kiroActionProceed kiroAction = iota
+	// kiroActionRefreshAndRetry 表示刷新 token 后重试同一端点。
+	kiroActionRefreshAndRetry
+	// kiroActionNextEndpoint 表示换下一个端点重试。
+	kiroActionNextEndpoint
+	// kiroActionFailoverAccount 表示换一个账号重试。
+	kiroActionFailoverAccount
+	// kiroActionAbort 表示直接把错误返回给客户端，不做任何重试。
+	kiroActionAbort
+)
+
+// String 返回稳定的短名，用于日志与告警检索。
+func (a kiroAction) String() string {
+	switch a {
+	case kiroActionProceed:
+		return "proceed"
+	case kiroActionRefreshAndRetry:
+		return "refresh_and_retry"
+	case kiroActionNextEndpoint:
+		return "next_endpoint"
+	case kiroActionFailoverAccount:
+		return "failover_account"
+	default:
+		return "abort"
+	}
+}
+
+// decideKiroAction 决定一次上游尝试之后该做什么。
+//
+// 三条不变式：
+//
+//  1. sawContent 为真时一律中止 —— 客户端已收到部分内容，任何重试都会产生重复输出。
+//  2. SignalNetworkRegion（典型是 INVALID_MODEL_ID）永不触发账号转移 ——
+//     它是网络/区域问题，大陆直连必现；换账号解决不了，只会把整池账号标记失败。
+//  3. SignalBadRequest 永不重试也永不转移 —— 400 说明我们自己构造的请求不合法，
+//     换账号一样失败，重试只会烧光整池配额。
+func decideKiroAction(sig kiro.Signal, sawContent, alreadyRefreshed, hasMoreEndpoints bool) kiroAction {
+	// 不变式 1：已经吐出内容就不能再重试。
+	if sawContent && sig != kiro.SignalOK {
+		return kiroActionAbort
+	}
+
+	switch sig {
+	case kiro.SignalOK:
+		return kiroActionProceed
+
+	case kiro.SignalAuthExpired:
+		if !alreadyRefreshed {
+			return kiroActionRefreshAndRetry
+		}
+		return kiroActionFailoverAccount
+
+	case kiro.SignalRateLimited:
+		if hasMoreEndpoints {
+			return kiroActionNextEndpoint
+		}
+		return kiroActionFailoverAccount
+
+	case kiro.SignalCreditsExhausted:
+		// 该账号额度已尽，换端点无用，直接换账号。
+		return kiroActionFailoverAccount
+
+	case kiro.SignalNetworkRegion:
+		// 不变式 2：可以换端点碰运气，但绝不能归咎于账号。
+		if hasMoreEndpoints {
+			return kiroActionNextEndpoint
+		}
+		return kiroActionAbort
+
+	case kiro.SignalBadRequest:
+		// 不变式 3。
+		return kiroActionAbort
+
+	case kiro.SignalSuspended, kiro.SignalOverage:
+		// 账号状态问题，由调用方禁用账号并返回明确错误。
+		return kiroActionAbort
+
+	default:
+		if hasMoreEndpoints {
+			return kiroActionNextEndpoint
+		}
+		return kiroActionFailoverAccount
+	}
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd backend && go test -tags=unit ./internal/service/ -run 'TestDecideKiroAction|TestKiroActionString' -v
+```
+
+Expected: 全部 PASS。
+
+- [ ] **Step 5: 先读现有编排实现再写 ForwardUpstream**
+
+```bash
+sed -n 1,162p backend/internal/service/antigravity_gateway_upstream.go
+sed -n 40,110p backend/internal/service/antigravity_gateway_streaming.go
+```
+
+重点看四件事，照抄其模式而不是自创：
+1. `ForwardUpstream` 的签名与返回值填充方式（`ForwardResult` 的哪些字段必须填）
+2. 客户端写出器（`antigravityClientWriter`）如何处理断连与首字节计时
+3. `handleStreamReadError` 如何区分客户端断连与上游错误
+4. 粘性会话的 `conversationId` 从哪里取（`grep -rn "SessionKey\|sticky" backend/internal/service/gateway_scheduling.go | head`）
+
+- [ ] **Step 6: 实现 `kiro_gateway_service.go`**
+
+按下述骨架实现，其中标注 ★ 的行必须用 Step 5 读到的既有写法替换为仓库实际 API：
+
+```go
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/gin-gonic/gin"
+)
+
+// kiroErrorBodyLimit 限制读取错误响应体的字节数。
+const kiroErrorBodyLimit = 64 * 1024
+
+// ForwardUpstream 把一次 Anthropic 请求转发到 Kiro 并把响应流式写回客户端。
+//
+// 失败决策全部委托给 decideKiroAction —— 本函数只负责执行决策。
+func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	startTime := time.Now()
+
+	var inbound apicompat.AnthropicRequest
+	if err := json.Unmarshal(body, &inbound); err != nil {
+		return nil, fmt.Errorf("kiro: decode inbound request: %w", err)
+	}
+
+	upstreamModel := kiro.MapModel(inbound.Model)
+
+	// ★ conversationId 必须与粘性会话一致，且换账号时重新生成。
+	//   用 Step 5 查到的会话键实现 conversationIDFor(c, account)。
+	conversationID := s.conversationIDFor(c, account)
+
+	payload, err := kiro.BuildRequest(&inbound, kiro.Options{
+		ModelID:               upstreamModel,
+		ConversationID:        conversationID,
+		ProfileArn:            s.profileArnFor(account),
+		Origin:                "", // 由端点决定，BuildRequest 内部按需覆盖
+		FakeThinking:          account.KiroFakeThinking(),
+		FakeThinkingMaxTokens: 4000,
+		ToolDescMaxLen:        10000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kiro: build upstream request: %w", err)
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: encode upstream request: %w", err)
+	}
+
+	endpoints := kiro.EndpointsFor(account.IsKiroAPIKeyAccount(), account.KiroRegion())
+	translator := kiro.NewStreamTranslator(inbound.Model, s.newMessageID(), account.KiroFakeThinking())
+
+	var (
+		refreshed bool
+		lastErr   error
+	)
+
+	for i := 0; i < len(endpoints); i++ {
+		ep := endpoints[i]
+		hasMore := i < len(endpoints)-1
+
+		resp, callErr := s.callEndpoint(ctx, account, ep, raw)
+		if callErr != nil {
+			// 传输层失败：按未知信号处理。
+			action := decideKiroAction(kiro.SignalUnknown, translator.SawContent(), refreshed, hasMore)
+			lastErr = callErr
+			if action == kiroActionNextEndpoint {
+				continue
+			}
+			return nil, s.finishWithAction(action, account, kiro.SignalUnknown, callErr)
+		}
+
+		status := resp.StatusCode
+		if status < 200 || status >= 300 {
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, kiroErrorBodyLimit))
+			_ = resp.Body.Close()
+
+			sig := kiro.Classify(status, errBody)
+			action := decideKiroAction(sig, translator.SawContent(), refreshed, hasMore)
+			lastErr = fmt.Errorf("kiro: %s returned %d (%s)", ep.Name, status, sig)
+
+			// ★ 400 必须留下足以定位的请求摘要——它是我们自己的构造错误。
+			if sig == kiro.SignalBadRequest {
+				s.logBadRequest(account, upstreamModel, len(inbound.Tools), errBody)
+			}
+
+			switch action {
+			case kiroActionRefreshAndRetry:
+				if rErr := s.refreshAccountToken(ctx, account); rErr != nil {
+					return nil, rErr
+				}
+				refreshed = true
+				i-- // 重试同一端点
+				continue
+			case kiroActionNextEndpoint:
+				continue
+			default:
+				return nil, s.finishWithAction(action, account, sig, lastErr)
+			}
+		}
+
+		// 成功：流式写出。
+		defer func() { _ = resp.Body.Close() }()
+		return s.streamToClient(c, resp, translator, &inbound, upstreamModel, startTime)
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("kiro: all endpoints failed")
+	}
+	return nil, lastErr
+}
+
+// streamToClient 边解码上游 event-stream 边把 Anthropic SSE 写给客户端。
+func (s *KiroGatewayService) streamToClient(
+	c *gin.Context,
+	resp *http.Response,
+	translator *kiro.StreamTranslator,
+	inbound *apicompat.AnthropicRequest,
+	upstreamModel string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	// ★ 用 Step 5 读到的客户端写出器与首字节计时写法替换以下骨架。
+	writer := s.newClientWriter(c)
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			events, tErr := translator.Feed(buf[:n])
+			if tErr != nil {
+				// 上游异常帧：已出内容时只能截断，未出内容时可返回错误。
+				if translator.SawContent() {
+					break
+				}
+				return nil, tErr
+			}
+			if !s.writeEvents(writer, events) {
+				break // 客户端断开
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				if !translator.SawContent() {
+					return nil, readErr
+				}
+			}
+			break
+		}
+	}
+
+	s.writeEvents(writer, translator.Finalize())
+
+	usage := translator.Usage()
+	return &ForwardResult{
+		Model:         inbound.Model,
+		UpstreamModel: upstreamModel,
+		Stream:        inbound.Stream,
+		Duration:      time.Since(startTime),
+		Usage: ClaudeUsage{
+			// input token 上游不提供，本地估算（设计文档 D4）。
+			InputTokens: kiro.EstimateRequestInput(inbound),
+			// output token 同样是估算；cache token 是 meteringEvent 的真实值。
+			OutputTokens:             usage.OutputTokens,
+			CacheCreationInputTokens: usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+		},
+	}, nil
+}
+```
+
+还需实现的小helper（均为本文件私有）：
+`conversationIDFor`、`profileArnFor`（API Key 账号返回空串）、`newMessageID`
+（`"msg_" + 随机 hex`）、`newClientWriter`、`writeEvents`（把
+`[]apicompat.AnthropicStreamEvent` 序列化成 `event: X\ndata: {...}\n\n`）、
+`logBadRequest`、`refreshAccountToken`、`finishWithAction`
+（按动作决定是否禁用账号、写 credits 冷却、或包装成可转移错误）。
+
+- [ ] **Step 7: 写 ForwardUpstream 的集成测试**
+
+创建 `backend/internal/service/kiro_gateway_service_test.go`，用 `httptest` 提供
+一个返回真实 event-stream 帧的假上游（帧构造复用 Task 1 的格式），至少覆盖：
+
+- 成功路径：客户端收到完整的 `message_start` → `text_delta` → `message_stop`，
+  且 `ForwardResult.Usage.CacheReadInputTokens` 等于 `meteringEvent` 里的真实值
+- 首个端点 429、第二个端点成功 → 客户端无感
+- 400 → **不重试、不换端点**，假上游只被调用一次
+- `INVALID_MODEL_ID` → 端点轮完后返回错误，且**账号未被标记为故障**
+
+- [ ] **Step 8: 全量回归并提交**
+
+```bash
+cd backend && gofmt -w internal/service/ && go build ./... && go test -tags=unit ./...
+git add backend/internal/service/kiro_gateway_decision.go \
+        backend/internal/service/kiro_gateway_decision_test.go \
+        backend/internal/service/kiro_gateway_service.go \
+        backend/internal/service/kiro_gateway_service_test.go
+git commit -m "feat(kiro): 转发编排、失败决策与流式写出
+
+失败决策收口为纯函数 decideKiroAction，使 INVALID_MODEL_ID 不得
+禁账号、400 不得重试或转移这两条红线可被表驱动测试穷举。"
+```
+
+---
+
+### Task 18: 路由分派、handler 与 wire 接线
+
+**Files:**
+- Create: `backend/internal/handler/kiro_gateway_handler.go`
+- Test: `backend/internal/handler/kiro_gateway_handler_test.go`
+- Modify: `backend/internal/server/routes/gateway.go`（约 195 行的 `/v1/messages` 分支）
+- Modify: `backend/internal/service/wire.go`、`backend/internal/handler/wire.go`、`backend/cmd/server/wire.go`、`backend/cmd/server/wire_gen.go`
+
+**Interfaces:**
+- Consumes: Task 17 的 `KiroGatewayService.ForwardUpstream`
+- Produces:
+  - `type KiroGatewayHandler struct { ... }`
+  - `func NewKiroGatewayHandler(...) *KiroGatewayHandler`
+  - `func (h *KiroGatewayHandler) Messages(c *gin.Context)`
+
+- [ ] **Step 1: 先读现有 handler 的调度骨架**
+
+```bash
+grep -n "func (h \*GatewayHandler) Messages" -A 60 backend/internal/handler/gateway_handler.go | head -70
+```
+
+`Messages` 里包含账号调度、并发控制、计费落账、失败转移循环 ——
+**这些必须复用，不要在 kiro handler 里重写**。理想做法是让 `KiroGatewayHandler`
+走与 `h.Gateway.Messages` 相同的编排入口，只把「转发」这一步换成
+`KiroGatewayService.ForwardUpstream`。先确认现有编排是否已抽出可复用的入口
+（`grep -n "ForwardUpstream" backend/internal/handler/*.go`）。
+
+- [ ] **Step 2: 写路由分派测试**
+
+创建 `backend/internal/handler/kiro_gateway_handler_test.go`，断言
+`/v1/messages` 在 `group.Platform == kiro` 时被分派到 kiro handler
+（照 `openai_gateway_reasoning_failover_test.go` 里既有的分派测试写法）。
+
+- [ ] **Step 3: 实现 handler**
+
+按 Step 1 的结论实现，把 `ForwardUpstream` 接入既有编排。
+
+- [ ] **Step 4: 注册路由**
+
+在 `backend/internal/server/routes/gateway.go` 的 `/v1/messages` 分支里加入：
+
+```go
+		case service.PlatformKiro:
+			h.KiroGateway.Messages(c)
+```
+
+> 注意该 `switch` 的现有结构是「`case service.PlatformOpenAI, ...:` 走
+> `h.OpenAIGateway.Messages`，`default:` 走 `h.Gateway.Messages`」。
+> kiro **必须显式列为一个 case** —— 落进 `default` 会被当成 Anthropic 直连转发，
+> 请求体格式完全不匹配，症状是上游 400 且难以定位。
+
+- [ ] **Step 5: Wire 接线并验证构建**
+
+把 `NewKiroGatewayService`、`NewKiroGatewayHandler` 加进对应 provider set，
+在 handler 聚合结构体里加 `KiroGateway` 字段，然后：
+
+```bash
+cd backend && go build ./...
+```
+
+> **`wire_gen.go` 的 invoice 块是手工维护的** —— `go generate ./cmd/server` 会在
+> invoice 的 `NotificationService` 上失败。手动补 provider，以 `go build ./...` 通过为准。
+
+- [ ] **Step 6: 全量回归并提交**
+
+```bash
+cd backend && go build ./... && go test -tags=unit ./... && golangci-lint run ./internal/...
+git add backend/internal/handler/kiro_gateway_handler.go \
+        backend/internal/handler/kiro_gateway_handler_test.go \
+        backend/internal/server/routes/gateway.go \
+        backend/internal/service/wire.go \
+        backend/internal/handler/wire.go \
+        backend/cmd/server/wire.go \
+        backend/cmd/server/wire_gen.go
+git commit -m "feat(kiro): /v1/messages 路由分派与 handler 接线
+
+C 组完成：Claude Code 可经 kiro 分组端到端跑通。"
+```
+
+---
+
+> **计划文档状态：** **A 组（1-8）+ B 组（9-14）+ C 组（15-18）已全部完整展开。**
+> 至此 Claude Code 可端到端跑通。D/E 组见下方接口契约。
 
 ## 后续任务概览（待补齐为完整步骤）
 
-### C 组剩余
+### D 组：额度与计费（Task 19-20）
 
-| Task | 交付物 | 关键接口 |
-|---|---|---|
-| 17 | `service/kiro_gateway_service.go` 转发编排 + 流式写出 + 错误分类接入 | `func (s *KiroGatewayService) ForwardUpstream(ctx, c *gin.Context, account *Account, body []byte) (*ForwardResult, error)`（签名对齐 `AntigravityGatewayService.ForwardUpstream`）。流程：`apicompat` 解析入站 → `kiro.BuildRequest` → 按 `kiro.EndpointsFor` 顺序 `callEndpoint` → `kiro.NewStreamTranslator` 边解码边写 SSE。错误分类：`kiro.Classify(status, body)` → `SignalAuthExpired` 强制刷新一次并重试同端点；`SignalRateLimited` 换下一个端点，端点耗尽后交 `ratelimit_service.go:1129 handle429`；`SignalCreditsExhausted` 写 `model_rate_limits["KiroCredits"]` 冷却至 `getUsageLimits.nextDateReset`；**`Signal.Failoverable()` 为 false 时（`SignalBadRequest` / `SignalNetworkRegion` / `SignalSuspended`）不得进入账号转移循环**；`StreamTranslator.SawContent()` 为 true 时一律不可重试（会产生重复内容）。`conversationId` 接粘性会话，**换账号时必须重新生成** |
-| 18 | 路由分派 + handler + wire | `routes/gateway.go:195` 的 `/v1/messages` 分支加 `case service.PlatformKiro: h.KiroGateway.Messages(c)`；`handler/kiro_gateway_handler.go`；provider set 后 `go build ./...` 验证（`wire_gen.go` 的 invoice 块手工维护） |
+| Task | 交付物 |
+|---|---|
+| 19 | `service/kiro_quota_fetcher.go`：实现 `CanFetch` / `FetchQuota` / `GetProxyURL`（照 `antigravity_quota_fetcher.go`），调 `GET {q-host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true&profileArn=...`，解析 `usageBreakdownList[].{currentUsage,usageLimit,nextDateReset,bonuses,freeTrialInfo}`、`subscriptionInfo.subscriptionTitle`、`overageConfiguration.overageStatus`；credits 耗尽时写 `model_rate_limits["KiroCredits"]` 冷却至真实 `nextDateReset` |
+| 20 | 计费接入：`ForwardResult.Usage` 已由 Task 17 填好，本任务确认其经现有 `billing_service` 正确落账，`billing_mode="token"`；**核实预扣费路径对 `max_tokens` 的依赖**（设计文档 §10 第 3 条待办），kiro 拿不到该值时用「估算 input + 保守 output 上限」兜底 |
+
+### E 组：前端（Task 21-22）
+
+| Task | 交付物 |
+|---|---|
+| 21 | 账号表单（四种 auth_method 分支）+ 授权向导（IdC 跳转 / device code 展示） |
+| 22 | 额度展示 + 分组平台选项 |
 
 ### D 组：额度与计费（Task 19-20）
 
