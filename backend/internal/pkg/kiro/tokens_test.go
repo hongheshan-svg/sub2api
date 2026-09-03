@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -29,13 +30,12 @@ func TestEstimateTextAsciiProse(t *testing.T) {
 	require.Equal(t, 8, got)
 }
 
-func TestEstimateTextCJKCostsMore(t *testing.T) {
+func TestEstimateTextCJKExactValue(t *testing.T) {
 	t.Parallel()
 
-	// 非 ASCII 按 /1.5 计，中文比等长英文贵。
-	cjk := EstimateText("中文字符测试内容一二三")
-	ascii := EstimateText("aaaaaaaaaaa")
-	require.Greater(t, cjk, ascii)
+	// 9 个 rune（非 ASCII）→ ceil(9/1.5) = 6。
+	// 此测试防护 rune 计数 vs 字节计数回归：字节计数会得 ceil(27/1.5) = 18。
+	require.Equal(t, 6, EstimateText("中文字符测试一二三"))
 }
 
 func TestEstimateTextSymbolsAndDigits(t *testing.T) {
@@ -45,6 +45,34 @@ func TestEstimateTextSymbolsAndDigits(t *testing.T) {
 	require.Equal(t, 8, EstimateText("{}[]()<>!@#$"))
 	// 12 个数字 → ceil(12/2) = 6
 	require.Equal(t, 6, EstimateText("123456789012"))
+}
+
+func TestEstimateTextSymbolBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// 9 个字符的表格驱动测试，防护符号范围边界和字符分类错误。
+	// 每个输入都选择 9 个字符，使得误分类会改变结果（digit→5, ascii→2, symbol→6 互不相同）。
+	tests := []struct {
+		input    string
+		expected int
+		desc     string
+	}{
+		{strings.Repeat(" ", 9), 2, "space 是 ascii，不是 symbol"},
+		{strings.Repeat("!", 9), 6, "! 是 symbol 的下界 ('!'..'/')"},
+		{strings.Repeat("/", 9), 6, "/ 是 symbol 范围 ('!'..'/')的上界"},
+		{strings.Repeat(":", 9), 6, ": 是 symbol 范围 (':'..'@')的下界"},
+		{strings.Repeat("@", 9), 6, "@ 是 symbol 范围 (':'..'@')的上界"},
+		{strings.Repeat("`", 9), 6, "` 是 symbol 范围 ('['..'`')的上界"},
+		{strings.Repeat("{", 9), 6, "{ 是 symbol 范围 ('{'..'~')的下界"},
+		{strings.Repeat("~", 9), 6, "~ 是 symbol 范围 ('{'..'~')的上界"},
+		{strings.Repeat("5", 9), 5, "digit 5，验证与 symbol 的分离"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			require.Equal(t, tt.expected, EstimateText(tt.input), "input: %q", tt.input)
+		})
+	}
 }
 
 func TestEstimateTextNeverZeroForNonEmpty(t *testing.T) {
