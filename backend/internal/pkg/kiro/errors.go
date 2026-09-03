@@ -2,7 +2,6 @@ package kiro
 
 import (
 	"bytes"
-	"strings"
 )
 
 // Signal 是对一次上游响应的语义分类，决定调度侧的动作。
@@ -88,7 +87,11 @@ var (
 		[]byte("invalid model id"),
 	}
 	suspensionMarkers = [][]byte{
-		[]byte("suspend"),
+		// 用具体短语而不是裸 "suspend"：裸子串会命中回显文本或助手原文里任何
+		// 提到 suspend 的地方，误伤健康账号。
+		[]byte("has been suspended"),
+		[]byte("account is suspended"),
+		[]byte("subscription is suspended"),
 		[]byte("account is disabled"),
 		[]byte("profile is not available"),
 		[]byte("profilearn is not available"),
@@ -113,9 +116,16 @@ func containsAny(haystack []byte, needles [][]byte) bool {
 
 // Classify 把一次上游响应归类。
 //
-// 检查顺序是有意为之：body 特征优先于状态码。INVALID_MODEL_ID 通常伴随 400
-// 返回，若先按状态码判成 SignalBadRequest，就会掩盖「这其实是网络问题」这一事实。
+// 检查顺序是有意为之：
+//  1. 2xx 必须最先判定为 SignalOK，绝不允许被 body 内容反过来改判 —— 成功响应
+//     的 body 里可能回显了请求文本或助手原文，其中出现敏感词不代表账号出了问题。
+//  2. 非 2xx 时，body 特征优先于状态码。INVALID_MODEL_ID 通常伴随 400
+//     返回，若先按状态码判成 SignalBadRequest，就会掩盖「这其实是网络问题」这一事实。
 func Classify(status int, body []byte) Signal {
+	if status >= 200 && status < 300 {
+		return SignalOK
+	}
+
 	lower := bytes.ToLower(bytes.TrimSpace(body))
 
 	if len(lower) > 0 {
@@ -132,8 +142,6 @@ func Classify(status int, body []byte) Signal {
 	}
 
 	switch {
-	case status >= 200 && status < 300:
-		return SignalOK
 	case status == 401 || status == 403:
 		return SignalAuthExpired
 	case status == 402:
@@ -145,10 +153,4 @@ func Classify(status int, body []byte) Signal {
 	default:
 		return SignalUnknown
 	}
-}
-
-// IsBadRequestBody 供调用方在记录诊断日志时判断是否需要打印请求摘要。
-// 400 是我们自己的构造错误，日志里必须留下足以定位的请求形状。
-func IsBadRequestBody(body []byte) bool {
-	return strings.Contains(strings.ToLower(string(body)), "improperly formed request")
 }

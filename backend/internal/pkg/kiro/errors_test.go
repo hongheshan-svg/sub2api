@@ -51,6 +51,7 @@ func TestClassifyAuthAndOverageAndRateLimit(t *testing.T) {
 	require.True(t, SignalRateLimited.Retryable(), "先换端点，端点耗尽再交给限流冷却")
 	require.True(t, SignalRateLimited.Failoverable())
 	require.False(t, SignalOverage.Retryable())
+	require.False(t, SignalOverage.Failoverable(), "overage 需要用户自己开启，换账号解决不了")
 }
 
 func TestClassifySuspensionAndCreditsExhausted(t *testing.T) {
@@ -75,13 +76,57 @@ func TestClassifySuccessAndUnknown(t *testing.T) {
 	require.Equal(t, SignalUnknown, Classify(500, nil))
 	require.True(t, SignalUnknown.Retryable(), "5xx 允许重试")
 	require.True(t, SignalUnknown.Failoverable())
+	require.False(t, SignalOK.Failoverable())
+}
+
+// TestClassify2xxIsNeverReclassifiedByBodyContent 是修复轮 2 Finding 1(a) 的回归测试。
+// 成功响应的 body 里可能回显了请求文本或助手原文，其中出现敏感词（比如
+// "suspended"）绝不能反过来把一次成功请求判成账号故障。
+func TestClassify2xxIsNeverReclassifiedByBodyContent(t *testing.T) {
+	t.Parallel()
+
+	// body 命中停用短语（"has been suspended"），但状态码是 2xx —— 必须仍判 OK。
+	body := []byte(`{"message":"heads up: this account has been suspended once before, but is currently fully active"}`)
+	require.Equal(t, SignalOK, Classify(200, body))
+}
+
+// TestClassifySuspensionMarkerRequiresSpecificPhrase 是修复轮 2 Finding 1(b) 的
+// 回归测试。停用判定必须用具体短语，不能用裸 "suspend" 子串匹配 —— 否则任何
+// 提到 suspend 的请求文本或助手原文都会误伤健康账号。
+func TestClassifySuspensionMarkerRequiresSpecificPhrase(t *testing.T) {
+	t.Parallel()
+
+	// 提到 suspend 但不是具体停用短语 —— 不得误判，应落到 403 的鉴权失效分支。
+	got := Classify(403, []byte(`{"message":"unsuspend request rejected"}`))
+	require.Equal(t, SignalAuthExpired, got)
+	require.NotEqual(t, SignalSuspended, got, "裸 suspend 子串不应触发停用判定")
+
+	// 具体停用短语仍然命中。
+	require.Equal(t, SignalSuspended,
+		Classify(403, []byte(`{"message":"Your subscription has been suspended"}`)))
+}
+
+// TestClassifyCreditsExhaustedPrecedesSuspensionMarker 是修复轮 2 Finding 2 的
+// 回归测试：锁定 body 特征之间的优先级。一段文案同时命中额度耗尽与停用两类
+// 关键词时，额度耗尽先判定并生效。
+func TestClassifyCreditsExhaustedPrecedesSuspensionMarker(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"message":"account is suspended, monthly request limit reached"}`)
+	require.Equal(t, SignalCreditsExhausted, Classify(403, body))
 }
 
 func TestSignalStringIsStable(t *testing.T) {
 	t.Parallel()
 
 	// 这些字符串会进日志与告警，改动会破坏既有检索。
+	require.Equal(t, "ok", SignalOK.String())
+	require.Equal(t, "auth_expired", SignalAuthExpired.String())
+	require.Equal(t, "overage", SignalOverage.String())
+	require.Equal(t, "rate_limited", SignalRateLimited.String())
 	require.Equal(t, "network_region", SignalNetworkRegion.String())
 	require.Equal(t, "bad_request", SignalBadRequest.String())
+	require.Equal(t, "suspended", SignalSuspended.String())
 	require.Equal(t, "credits_exhausted", SignalCreditsExhausted.String())
+	require.Equal(t, "unknown", SignalUnknown.String())
 }
