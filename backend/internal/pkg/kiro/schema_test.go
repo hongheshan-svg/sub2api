@@ -118,6 +118,20 @@ func TestSanitizeSchemaCyclicRefDoesNotHang(t *testing.T) {
 	}
 }
 
+// TestSanitizeSchemaArrayBudgetExhaustedStub 验证预算耗尽时数组的退化 stub 是
+// 空数组而不是 {"type":"object"}（M-a）。在 enum/oneOf/anyOf 之下，数组的位置
+// 期望的是数组值，用对象替换会产出无效 schema，可能触发本函数正要防止的 400。
+func TestSanitizeSchemaArrayBudgetExhaustedStub(t *testing.T) {
+	t.Parallel()
+
+	ctx := &sanitizeCtx{defs: map[string]any{}, nodes: maxSchemaNodes}
+	result := sanitizeValue([]any{"a", "b"}, ctx, 0)
+
+	arr, ok := result.([]any)
+	require.True(t, ok, "预算耗尽时数组退化的 stub 类型应为 []any，实际为 %T：%v", result, result)
+	require.Empty(t, arr)
+}
+
 // TestSanitizeSchemaRequiredArrayNotAliased 验证 required 数组被复制而非别名。
 // 修改返回值的 required 不应该污染输入。
 func TestSanitizeSchemaRequiredArrayNotAliased(t *testing.T) {
@@ -135,33 +149,103 @@ func TestSanitizeSchemaRequiredArrayNotAliased(t *testing.T) {
 	require.Equal(t, "a", inRequired[0], "输入 required 被输出修改污染")
 }
 
-// TestSanitizeSchemaDiamondRefBounded 防御链式宽分支的 $defs 导致的节点爆炸。
-// 深度限制（maxRefDepth=16）约束嵌套，但不约束宽度。
-// 8 层、20 分支的链会产生 ~20^4 ~ 160k 节点（在第 5 层宽度最大处），
-// 节点预算会将其限制在 ~55k。
-func TestSanitizeSchemaDiamondRefBounded(t *testing.T) {
+// countSchemaNodes 统计 schema 中的容器节点数（maps 和 slices），标量不计数。
+// 与 sanitizeCtx.nodes 统计的对象一致：每个 map/array 容器（含退化 stub）都算一个节点。
+func countSchemaNodes(value any) int {
+	switch v := value.(type) {
+	case map[string]any:
+		count := 1
+		for _, val := range v {
+			count += countSchemaNodes(val)
+		}
+		return count
+	case []any:
+		count := 1
+		for _, item := range v {
+			count += countSchemaNodes(item)
+		}
+		return count
+	default:
+		return 0
+	}
+}
+
+// buildSelfRefFanoutSchema 构造一个自引用的 $defs 条目：Node 节点带 fanout 个属性，
+// 每个属性都 $ref 回 Node 自身。这是 C1 描述的攻击形态——budget 修复前，输出节点数
+// 会随 fanout 线性放大（budget 只约束了"展开访问次数"，每次访问仍无条件产出
+// fanout 个子节点），fanout=10 时输出 ~55k 节点，fanout=50 时 ~255k 节点。
+func buildSelfRefFanoutSchema(fanout int) map[string]any {
+	props := make(map[string]any, fanout)
+	for i := 0; i < fanout; i++ {
+		props[fmt.Sprintf("p%d", i)] = map[string]any{"$ref": "#/$defs/Node"}
+	}
+	return map[string]any{
+		"type": "object",
+		"$defs": map[string]any{
+			"Node": map[string]any{
+				"type":       "object",
+				"properties": props,
+			},
+		},
+		"properties": map[string]any{
+			"root": map[string]any{"$ref": "#/$defs/Node"},
+		},
+	}
+}
+
+// TestSanitizeSchemaSelfRefFanoutBounded 防御自引用 $defs 导致的节点爆炸（C1）。
+// 深度限制（maxRefDepth=16）会终止递归，但修复前每层终止前仍会无条件产出 fanout
+// 个子节点——输出节点数随 fanout 线性放大：fanout=10 时 ~55k 节点，fanout=30 时
+// ~155k，fanout=50 时 ~255k，budget=10000 完全不起作用。
+//
+// 修复后，budget 约束的是"实际产出的节点数"本身，与 fanout 无关：输出节点数应
+// 稳定收敛在 maxSchemaNodes 的一个小的常数倍以内。
+func TestSanitizeSchemaSelfRefFanoutBounded(t *testing.T) {
 	t.Parallel()
 
-	// countNodes 统计 schema 中的容器节点数（maps 和 slices）。
-	var countNodes func(any) int
-	countNodes = func(value any) int {
-		switch v := value.(type) {
-		case map[string]any:
-			count := 1 // 计数 map 本身
-			for _, val := range v {
-				count += countNodes(val)
-			}
-			return count
-		case []any:
-			count := 1 // 计数 slice 本身
-			for _, item := range v {
-				count += countNodes(item)
-			}
-			return count
-		default:
-			return 0 // 标量不计数
-		}
+	out := SanitizeSchema(buildSelfRefFanoutSchema(10))
+	outNodes := countSchemaNodes(out)
+
+	t.Logf("fanout=10 output node count: %d", outNodes)
+
+	// 下界：如果输出坍缩到远小于 maxSchemaNodes（例如个位数），说明预算耗尽时
+	// 把整个容器（连同已经构建好的兄弟节点）一起丢弃了，这是一种过度保守、
+	// 会破坏合法 schema 结构的错误实现，而不是本次修复要的"停止继续产出新
+	// 节点，但保留已产出部分"。
+	require.Greater(t, outNodes, maxSchemaNodes/2,
+		"输出节点数 %d 远小于预算，怀疑预算耗尽时把已构建好的兄弟节点一起丢弃了", outNodes)
+
+	// 上界：修复前 fanout=10 会产出 ~55k 节点；修复后必须收敛到 maxSchemaNodes
+	// 的一个小的常数倍以内，才算是"预算约束了输出节点数"而不是"访问次数"。
+	require.Less(t, outNodes, maxSchemaNodes*2,
+		"输出节点数 %d 超过预算的 2 倍，budget 没能约束住 fanout 放大", outNodes)
+}
+
+// TestSanitizeSchemaSelfRefFanoutBoundedIndependentOfFanout 证明输出上界与 fanout
+// 无关——这是 C1 修复的核心不变量：只要 fanout 越大（10 到 10000，跨 3 个数量级），
+// 输出节点数不应该继续增长，而应该始终收敛在 maxSchemaNodes 附近。
+func TestSanitizeSchemaSelfRefFanoutBoundedIndependentOfFanout(t *testing.T) {
+	t.Parallel()
+
+	for _, fanout := range []int{10, 1000, 10000} {
+		out := SanitizeSchema(buildSelfRefFanoutSchema(fanout))
+		outNodes := countSchemaNodes(out)
+
+		t.Logf("fanout=%d output node count: %d", fanout, outNodes)
+
+		require.Less(t, outNodes, maxSchemaNodes*2,
+			"fanout=%d 时输出节点数 %d 超过预算的 2 倍——修复前输出会随 fanout 线性放大，"+
+				"fanout=10000 时会产生数千万个节点", fanout, outNodes)
 	}
+}
+
+// TestSanitizeSchemaWideChainTerminatesQuickly 用真正会挂起的形态（宽分支链式
+// $defs）验证 SanitizeSchema 在 budget 修复后仍能在有限时间内终止——把耗时保护
+// 真正包住待测调用本身，而不是包一个已经跑完的结果（M-d：旧版本的 timeout
+// scaffolding 是摆设，goroutine 在 SanitizeSchema 已经同步跑完之后才启动，
+// 不可能捕捉到真实的挂起）。
+func TestSanitizeSchemaWideChainTerminatesQuickly(t *testing.T) {
+	t.Parallel()
 
 	// buildWideChain 构造链式 $defs：L8 -> (c0:L7, ..., c_{branch-1}:L7),
 	// L7 -> (c0:L6, ...), ..., L1 -> (无 refs，基础情况)
@@ -201,29 +285,19 @@ func TestSanitizeSchemaDiamondRefBounded(t *testing.T) {
 		}
 	}
 
-	// 8 层、20 分支：深度限制允许 ~5 层展开（深度：2,5,8,11,14,17截止）。
-	// 但 20^4 = 160k 节点会被 maxSchemaNodes = 10000 的预算限制在 ~55k。
-	// 这是对节点预算有效性的真实考验：预算=10000 时计数应 <200k，
-	// 预算=1<<30 时计数应 >300k。
 	in := buildWideChain(8, 20)
-	out := SanitizeSchema(in)
-	outNodes := countNodes(out)
 
-	t.Logf("Output node count: %d", outNodes)
+	done := make(chan map[string]any, 1)
+	go func() { done <- SanitizeSchema(in) }()
 
-	// 断言输出节点数在预期范围。
-	// 如果计数 >= 200k，表示节点预算完全失效。
-	require.Less(t, outNodes, 200000,
-		fmt.Sprintf("output has %d nodes (expected <200k with budget=10000)", outNodes))
-
-	// 验证不会耗时过长。
-	done := make(chan bool, 1)
-	go func() { done <- true }()
 	select {
-	case <-done:
-		require.NotNil(t, out)
+	case out := <-done:
+		outNodes := countSchemaNodes(out)
+		t.Logf("wide chain output node count: %d", outNodes)
+		require.Less(t, outNodes, maxSchemaNodes*2,
+			"输出节点数 %d 超过预算的 2 倍", outNodes)
 	case <-timeAfterSeconds(5):
-		t.Fatal("SanitizeSchema 在链式宽分支 $defs 上耗时过长")
+		t.Fatal("SanitizeSchema 在链式宽分支 $defs 上耗时过长，可能又退化为随 fanout 复合增长")
 	}
 }
 
