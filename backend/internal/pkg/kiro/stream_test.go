@@ -293,6 +293,27 @@ func TestStreamFakeThinkingShortPrefixFlushedOnFinalize(t *testing.T) {
 	require.True(t, tr.SawContent(), "冲刷出的内容也算已吐出内容")
 }
 
+// TestStreamEmptyResponseStillEmitsMessageStart 覆盖响应被静默截断、完全没有
+// 正文/工具调用内容的情况（I1）——gateBuf 从未被写入过，handle() 里任何一条
+// ensureStarted 分支都不会被触发，之前的实现会导致 Finalize 只发
+// message_delta + message_stop，缺失 message_start，破坏协议顺序。
+func TestStreamEmptyResponseStillEmitsMessageStart(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+
+	// 只喂一个 metadataEvent，不带任何正文/工具调用内容。
+	got, err := tr.Feed(eventFrame(t, "metadataEvent", `{"stopReason":"end_turn"}`))
+	require.NoError(t, err)
+	require.Empty(t, got, "metadataEvent 本身不产出 SSE 事件")
+
+	final := tr.Finalize()
+	require.Equal(t, []string{"message_start", "message_delta", "message_stop"}, collectTypes(final),
+		"空响应也必须先发 message_start，保持协议顺序完整")
+	require.Equal(t, "msg_1", final[0].Message.ID)
+	require.False(t, tr.SawContent())
+}
+
 func TestStreamExceptionFrameReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -396,6 +417,28 @@ func TestStreamFakeThinkingIncludesThinkingInOutputTokens(t *testing.T) {
 
 	want := EstimateText("let me reason" + "final answer")
 	require.Equal(t, want, tr.Usage().OutputTokens, "thinking 文本必须和正文一起计入 output token")
+}
+
+// TestStreamToolOnlyResponseCountsInputTowardOutputTokens 覆盖只有工具调用、
+// 没有任何正文的响应（I2）——工具调用的 input JSON 片段之前从未累加进
+// outputText，导致纯工具调用响应的 OutputTokens 恒为 0，计费漏计。
+func TestStreamToolOnlyResponseCountsInputTowardOutputTokens(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+
+	_, err := tr.Feed(eventFrame(t, "toolUseEvent",
+		`{"name":"Read","toolUseId":"tu_1","input":"{\"pa","stop":false}`))
+	require.NoError(t, err)
+	_, err = tr.Feed(eventFrame(t, "toolUseEvent",
+		`{"name":"Read","toolUseId":"tu_1","input":"th\":1}","stop":true}`))
+	require.NoError(t, err)
+	tr.Finalize()
+
+	want := EstimateText(`{"path":1}`)
+	require.Equal(t, want, tr.Usage().OutputTokens,
+		"纯工具调用响应的 OutputTokens 必须等于累计 input JSON 的估算值，不能是 0")
+	require.Positive(t, tr.Usage().OutputTokens)
 }
 
 // TestStreamFeedReturnsPartialOutputAlongsideException 覆盖同一次 Feed 调用里

@@ -104,10 +104,11 @@ func (t *StreamTranslator) Credits() float64 { return t.credits }
 
 // Usage 返回计费用量。cache token 是上游真实值；output token 是估算值 ——
 // Kiro 不提供 input/output token，这是既定计费口径。
-// 假思考剥离出的 thinking 文本也计入 output token：Anthropic 原生的
-// usage.output_tokens 本身包含 thinking token，本网关对外呈现 Anthropic 兼容
-// 接口，口径要与之一致；而且 thinking 内容确实作为 thinking block 发给了客户端，
-// 并非未展示给用户的隐藏消耗。
+// output token 统计的是正文文本、假思考剥离出的 thinking 文本、以及工具调用的
+// input JSON 三者累加：Anthropic 原生的 usage.output_tokens 本身就包含
+// thinking token 和 tool_use.input，本网关对外呈现 Anthropic 兼容接口，口径要
+// 与之一致；而且这三者都确实作为对应的 content block 发给了客户端，并非未展示
+// 给用户的隐藏消耗。
 // InputTokens 由调用方用 EstimateRequestInput 填充。
 func (t *StreamTranslator) Usage() apicompat.AnthropicUsage {
 	return apicompat.AnthropicUsage{
@@ -311,6 +312,10 @@ func (t *StreamTranslator) handleToolUse(tu *ToolUse) []apicompat.AnthropicStrea
 	}
 
 	if tu.Input != "" {
+		// 工具调用的输入 JSON 片段也要计入 output token——Anthropic 原生
+		// usage.output_tokens 本身包含 tool_use.input，本网关对外呈现
+		// Anthropic 兼容接口，口径要与之一致（I2）。
+		t.outputText.WriteString(tu.Input)
 		out = append(out, apicompat.AnthropicStreamEvent{
 			Type:  "content_block_delta",
 			Index: intPtr(t.openIndex),
@@ -356,12 +361,18 @@ func (t *StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent {
 
 	var out []apicompat.AnthropicStreamEvent
 
+	// message_start 必须无条件先发——哪怕上游整段响应被静默截断、一个字节的
+	// 正文都没有（gateBuf 也是空的，从未触发过 handle 里任何一条 ensureStarted
+	// 分支），客户端也必须收到结构完整的 message_start -> message_delta ->
+	// message_stop，不能只有后两者。ensureStarted 内部有 started 标记，
+	// 重复调用是安全的空操作。
+	out = append(out, t.ensureStarted()...)
+
 	// 门控缓冲里可能还压着未判定的内容（响应太短、始终像 <thinking> 的前缀）。
 	if t.gateBuf != "" {
 		t.phase = phaseText
 		buffered := t.gateBuf
 		t.gateBuf = ""
-		out = append(out, t.ensureStarted()...)
 		out = append(out, t.emitText(buffered)...)
 	}
 
