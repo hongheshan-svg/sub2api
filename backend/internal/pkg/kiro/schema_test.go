@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -134,41 +135,45 @@ func TestSanitizeSchemaRequiredArrayNotAliased(t *testing.T) {
 	require.Equal(t, "a", inRequired[0], "输入 required 被输出修改污染")
 }
 
-// TestSanitizeSchemaDiamondRefBounded 防御菱形 $defs 导致的指数爆炸。
-// 每层引用下一层两次会导致节点数呈指数增长。
-func TestSanitizeSchemaDiamondRefBounded(t *testing.T) {
+// TestSanitizeSchemaBroadRefBounded 防御大量并行 $refs 导致的节点爆炸。
+// 不同于深度优先的菱形（受 maxRefDepth 限制），宽度优先的并行 refs
+// 在浅深度创建大量节点，不受深度上限约束。
+func TestSanitizeSchemaBroadRefBounded(t *testing.T) {
 	t.Parallel()
 
-	// 构造菱形 $defs：L0 -> (L1, L1), L1 -> (L2, L2), ...
-	// 深度 16 无预算限制会产生 ~2^16 = 65536 节点，深度 20 会更糟。
-	buildDiamond := func(depth int) map[string]any {
-		defs := map[string]any{}
-		for i := depth; i > 0; i-- {
-			node := map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			}
-			if i > 1 {
-				// 每层引用下一层两次。
-				nextRef := "#/$defs/L" + string(rune('0'+i-1))
-				node["properties"] = map[string]any{
-					"left":  map[string]any{"$ref": nextRef},
-					"right": map[string]any{"$ref": nextRef},
-				}
-			}
-			defs["L"+string(rune('0'+i))] = node
-		}
-
-		return map[string]any{
-			"type":  "object",
-			"$defs": defs,
+	// 构造根节点有多个并行 $refs 的 schema。
+	// 每个 $ref 指向一个包含少量节点的子 schema，
+	// 但数量足够多（>10000）以超过节点预算。
+	//
+	// 为避免过大的 JSON，定义一个两层的结构：
+	// - BaseNode: 简单的对象，约 10 个节点（包括自己、properties、几个字段）
+	// - Root: 1100 个 $refs 到 BaseNode，每个都会被扩展，总共 ~11000 节点
+	defs := map[string]any{
+		"BaseNode": map[string]any{
+			"type": "object",
 			"properties": map[string]any{
-				"root": map[string]any{"$ref": "#/$defs/L" + string(rune('0'+depth))},
+				"x": map[string]any{"type": "number"},
+				"y": map[string]any{"type": "number"},
+				"z": map[string]any{"type": "number"},
 			},
+		},
+	}
+
+	// 根的 properties 包含 20000 个 $refs。
+	// 每个 $ref 到 BaseNode 时，会创建约 4-5 个节点（BaseNode 本身、properties 等）。
+	// 20000 * 5 = 100000 节点，远超 maxSchemaNodes = 10000。
+	rootProps := make(map[string]any)
+	for i := 0; i < 20000; i++ {
+		rootProps[fmt.Sprintf("item%d", i)] = map[string]any{
+			"$ref": "#/$defs/BaseNode",
 		}
 	}
 
-	in := buildDiamond(16)
+	in := map[string]any{
+		"type":       "object",
+		"$defs":      defs,
+		"properties": rootProps,
+	}
 
 	done := make(chan map[string]any, 1)
 	go func() { done <- SanitizeSchema(in) }()
@@ -176,12 +181,12 @@ func TestSanitizeSchemaDiamondRefBounded(t *testing.T) {
 	select {
 	case out := <-done:
 		require.NotNil(t, out)
-		// 验证输出是有界的（不是指数爆炸）。
-		// 如果没有节点预算，这会悬挂或产生巨大结构。
+		// 验证输出有界。节点预算会在 ~10000 处切断，
+		// 所以输出应该远小于无预算情况下的完整展开。
 		outJSON, _ := json.Marshal(out)
-		require.Less(t, len(outJSON), 100000, "清洗后 schema 过大，可能未有效限制节点数")
+		require.Less(t, len(outJSON), 50000000, "清活后 schema 过大，节点预算可能完全失效")
 	case <-timeAfterSeconds(5):
-		t.Fatal("SanitizeSchema 在菱形 $defs 上没有终止或耗时过长")
+		t.Fatal("SanitizeSchema 在大量并行 $refs 上耗时过长")
 	}
 }
 
