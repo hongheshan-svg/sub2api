@@ -104,6 +104,10 @@ func (t *StreamTranslator) Credits() float64 { return t.credits }
 
 // Usage 返回计费用量。cache token 是上游真实值；output token 是估算值 ——
 // Kiro 不提供 input/output token，这是既定计费口径。
+// 假思考剥离出的 thinking 文本也计入 output token：Anthropic 原生的
+// usage.output_tokens 本身包含 thinking token，本网关对外呈现 Anthropic 兼容
+// 接口，口径要与之一致；而且 thinking 内容确实作为 thinking block 发给了客户端，
+// 并非未展示给用户的隐藏消耗。
 // InputTokens 由调用方用 EstimateRequestInput 填充。
 func (t *StreamTranslator) Usage() apicompat.AnthropicUsage {
 	return apicompat.AnthropicUsage{
@@ -114,7 +118,13 @@ func (t *StreamTranslator) Usage() apicompat.AnthropicUsage {
 }
 
 // Feed 消费一段上游字节，返回应当下发给客户端的 Anthropic 事件。
+// Finalize 之后再调用 Feed 是非法用法，直接返回 (nil, nil)——
+// 否则会在已经发出的 message_stop 之后又吐出 content_block 事件，破坏协议顺序。
 func (t *StreamTranslator) Feed(chunk []byte) ([]apicompat.AnthropicStreamEvent, error) {
+	if t.finalized {
+		return nil, nil
+	}
+
 	frames, err := t.dec.Feed(chunk)
 	if err != nil {
 		return nil, err
@@ -249,6 +259,7 @@ func (t *StreamTranslator) emitThinking(s string) []apicompat.AnthropicStreamEve
 		return nil
 	}
 	t.sawContent = true
+	t.outputText.WriteString(s)
 
 	var out []apicompat.AnthropicStreamEvent
 	if t.openKind != blockThinking {

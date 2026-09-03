@@ -323,6 +323,127 @@ func TestStreamFinalizeIsIdempotent(t *testing.T) {
 	require.Empty(t, tr.Finalize(), "重复 Finalize 不得重复产出事件")
 }
 
+// TestStreamToolInterleaveWithoutStopClosesFirstBeforeSecondOpens 覆盖两个
+// toolUseId 在没有中间 stop:true 的情况下直接切换的场景——curToolID 的判定必须
+// 独立生效，否则第二个工具的分片会污染进第一个还开着的工具块里。
+func TestStreamToolInterleaveWithoutStopClosesFirstBeforeSecondOpens(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+
+	_, err := tr.Feed(eventFrame(t, "toolUseEvent",
+		`{"name":"A","toolUseId":"tu_1","input":"{\"a\":1","stop":false}`))
+	require.NoError(t, err)
+
+	got, err := tr.Feed(eventFrame(t, "toolUseEvent",
+		`{"name":"B","toolUseId":"tu_2","input":"{\"b\":2}","stop":false}`))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"content_block_stop", "content_block_start", "content_block_delta"}, collectTypes(got),
+		"tu_1 的块必须先关闭，再开 tu_2 的块")
+	require.Equal(t, "tool_use", got[1].ContentBlock.Type)
+	require.Equal(t, "tu_2", got[1].ContentBlock.ID)
+	require.Equal(t, *got[0].Index+1, *got[1].Index, "两个工具块的 index 必须递增且不同")
+	require.Equal(t, `{"b":2}`, got[2].Delta.PartialJSON)
+	require.NotContains(t, got[2].Delta.PartialJSON, `{"a":1`, "tu_2 的分片不能混进 tu_1 的内容")
+}
+
+// TestMapStopReasonTable 逐一覆盖 mapStopReason 的每条映射分支，
+// 并验证有工具调用时 toolCount>0 必须压制上游给出的任何 stopReason。
+func TestMapStopReasonTable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		reason string
+		want   string
+		desc   string
+	}{
+		{"", "end_turn", "空字符串落到默认分支"},
+		{"max_tokens", "max_tokens", "max_tokens 原生值"},
+		{"max_output_tokens", "max_tokens", "max_output_tokens 别名"},
+		{"length", "max_tokens", "length 别名"},
+		{"model_context_window_exceeded", "model_context_window_exceeded", "model_context_window_exceeded 原生值"},
+		{"context_window_exceeded", "model_context_window_exceeded", "context_window_exceeded 别名"},
+		{"refusal", "refusal", "refusal 原生值"},
+		{"content_filter", "refusal", "content_filter 别名"},
+		{"content_filtered", "refusal", "content_filtered 别名"},
+		{"guardrail_intervened", "refusal", "guardrail_intervened 别名"},
+		{"stop_sequence", "stop_sequence", "stop_sequence 原生值"},
+		{"pause_turn", "pause_turn", "pause_turn 原生值"},
+		{"some_unrecognized_reason", "end_turn", "未知 reason 落到默认分支"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			require.Equal(t, tt.want, mapStopReason(tt.reason, 0), "reason=%q toolCount=0", tt.reason)
+			require.Equal(t, "tool_use", mapStopReason(tt.reason, 1), "reason=%q toolCount=1 必须被 tool_use 覆盖", tt.reason)
+		})
+	}
+}
+
+// TestStreamFakeThinkingIncludesThinkingInOutputTokens 覆盖假思考剥离出的 thinking
+// 文本也必须计入 output token——Anthropic 原生 usage.output_tokens 本身包含
+// thinking token，本网关对外呈现 Anthropic 兼容接口，口径要与之一致。
+func TestStreamFakeThinkingIncludesThinkingInOutputTokens(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent",
+		`{"content":"<thinking>let me reason</thinking>final answer"}`))
+	require.NoError(t, err)
+	tr.Finalize()
+
+	want := EstimateText("let me reason" + "final answer")
+	require.Equal(t, want, tr.Usage().OutputTokens, "thinking 文本必须和正文一起计入 output token")
+}
+
+// TestStreamFeedReturnsPartialOutputAlongsideException 覆盖同一次 Feed 调用里
+// 先有正文帧、后有异常帧的情况——已经产出的事件必须随错误一起返回，不能被吞掉，
+// 否则客户端明明收到过的内容会在重试判定里凭空消失。
+func TestStreamFeedReturnsPartialOutputAlongsideException(t *testing.T) {
+	t.Parallel()
+
+	textFrame := eventFrame(t, "assistantResponseEvent", `{"content":"partial output"}`)
+	excFrame := buildFrame(t, [][2]string{
+		{":message-type", "exception"},
+		{":exception-type", "ThrottlingException"},
+	}, []byte(`{"message":"slow down"}`))
+	combined := append(append([]byte{}, textFrame...), excFrame...)
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	got, err := tr.Feed(combined)
+	require.Error(t, err)
+	require.NotEmpty(t, got, "已经产出的事件必须随错误一起返回")
+
+	var text string
+	for _, e := range got {
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			text += e.Delta.Text
+		}
+	}
+	require.Equal(t, "partial output", text)
+
+	var upstream *UpstreamError
+	require.ErrorAs(t, err, &upstream)
+	require.Equal(t, "ThrottlingException", upstream.Type)
+}
+
+// TestStreamFeedAfterFinalizeIsNoop 覆盖 Finalize 之后再调用 Feed 的越界用法——
+// 必须直接返回空，不能在已经发出的 message_stop 之后又吐出 content_block 事件。
+func TestStreamFeedAfterFinalizeIsNoop(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"x"}`))
+	require.NoError(t, err)
+	tr.Finalize()
+
+	got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"y"}`))
+	require.NoError(t, err)
+	require.Empty(t, got, "Finalize 之后的 Feed 必须是空操作")
+}
+
 // quoteJSON 把字符串编码为 JSON 字符串字面量（含引号）。
 func quoteJSON(s string) string {
 	b, err := json.Marshal(s)
