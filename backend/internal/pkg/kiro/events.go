@@ -39,7 +39,8 @@ type ToolUse struct {
 // 注意：只有 Kiro-Go 处理了这个事件（proxy/kiro.go:677），kiro2cc-proxy 的事件
 // 枚举中没有它。漏掉会导致 stop_reason 永远退化为 end_turn。
 type Metadata struct {
-	StopReason      string `json:"stopReason"`
+	StopReason string `json:"stopReason"`
+	// StopReasonSnake 兼容蛇形键名的上游变体。
 	StopReasonSnake string `json:"stop_reason"`
 }
 

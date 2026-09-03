@@ -103,6 +103,26 @@ func TestParseEventException(t *testing.T) {
 	require.Equal(t, "Too many requests", ev.Exception.Message)
 }
 
+// TestParseEventExceptionTypeNotOverwrittenByPayload 保护 Exception.Type 的 json:"-" 标签：
+// Type 来自 :exception-type 帧头，绝不能被 payload 里的同名字段覆写。
+func TestParseEventExceptionTypeNotOverwrittenByPayload(t *testing.T) {
+	t.Parallel()
+
+	f := &Frame{
+		Headers: map[string]HeaderValue{
+			":message-type":   {Type: hdrString, Str: "exception"},
+			":exception-type": {Type: hdrString, Str: "ThrottlingException"},
+		},
+		Payload: []byte(`{"type":"AttackerControlledType","message":"slow down"}`),
+	}
+
+	ev, err := ParseEvent(f)
+	require.NoError(t, err)
+	require.Equal(t, "ThrottlingException", ev.Exception.Type,
+		"Type 必须来自帧头，不得被 payload 覆写")
+	require.Equal(t, "slow down", ev.Exception.Message)
+}
+
 func TestParseEventUnknownIsNotAnError(t *testing.T) {
 	t.Parallel()
 
