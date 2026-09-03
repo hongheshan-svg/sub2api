@@ -203,6 +203,15 @@ func Classify(status int, body []byte) Signal {
 // 特征串优先于异常类型本身——AWS event-stream 的 ValidationException 常常
 // 伴随 INVALID_MODEL_ID，若先按类型判成 SignalBadRequest，会掩盖
 // "这其实是网络问题" 这一事实。
+// 已知缺口（整分支复核发现，parked）：不同于 Classify 有 HTTP 402 → SignalOverage
+// 这条明确映射，这里没有 overage 的 Message 特征串或 Type 分支。设计文档只把
+// overage 系在状态码 402 上（getUsageLimits.overageConfiguration 才是权威来源，
+// 见 spec §「402 | overage 未开启或超上限」），没有任何证据表明 overage 会以流内
+// exception 帧的形式出现——Kiro 用 HTTP 200 起流，若 overage 检查发生在流开始
+// 之前，它只会是一次 402 响应，走 Classify 而不会到这里。留空而不是猜一个未经
+// 验证的特征串：猜错比不猜更危险（会把真正匹配的信号错误吸收掉）。若 C 组
+// Task 16/17 接线阶段用真实账号验证到 overage 确实会以流内异常出现，在此补上
+// 对应分支，并把这行注释一并删掉。
 func ClassifyUpstreamError(err *UpstreamError) Signal {
 	if err == nil {
 		return SignalUnknown
