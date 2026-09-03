@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +86,56 @@ func TestCredentialStashExpiredEntryIsNotReturned(t *testing.T) {
 
 	_, ok := stash.TakeOnce(context.Background(), "old")
 	require.False(t, ok, "过期记录不得返回")
+}
+
+// TestCredentialStashTakeOnceIsAtomicUnderConcurrency 证明 TakeOnce 的
+// check-and-claim-and-delete 是真正原子的：管理员的「我已完成授权」按钮
+// 可能因为网络重试在极短时间内被打出两个几乎同时到达的请求，两者都可能
+// 落在同一个进程（同一个 CredentialStash 实例）上。如果读（check）和删
+// （claim）不是同一次持锁操作，两个并发调用可以都在对方执行删除之前读到
+// "还在"，都拿到 found == true 与同一份真实 OAuth credentials——这正是本
+// 轮修复要消灭的竞态。用 -race 跑，既验证「恰好一个调用者拿到值」，也让
+// Go 的 race detector 有机会抓到任何未被单次锁保护的读写。
+func TestCredentialStashTakeOnceIsAtomicUnderConcurrency(t *testing.T) {
+	t.Parallel()
+
+	const goroutines = 50
+
+	ctx := context.Background()
+	stash := NewCredentialStash()
+	defer stash.Stop()
+
+	want := map[string]any{"access_token": "at", "refresh_token": "rt"}
+	stash.Set(ctx, "sid-concurrent", want)
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		foundN   int
+		gotValue map[string]any
+	)
+
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			creds, ok := stash.TakeOnce(ctx, "sid-concurrent")
+			if ok {
+				mu.Lock()
+				foundN++
+				gotValue = creds
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	require.Equal(t, 1, foundN, "并发调用里必须有且仅有一个成功拿到 credentials")
+	require.Equal(t, "at", gotValue["access_token"])
+	require.Equal(t, "rt", gotValue["refresh_token"])
 }
 
 func TestCredentialStashStopIsIdempotent(t *testing.T) {

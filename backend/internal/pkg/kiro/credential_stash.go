@@ -94,53 +94,81 @@ func (s *CredentialStash) Set(ctx context.Context, id string, creds map[string]a
 	s.mu.Unlock()
 }
 
-// TakeOnce 读取并立即销毁暂存的 credentials（一次性）：不管值最终是从
-// localOnly 内存、Redis 还是内存兜底路径解出的，返回前都会把 Redis 与
-// 内存/localOnly 一并清空，保证同一个 id 的第二次调用永远返回 (nil, false)。
+// TakeOnce 原子地读取并销毁暂存的 credentials（check-and-claim-and-delete
+// 是单次原子操作）：同一个 id 上任意数量的并发调用里，保证有且仅有一个能
+// 拿到 (creds, true)，其余全部拿到 (nil, false)。
 //
 // 与 SessionStore.TryConsume 不同——那个方法只返回 bool，这里需要把值和
-// 一次性保证放在同一次调用里，所以没有照搬 TryConsume，而是把读取与删除
-// 写成一个方法。
+// 一次性保证放在同一次调用里，所以没有照搬 TryConsume 的签名；但两条后端
+// 各自的原子性机制与 TryConsume 完全一致：
+//   - localOnly / 无 Redis 的内存路径：check 与 delete 共享同一次 s.mu.Lock，
+//     镜像 session.go 的 tryConsumeMemory，Go 的互斥锁天然保证并发调用互斥。
+//   - Redis 路径：先调 s.remote.TryConsume 做原子 claim（SetNX 一个独立的
+//     used 标记，只有第一个调用者能拿到 ok==true），赢得 claim 之后数据 key
+//     本身还在，再单独 Get 取值、Delete 清理。绝不先 Get 再 Delete——那样两次
+//     并发调用可能都在各自的 Delete 前完成 Get，都读到同一份 credentials。
 func (s *CredentialStash) TakeOnce(ctx context.Context, id string) (map[string]any, bool) {
-	var (
-		creds map[string]any
-		found bool
-	)
-
-	switch {
-	case s.isLocalOnly(id):
-		creds, found = s.getMemory(id)
-	case s.remote != nil:
-		var remoteCreds map[string]any
-		if ok, err := s.remote.Get(ctx, id, &remoteCreds); err == nil && ok {
-			creds, found = remoteCreds, true
-		} else {
-			creds, found = s.getMemory(id)
-		}
-	default:
-		creds, found = s.getMemory(id)
+	if s.isLocalOnly(id) {
+		return s.takeMemory(id)
 	}
 
-	// 无论值从哪条路径解出，都要把两条后端都烧掉——保证第二次调用绝不可能成功。
 	if s.remote != nil {
-		_ = s.remote.Delete(ctx, id)
-	}
-	s.mu.Lock()
-	delete(s.memory, id)
-	delete(s.localOnly, id)
-	s.mu.Unlock()
+		ok, err := s.remote.TryConsume(ctx, id)
+		if err != nil {
+			// Redis 暂时不可达——退回内存兜底路径，与 SessionStore.TryConsume
+			// 遇到 remote 出错时的既有约定一致。
+			return s.takeMemory(id)
+		}
+		if !ok {
+			// Redis 可达，且明确说「已被消费，或这个 id 从未存在」——信任这个
+			// 结果，不再退回内存兜底，避免把一份陈旧的本地副本当成有效凭据
+			// 返回（远端可达时远端才是权威源）。
+			return nil, false
+		}
 
-	return creds, found
+		// 赢得了 claim：TryConsume 只 SetNX 了一个独立的 used 标记，并没有
+		// 删掉数据 key，所以这里数据仍然在，可以安全地把它取出来。
+		var remoteCreds map[string]any
+		found, getErr := s.remote.Get(ctx, id, &remoteCreds)
+		_ = s.remote.Delete(ctx, id)
+
+		// 顺手清理本地可能残留的副本——正常走到这个分支说明 isLocalOnly(id)
+		// 是 false，理论上不该有本地副本，但防御性清理一下不会有坏处。
+		s.mu.Lock()
+		delete(s.memory, id)
+		delete(s.localOnly, id)
+		s.mu.Unlock()
+
+		if getErr != nil || !found {
+			// 赢得了 claim 但数据没了——不寻常的不一致状态，当「不存在」处理，
+			// 不重试、不 panic。
+			return nil, false
+		}
+		return remoteCreds, true
+	}
+
+	return s.takeMemory(id)
 }
 
-func (s *CredentialStash) getMemory(id string) (map[string]any, bool) {
-	s.mu.RLock()
+// takeMemory 是内存/localOnly 路径的原子 check-and-delete：整个检查与删除
+// 过程只持有一次 s.mu.Lock，镜像 session.go 的 tryConsumeMemory。这保证并发
+// 调用互斥——sync.Mutex 天然串行化，只有第一个拿到锁的调用者能看到条目仍然
+// 存在，其余调用者要么看不到条目，要么看到的已经是删除后的状态。
+func (s *CredentialStash) takeMemory(id string) (map[string]any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	entry, ok := s.memory[id]
-	s.mu.RUnlock()
 	if !ok || entry.expired() {
+		delete(s.memory, id)
+		delete(s.localOnly, id)
 		return nil, false
 	}
-	return entry.creds, true
+
+	creds := entry.creds
+	delete(s.memory, id)
+	delete(s.localOnly, id)
+	return creds, true
 }
 
 func (s *CredentialStash) isLocalOnly(id string) bool {

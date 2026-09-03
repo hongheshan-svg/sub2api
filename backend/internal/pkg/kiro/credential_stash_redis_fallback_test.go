@@ -4,6 +4,7 @@ package kiro
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -77,4 +78,56 @@ func TestCredentialStashSuccessfulRedisWriteIsNotLocalOnly(t *testing.T) {
 	defer other.Stop()
 	_, ok = other.TakeOnce(ctx, "sid")
 	require.False(t, ok, "TakeOnce must delete the remote copy so other replicas can't re-consume it")
+}
+
+// TestCredentialStashTakeOnceIsAtomicUnderConcurrencyRedis proves the Redis
+// path claims via remote.TryConsume (an atomic SetNX on a separate "used"
+// marker key) before ever reading the value, so concurrent callers racing
+// against the same Redis-backed entry can't both observe the data before
+// either one claims it. Mirrors
+// TestCredentialStashTakeOnceIsAtomicUnderConcurrency in
+// credential_stash_test.go but exercises the remote branch of TakeOnce.
+func TestCredentialStashTakeOnceIsAtomicUnderConcurrencyRedis(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = client.Close() })
+
+	stash := NewRedisCredentialStash(client)
+	defer stash.Stop()
+
+	ctx := context.Background()
+	want := map[string]any{"access_token": "remote-at", "refresh_token": "remote-rt"}
+	stash.Set(ctx, "sid-concurrent", want)
+	require.False(t, stash.isLocalOnly("sid-concurrent"))
+
+	const goroutines = 30
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		foundN   int
+		gotValue map[string]any
+	)
+
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			creds, ok := stash.TakeOnce(ctx, "sid-concurrent")
+			if ok {
+				mu.Lock()
+				foundN++
+				gotValue = creds
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	require.Equal(t, 1, foundN, "并发调用里必须有且仅有一个成功拿到 credentials")
+	require.Equal(t, "remote-at", gotValue["access_token"])
+	require.Equal(t, "remote-rt", gotValue["refresh_token"])
 }
