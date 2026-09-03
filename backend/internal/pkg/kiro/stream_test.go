@@ -197,6 +197,102 @@ func TestStreamFakeThinkingWithoutTagIsAllText(t *testing.T) {
 	require.Equal(t, "just a plain answer", text)
 }
 
+// TestStreamFakeThinkingOpenTagSplitAcrossFrames 覆盖开标签本身被拆到多个帧的情况——
+// 之前的测试只拆了闭标签和正文，开标签总是整段到达，从未真正走到
+// routeContent 里"缓冲区还只是 <thinking> 前缀，继续等待更多字节"这一分支。
+func TestStreamFakeThinkingOpenTagSplitAcrossFrames(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	var all []apicompat.AnthropicStreamEvent
+	for _, chunk := range []string{"<thi", "nking>let me ", "reason</thinking>", "final answer"} {
+		got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":`+quoteJSON(chunk)+`}`))
+		require.NoError(t, err)
+		all = append(all, got...)
+	}
+	all = append(all, tr.Finalize()...)
+
+	var thinking, text string
+	var sawThinkingBlock, sawTextBlock bool
+	for _, e := range all {
+		if e.Type == "content_block_start" && e.ContentBlock != nil {
+			switch e.ContentBlock.Type {
+			case "thinking":
+				sawThinkingBlock = true
+			case "text":
+				sawTextBlock = true
+			}
+		}
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			thinking += e.Delta.Thinking
+			text += e.Delta.Text
+		}
+	}
+
+	require.True(t, sawThinkingBlock)
+	require.True(t, sawTextBlock)
+	require.Equal(t, "let me reason", thinking)
+	require.Equal(t, "final answer", text)
+	require.NotContains(t, thinking, "<thinking>")
+	require.NotContains(t, thinking, "</thinking>")
+	require.NotContains(t, text, "<thinking>")
+	require.NotContains(t, text, "</thinking>")
+}
+
+// TestStreamFakeThinkingLookAlikeTagIsAllText 覆盖"像标签但不是标签"的情况——
+// 开头是 "<think" 但后面接的不是 "ing>"，必须整段落回正文，不能被误判为思考标签。
+func TestStreamFakeThinkingLookAlikeTagIsAllText(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"<think about it>"}`))
+	require.NoError(t, err)
+	final := tr.Finalize()
+
+	var thinking, text string
+	var sawThinkingBlock bool
+	for _, e := range append(got, final...) {
+		if e.Type == "content_block_start" && e.ContentBlock != nil && e.ContentBlock.Type == "thinking" {
+			sawThinkingBlock = true
+		}
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			thinking += e.Delta.Thinking
+			text += e.Delta.Text
+		}
+	}
+
+	require.False(t, sawThinkingBlock, "\"<think about it>\" 不是思考标签，不应开出 thinking block")
+	require.Empty(t, thinking)
+	require.Equal(t, "<think about it>", text)
+}
+
+// TestStreamFakeThinkingShortPrefixFlushedOnFinalize 覆盖流在标签判定完成前就结束的情况——
+// 内容比 "<thinking>" 本身还短，门控缓冲必须在 Finalize 时冲刷成正文，不能被吞掉。
+func TestStreamFakeThinkingShortPrefixFlushedOnFinalize(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"<th"}`))
+	require.NoError(t, err)
+	// message_start 由 ensureStarted 无条件先发；标签判定未完成前不应有任何内容块事件。
+	require.Equal(t, []string{"message_start"}, collectTypes(got))
+
+	final := tr.Finalize()
+
+	var text string
+	for _, e := range final {
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			text += e.Delta.Text
+			require.Empty(t, e.Delta.Thinking)
+		}
+	}
+	require.Equal(t, "<th", text, "门控缓冲里的内容必须在 Finalize 时冲刷为正文")
+	require.True(t, tr.SawContent(), "冲刷出的内容也算已吐出内容")
+}
+
 func TestStreamExceptionFrameReturnsError(t *testing.T) {
 	t.Parallel()
 
