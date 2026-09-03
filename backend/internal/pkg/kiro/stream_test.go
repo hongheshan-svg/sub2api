@@ -140,6 +140,45 @@ func TestStreamMeteringFillsUsageAndCredits(t *testing.T) {
 	require.InDelta(t, 2.5, tr.Credits(), 1e-9)
 }
 
+// TestStreamSetInputTokensReachesMessageDeltaUsage 覆盖 I4——SetInputTokens
+// 写入的值必须能在 message_delta 事件的 usage.input_tokens 里读到，也必须能
+// 从 Usage() 里读到。修复前没有任何写入入口，input_tokens 恒为 0。
+func TestStreamSetInputTokensReachesMessageDeltaUsage(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"hello"}`))
+	require.NoError(t, err)
+
+	tr.SetInputTokens(123)
+
+	final := tr.Finalize()
+	var deltaUsage *apicompat.AnthropicUsage
+	for _, e := range final {
+		if e.Type == "message_delta" {
+			deltaUsage = e.Usage
+		}
+	}
+	require.NotNil(t, deltaUsage, "message_delta 必须带 usage")
+	require.Equal(t, 123, deltaUsage.InputTokens,
+		"SetInputTokens 写入的值必须出现在 message_delta 的 usage.input_tokens 里")
+	require.Equal(t, 123, tr.Usage().InputTokens)
+}
+
+// TestStreamWithoutSetInputTokensDefaultsToZero 验证不调用 SetInputTokens 时
+// input_tokens 保持默认 0，而不是 panic 或产生别的意外值——覆盖"调用方忘了调用"
+// 这个边界。
+func TestStreamWithoutSetInputTokensDefaultsToZero(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"hello"}`))
+	require.NoError(t, err)
+	tr.Finalize()
+
+	require.Zero(t, tr.Usage().InputTokens)
+}
+
 func TestStreamFakeThinkingStripsBlock(t *testing.T) {
 	t.Parallel()
 

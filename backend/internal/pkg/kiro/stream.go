@@ -71,12 +71,13 @@ type StreamTranslator struct {
 	curToolID string
 	toolCount int
 
-	outputText strings.Builder
-	stopReason string
-	credits    float64
-	cacheRead  int
-	cacheWrite int
-	sawContent bool
+	outputText  strings.Builder
+	stopReason  string
+	credits     float64
+	cacheRead   int
+	cacheWrite  int
+	inputTokens int
+	sawContent  bool
 }
 
 // NewStreamTranslator 创建翻译器。messageID 由调用方生成，便于与请求日志关联。
@@ -102,6 +103,12 @@ func (t *StreamTranslator) SawContent() bool { return t.sawContent }
 // Credits 返回本次请求消耗的 Kiro credits（来自 meteringEvent）。
 func (t *StreamTranslator) Credits() float64 { return t.credits }
 
+// SetInputTokens 填充本次请求的 input token 估算值（调用方通常用
+// EstimateRequestInput 算出）。必须在 Finalize 之前调用，否则
+// message_delta 里的 usage.input_tokens 会保持默认的 0——Kiro 本身不提供
+// input token，这一项完全依赖调用方主动写入。
+func (t *StreamTranslator) SetInputTokens(n int) { t.inputTokens = n }
+
 // Usage 返回计费用量。cache token 是上游真实值；output token 是估算值 ——
 // Kiro 不提供 input/output token，这是既定计费口径。
 // output token 统计的是正文文本、假思考剥离出的 thinking 文本、以及工具调用的
@@ -109,9 +116,12 @@ func (t *StreamTranslator) Credits() float64 { return t.credits }
 // thinking token 和 tool_use.input，本网关对外呈现 Anthropic 兼容接口，口径要
 // 与之一致；而且这三者都确实作为对应的 content block 发给了客户端，并非未展示
 // 给用户的隐藏消耗。
-// InputTokens 由调用方用 EstimateRequestInput 填充。
+// InputTokens 由调用方通过 SetInputTokens 填充（通常用 EstimateRequestInput
+// 算出），不在这里估算——StreamTranslator 只看到上游流式响应，看不到原始
+// 请求内容，没有能力自行估算 input token。
 func (t *StreamTranslator) Usage() apicompat.AnthropicUsage {
 	return apicompat.AnthropicUsage{
+		InputTokens:              t.inputTokens,
 		OutputTokens:             EstimateText(t.outputText.String()),
 		CacheReadInputTokens:     t.cacheRead,
 		CacheCreationInputTokens: t.cacheWrite,
