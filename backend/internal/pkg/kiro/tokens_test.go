@@ -198,3 +198,76 @@ func TestEstimateRequestInputToolResultImageDoesNotScale(t *testing.T) {
 	require.Equal(t, EstimateRequestInput(small), EstimateRequestInput(large),
 		"tool_result 里的图片同样不能按 base64 字节数计费")
 }
+
+// TestEstimateBlockTokensThinkingIncludesSignature 覆盖整分支复核 Finding：
+// 多轮对话里客户端回传的 thinking 块同时带 thinking 正文和 signature 字段，
+// 只算正文会系统性少算——signature 必须计入。
+func TestEstimateBlockTokensThinkingIncludesSignature(t *testing.T) {
+	t.Parallel()
+
+	withoutSignature := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "assistant", Content: rawJSON(t, `[{"type":"thinking","thinking":"let me think about this"}]`)},
+		},
+	}
+	withSignature := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "assistant", Content: rawJSON(t, `[{"type":"thinking","thinking":"let me think about this","signature":"`+strings.Repeat("s", 200)+`"}]`)},
+		},
+	}
+
+	require.Greater(t, EstimateRequestInput(withSignature), EstimateRequestInput(withoutSignature),
+		"signature 字段必须计入 thinking 块的估算")
+}
+
+// TestEstimateBlockTokensUnmodeledTypesFallBackToRawJSON 覆盖整分支复核
+// Finding：redacted_thinking 的实际载荷在 apicompat.AnthropicContentBlock
+// 未建模的 "data" 字段，document/web_search_tool_result 等新块类型同样未
+// 建模。这些类型解析进结构体后关心的字段是零值，若直接按 Text 字段估算会
+// 得到 0；必须退回该块自身的原始 JSON 字符串估算。
+func TestEstimateBlockTokensUnmodeledTypesFallBackToRawJSON(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"redacted_thinking", `[{"type":"redacted_thinking","data":"` + strings.Repeat("r", 200) + `"}]`},
+		{"document", `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"x"},"title":"` + strings.Repeat("d", 200) + `"}]`},
+		{"unknown future type", `[{"type":"server_tool_use","name":"web_search","input":{"query":"` + strings.Repeat("q", 200) + `"}}]`},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			req := &apicompat.AnthropicRequest{
+				Messages: []apicompat.AnthropicMessage{
+					{Role: "assistant", Content: rawJSON(t, c.raw)},
+				},
+			}
+			require.NotZero(t, EstimateRequestInput(req), "未建模类型不应估算为 0")
+		})
+	}
+}
+
+// TestEstimateBlockTokensImageStillFixedAmongUnmodeledFallback 是
+// TestEstimateRequestInputImageCountsFixedConstant 的兄弟测试：确认给
+// default 分支加原始 JSON 回退，不会让 image 块也退回到按 base64 字节数
+// 估算——image 分支必须仍在 switch 里显式排在 default 之前拦截。
+func TestEstimateBlockTokensImageStillFixedAmongUnmodeledFallback(t *testing.T) {
+	t.Parallel()
+
+	small := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("A", 100)+`"}}]`)},
+		},
+	}
+	large := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("A", 2_000_000)+`"}}]`)},
+		},
+	}
+
+	require.Equal(t, EstimateRequestInput(small), EstimateRequestInput(large))
+	require.Equal(t, imageTokenEstimate, EstimateRequestInput(small))
+}

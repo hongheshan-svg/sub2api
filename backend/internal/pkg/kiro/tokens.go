@@ -99,10 +99,6 @@ func EstimateRequestInput(req *apicompat.AnthropicRequest) int {
 // estimateContentTokens 估算一段消息 content（string 或 content block 数组）
 // 的 input token。
 //
-// image 块只按 imageTokenEstimate 计入固定近似值，绝不把 source.data 的
-// base64 字节内容纳入估算——那部分体积和 token 数无关，纳入会让估算随图片
-// 字节数线性失真（见 imageTokenEstimate 的文档）。
-//
 // 解析失败时退回整段原始 JSON 字符串估算：这样不会因某条消息/某个块解析
 // 失败就让整体估算归零，牺牲一点精确度换稳健性——EstimateText 本身也只是
 // ±10-20% 的近似，不追求精确计费。
@@ -116,34 +112,58 @@ func estimateContentTokens(raw json.RawMessage) int {
 		return EstimateText(asString)
 	}
 
-	var blocks []apicompat.AnthropicContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
+	// 逐块保留原始 JSON：apicompat.AnthropicContentBlock 只建模了
+	// text/thinking/image/tool_use/tool_result 这几种类型的字段，
+	// document、web_search_tool_result、server_tool_use、mcp_tool_use 等
+	// 类型解析进结构体后关心的字段全是零值——若在丢弃原始 JSON 之后才按
+	// 类型分派，这些块会被系统性少算成 0（真实历史消息里从未出现的样子）。
+	// 保留每个块自己的 raw，让默认分支能退回该块自身估算，而不是整个
+	// content 数组的估算全部归零。
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(raw, &rawBlocks); err != nil {
 		// 既不是字符串也不是合法的 block 数组：退回原始字符串估算。
 		return EstimateText(string(raw))
 	}
 
 	total := 0
-	for _, b := range blocks {
-		switch b.Type {
-		case "image":
-			// 只计固定近似值，绝不触碰 b.Source.Data。
-			total += imageTokenEstimate
-		case "tool_use":
-			total += EstimateText(b.Name)
-			total += EstimateText(string(b.Input))
-		case "tool_result":
-			total += EstimateText(b.ToolUseID)
-			// tool_result.Content 同样可能是 string 或 block 数组，且
-			// 数组里同样可能夹带 image 块（工具把图片结果传回模型），
-			// 必须递归走同一条估算路径，不能直接字符串化。
-			total += estimateContentTokens(b.Content)
-		case "thinking", "redacted_thinking":
-			total += EstimateText(b.Thinking)
-		default:
-			// text 及其余未识别类型统一按 Text 字段估算；未知类型没有
-			// Text 字段时估算为 0，属于可接受的近似误差。
-			total += EstimateText(b.Text)
-		}
+	for _, rb := range rawBlocks {
+		total += estimateBlockTokens(rb)
 	}
 	return total
+}
+
+// estimateBlockTokens 估算单个 content block 的 input token。
+func estimateBlockTokens(raw json.RawMessage) int {
+	var b apicompat.AnthropicContentBlock
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return EstimateText(string(raw))
+	}
+
+	switch b.Type {
+	case "image":
+		// 只计固定近似值，绝不触碰 b.Source.Data（见 imageTokenEstimate 文档）。
+		return imageTokenEstimate
+	case "tool_use":
+		return EstimateText(b.Name) + EstimateText(string(b.Input))
+	case "tool_result":
+		// tool_result.Content 同样可能是 string 或 block 数组，且数组里
+		// 同样可能夹带 image 块（工具把图片结果传回模型），必须递归走
+		// 同一条估算路径，不能直接字符串化。
+		return EstimateText(b.ToolUseID) + estimateContentTokens(b.Content)
+	case "thinking":
+		// Signature 是多轮对话里客户端连同 Thinking 正文一起回传的加密
+		// 签名字段，二者同属这个块的内容；只算 Thinking 会在带 Signature
+		// 的多轮历史里系统性少算。
+		return EstimateText(b.Thinking) + EstimateText(b.Signature)
+	case "text":
+		return EstimateText(b.Text)
+	default:
+		// redacted_thinking 的实际载荷在 AnthropicContentBlock 未建模的
+		// "data" 字段；document / web_search_tool_result / server_tool_use /
+		// mcp_tool_use 等新块类型同样未建模。这些类型解析进结构体后关心的
+		// 字段是零值，退回该块自身的原始 JSON 估算，好过假装它不存在而记
+		// 成 0——与顶层"整段解析失败退回原始字符串"是同一个稳健性原则，
+		// 只是把粒度收窄到单个块，不再连累同一 content 数组里其它块的估算。
+		return EstimateText(string(raw))
+	}
 }
