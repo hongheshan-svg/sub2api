@@ -48,10 +48,19 @@ func (s *OAuthSession) expired() bool {
 //
 // 必须支持 Redis：IdC 与 social 走自建回调页，多副本部署时浏览器回调
 // 可能落到另一个副本，进程内存里的会话会直接丢失。
+//
+// localOnly 记录每个会话 ID 是否落在了内存兜底路径（Redis 写入失败，
+// 或压根没配置 Redis）。Get/TryConsume 据此决定该 ID 是否要信任 Redis：
+// 一旦某个会话被标记为 localOnly，就永远只走内存，绝不再查 Redis —— 否则
+// Redis 在写入失败后又恢复可达时，会如实返回"不存在"（因为这个会话从未
+// 真正写进去过），把内存里明明有效的会话误判为丢失。非 localOnly 的会话
+// 则继续把 Redis 当唯一权威源，不做内存兜底，避免陈旧本地副本导致
+// TryConsume 重复消费。做法与 pkg/xai 的 SessionStore 一致。
 type SessionStore struct {
-	mu     sync.RWMutex
-	memory map[string]*OAuthSession
-	remote *redissession.Store
+	mu        sync.RWMutex
+	memory    map[string]*OAuthSession
+	localOnly map[string]struct{}
+	remote    *redissession.Store
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -60,8 +69,9 @@ type SessionStore struct {
 // NewSessionStore 创建仅内存的存储（单副本部署可用）。
 func NewSessionStore() *SessionStore {
 	s := &SessionStore{
-		memory: make(map[string]*OAuthSession),
-		stopCh: make(chan struct{}),
+		memory:    make(map[string]*OAuthSession),
+		localOnly: make(map[string]struct{}),
+		stopCh:    make(chan struct{}),
 	}
 	go s.cleanupLoop()
 	return s
@@ -77,7 +87,10 @@ func NewRedisSessionStore(rdb *redis.Client) *SessionStore {
 	return s
 }
 
-// Set 写入会话。Redis 写失败时降级为内存，保证单机仍可完成授权。
+// Set 写入会话。Redis 写失败（或压根没配置 Redis）时降级为内存，并把这个
+// 会话 ID 标记为 localOnly，保证单机/Redis 故障期间仍可完成授权。
+// 内存副本无条件写入（不只是失败时才写），这样 Redis 恢复后 Get/TryConsume
+// 仍能通过 localOnly 标记找到它。
 func (s *SessionStore) Set(ctx context.Context, id string, sess *OAuthSession) {
 	if sess == nil {
 		return
@@ -86,21 +99,30 @@ func (s *SessionStore) Set(ctx context.Context, id string, sess *OAuthSession) {
 		sess.ExpiresAt = time.Now().Add(SessionTTL)
 	}
 
+	var remoteErr error
 	if s.remote != nil {
-		if err := s.remote.Set(ctx, id, sess); err == nil {
-			return
-		} else {
+		if err := s.remote.Set(ctx, id, sess); err != nil {
+			remoteErr = err
 			slog.Warn("kiro oauth session redis write failed; falling back to memory", "error", err)
 		}
 	}
 
 	s.mu.Lock()
 	s.memory[id] = sess
+	if s.remote == nil || remoteErr != nil {
+		s.localOnly[id] = struct{}{}
+	} else {
+		delete(s.localOnly, id)
+	}
 	s.mu.Unlock()
 }
 
 // Get 读取会话，过期的视为不存在。
 func (s *SessionStore) Get(ctx context.Context, id string) (*OAuthSession, bool) {
+	if s.isLocalOnly(id) {
+		return s.getMemory(id)
+	}
+
 	if s.remote != nil {
 		var sess OAuthSession
 		if found, err := s.remote.Get(ctx, id, &sess); err == nil && found {
@@ -111,6 +133,10 @@ func (s *SessionStore) Get(ctx context.Context, id string) (*OAuthSession, bool)
 		}
 	}
 
+	return s.getMemory(id)
+}
+
+func (s *SessionStore) getMemory(id string) (*OAuthSession, bool) {
 	s.mu.RLock()
 	sess, ok := s.memory[id]
 	s.mu.RUnlock()
@@ -127,18 +153,38 @@ func (s *SessionStore) Delete(ctx context.Context, id string) {
 	}
 	s.mu.Lock()
 	delete(s.memory, id)
+	delete(s.localOnly, id)
 	s.mu.Unlock()
 }
 
 // TryConsume 原子地把会话标记为已使用，返回是否是首次消费。
 // 用于保证一个授权码只能兑换一次，防止回调 URL 被重放。
+//
+// localOnly 会话直接走内存消费，绝不查 Redis —— 否则 Redis 在这个会话
+// 写入失败后又恢复可达时，会如实返回"不存在"（因为这个会话从未真正写
+// 进去过），把回调误判为无效/重放。
 func (s *SessionStore) TryConsume(ctx context.Context, id string) bool {
+	if s.isLocalOnly(id) {
+		return s.tryConsumeMemory(id)
+	}
+
 	if s.remote != nil {
 		if ok, err := s.remote.TryConsume(ctx, id); err == nil {
 			return ok
 		}
 	}
 
+	return s.tryConsumeMemory(id)
+}
+
+func (s *SessionStore) isLocalOnly(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.localOnly[id]
+	return ok
+}
+
+func (s *SessionStore) tryConsumeMemory(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.memory[id]
@@ -167,6 +213,7 @@ func (s *SessionStore) cleanupLoop() {
 			for id, sess := range s.memory {
 				if sess.expired() {
 					delete(s.memory, id)
+					delete(s.localOnly, id)
 				}
 			}
 			s.mu.Unlock()
