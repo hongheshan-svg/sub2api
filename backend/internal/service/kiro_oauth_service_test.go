@@ -11,23 +11,19 @@ import (
 	"reflect"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/stretchr/testify/require"
 )
 
-// kiroSessionStoreLocalOnlyLen 通过反射读取 kiro.SessionStore 未导出的
-// localOnly map 长度。TryConsume 只清理 localOnly 会话的 memory 表项，
-// 不清理 localOnly 标记本身（见 Task 11 已知的遗留细节）；这个 helper
-// 让我们能从 service 包外部真正观察到那条标记是否还挂在那里，
-// 而不是只看 Get() 返回值——Get() 在 TryConsume 之后本来就会返回
-// false，无法区分「TryConsume 自己够用了」和「Delete 真的被调用了」。
+// kiroSessionStoreLocalOnlyLen 通过只读反射读取 kiro.SessionStore 未导出的
+// localOnly map 长度，用来证明 ExchangeCode 自己调用了 Delete（见下面
+// TestKiroExchangeCodeConsumedSessionLeavesNoLocalOnlyResidue 的收窄说明）。
+// 只调用 Len()，不调用 Interface()，所以不需要 unsafe.Pointer/reflect.NewAt
+// 去绕过未导出字段的只读限制——普通的 reflect.Value.Len() 本来就能读。
 func kiroSessionStoreLocalOnlyLen(t *testing.T, store *kiro.SessionStore) int {
 	t.Helper()
-	rv := reflect.ValueOf(store).Elem().FieldByName("localOnly")
-	rv = reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem() //nolint:gosec // 测试专用反射读取，读取未导出字段验证内部清理行为
-	return rv.Len()
+	return reflect.ValueOf(store).Elem().FieldByName("localOnly").Len()
 }
 
 // newTestKiroOAuthService 返回一个把两个 base URL 都指向 srv 的服务实例。
@@ -289,16 +285,17 @@ func TestKiroBuildAccountCredentialsOmitsEmptyClientCreds(t *testing.T) {
 // TestKiroExchangeCodeConsumedSessionLeavesNoLocalOnlyResidue 是
 // localOnly 泄漏回归（非 brief 要求，本任务分派额外要求）。
 //
-// kiro.SessionStore.Set() 无条件把每个会话写进内存并按需标记 localOnly；
-// TryConsume() 消费 localOnly 会话时只删 memory 表项，不清 localOnly
-// 标记本身——这是 Task 11 已知且刻意搁置的细节。ExchangeCode 必须在
-// TryConsume 成功后调用 Delete 把 memory/localOnly 一并收干净，否则
-// Redis 降级期间每完成一次 IdC 授权就会永久泄漏一条 localOnly 记录。
+// SessionStore 自己的契约——「TryConsume 不清 localOnly 标记，只有
+// Delete 才清」——现在由 pkg/kiro 包内的
+// TestSessionStoreTryConsumeLeavesLocalOnlyUntilDelete 白盒覆盖（同包、
+// 直接访问未导出字段，零反射）。这个测试的职责收窄为只证明一件事：
+// ExchangeCode 自己确实调用了 Delete（localOnly 计数从 1 变成 0），
+// 不重新证明 SessionStore 那条通用契约——那已经是 pkg/kiro 的活了。
 //
-// 仅凭 sessionStore.Get() 观察不到这个区别：TryConsume 单独调用后
-// Get() 就已经返回 false 了（因为 memory 表项被删了），无法证明
-// Delete() 真的被调用过。所以这里通过反射直接读取 localOnly map 的
-// 长度——这是这个包里唯一能证明「不是 TryConsume 顺带够用了」的办法。
+// 仅凭 sessionStore.Get() 观察不到 Delete 是否被调用：TryConsume 单独
+// 调用后 Get() 就已经返回 false 了（因为 memory 表项被删了），无法
+// 区分「TryConsume 自己顺带够用了」和「Delete 真的被调用了」。所以
+// 仍然需要 kiroSessionStoreLocalOnlyLen 这个跨包只读反射 helper。
 func TestKiroExchangeCodeConsumedSessionLeavesNoLocalOnlyResidue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))

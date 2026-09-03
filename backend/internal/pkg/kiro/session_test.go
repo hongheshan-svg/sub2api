@@ -106,6 +106,35 @@ func TestSessionStoreTryConsumeUnknownSession(t *testing.T) {
 	require.False(t, store.TryConsume(context.Background(), "never-existed"))
 }
 
+// TestSessionStoreTryConsumeLeavesLocalOnlyUntilDelete documents
+// SessionStore's own contract: TryConsume alone does NOT clear the
+// localOnly marker; only Delete does. This is a known, previously-ledgered
+// gap — tryConsumeMemory only removes the memory entry, not the localOnly
+// bookkeeping (see the comment above SessionStore and tryConsumeMemory in
+// session.go). Callers that need both cleared (e.g. KiroOAuthService.
+// ExchangeCode) must call Delete after a successful TryConsume.
+func TestSessionStoreTryConsumeLeavesLocalOnlyUntilDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewSessionStore()
+	defer store.Stop()
+
+	// NewSessionStore has no Redis backing, so per Set's own doc comment
+	// every session it stores is unconditionally marked localOnly.
+	store.Set(ctx, "sid", &OAuthSession{
+		Method:    AuthIdC,
+		ExpiresAt: time.Now().Add(SessionTTL),
+	})
+	require.True(t, store.isLocalOnly("sid"), "Set on a Redis-less store must mark the session localOnly")
+
+	require.True(t, store.TryConsume(ctx, "sid"), "first consume should succeed")
+	require.True(t, store.isLocalOnly("sid"), "TryConsume alone must not clear the localOnly marker")
+
+	store.Delete(ctx, "sid")
+	require.False(t, store.isLocalOnly("sid"), "Delete must clear the localOnly marker")
+}
+
 func TestSessionStoreDeviceFields(t *testing.T) {
 	t.Parallel()
 
