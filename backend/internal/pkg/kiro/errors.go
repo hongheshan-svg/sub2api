@@ -15,7 +15,9 @@ const (
 	SignalOK Signal = iota
 	// SignalAuthExpired 表示 token 失效，应刷新后重试一次。
 	SignalAuthExpired
-	// SignalOverage 表示 overage 未开启或已超上限。
+	// SignalOverage 表示 overage 未开启或已超上限。这是当前账号订阅设置的问题，
+	// 不是请求本身的问题——账号池里开了 overage 或还没到上限的其它账号可以
+	// 正常服务同一个请求，因此应当换账号（Failoverable）。
 	SignalOverage
 	// SignalRateLimited 表示该端点额度耗尽，应先换端点。
 	SignalRateLimited
@@ -25,7 +27,11 @@ const (
 	// SignalBadRequest 表示我们自己构造的请求不合法。
 	// 不可重试、不可换账号 —— 换了一样失败。
 	SignalBadRequest
-	// SignalSuspended 表示订阅被停用或 profile 不可用，应禁用账号。
+	// SignalSuspended 表示订阅被停用或 profile 不可用，应禁用账号。禁用账号
+	// 和"当前这次请求要不要换账号重试"是两件独立的事——禁用账号防止之后的
+	// 请求继续路由到它，但账号池里没被停用的其它账号完全可以正常处理同一个
+	// 请求，因此应当换账号（Failoverable），不能因为要禁用当前账号就连带
+	// 让当前请求整体失败。
 	SignalSuspended
 	// SignalCreditsExhausted 表示账号额度耗尽，应冷却并换账号。
 	SignalCreditsExhausted
@@ -69,11 +75,21 @@ func (s Signal) Retryable() bool {
 
 // Failoverable 表示是否应该换一个账号重试。
 //
+// 判断标准是"问题出在当前账号，还是出在请求/网络本身"：
+//   - 出在当前账号（额度耗尽、订阅停用、overage 未开、鉴权失效）—— 池子里
+//     其它账号大概率没有这个问题，换账号有机会成功，恒为 true。
+//   - 出在请求或网络本身（格式错误、区域/网络问题）—— 换哪个账号结果都
+//     一样，换账号只会把整池配额烧光，恒为 false。
+//
 // SignalBadRequest 恒为 false：请求本身不合法，换账号只会把整池配额烧光。
 // SignalNetworkRegion 恒为 false：网络问题与账号无关，换账号无济于事。
+// SignalSuspended / SignalOverage 恒为 true：这两者都是当前账号的订阅/配置
+// 问题，池子里其它账号完全可能没有同样的问题；是否禁用当前账号是另一套
+// 独立机制，不能因为要禁用账号就连带让当前请求也失败。
 func (s Signal) Failoverable() bool {
 	switch s {
-	case SignalRateLimited, SignalCreditsExhausted, SignalAuthExpired, SignalUnknown:
+	case SignalRateLimited, SignalCreditsExhausted, SignalAuthExpired, SignalUnknown,
+		SignalSuspended, SignalOverage:
 		return true
 	default:
 		return false

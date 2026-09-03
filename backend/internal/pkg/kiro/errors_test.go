@@ -51,7 +51,8 @@ func TestClassifyAuthAndOverageAndRateLimit(t *testing.T) {
 	require.True(t, SignalRateLimited.Retryable(), "先换端点，端点耗尽再交给限流冷却")
 	require.True(t, SignalRateLimited.Failoverable())
 	require.False(t, SignalOverage.Retryable())
-	require.False(t, SignalOverage.Failoverable(), "overage 需要用户自己开启，换账号解决不了")
+	require.True(t, SignalOverage.Failoverable(),
+		"overage 是当前账号的订阅设置问题，池子里开了 overage 的其它账号能正常服务同一请求")
 }
 
 func TestClassifySuspensionAndCreditsExhausted(t *testing.T) {
@@ -63,7 +64,9 @@ func TestClassifySuspensionAndCreditsExhausted(t *testing.T) {
 		Classify(429, []byte(`{"message":"Monthly request limit reached, credits exhausted"}`)))
 
 	require.False(t, SignalSuspended.Retryable())
-	require.False(t, SignalSuspended.Failoverable(), "账号被停用，换端点无意义；由上层禁用账号")
+	require.True(t, SignalSuspended.Failoverable(),
+		"账号被停用是当前账号的问题，池子里其它未停用的账号能正常服务同一请求；"+
+			"是否禁用当前账号是另一套独立机制，不应连带让当前请求失败")
 	require.True(t, SignalCreditsExhausted.Failoverable(), "额度耗尽应换账号")
 }
 
