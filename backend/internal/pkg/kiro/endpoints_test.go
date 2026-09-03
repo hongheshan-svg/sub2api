@@ -37,6 +37,8 @@ func TestEndpointsForAPIKeyUsesCLIRuntimeOnly(t *testing.T) {
 	require.Equal(t, "Kiro CLI", eps[0].Name)
 	require.Equal(t, "KIRO_CLI", eps[0].Origin)
 	require.Contains(t, eps[0].URL, "runtime.us-east-1.kiro.dev")
+	require.Equal(t, "AmazonCodeWhispererStreamingService.GenerateAssistantResponse", eps[0].AmzTarget,
+		"API Key 端点必须带这个 x-amz-target，否则上游拒绝请求")
 }
 
 func TestEndpointsForRegionalization(t *testing.T) {
@@ -44,6 +46,9 @@ func TestEndpointsForRegionalization(t *testing.T) {
 
 	eps := EndpointsFor(false, "eu-central-1")
 	require.Contains(t, eps[0].URL, "q.eu-central-1.amazonaws.com")
+	require.Contains(t, eps[1].URL, "codewhisperer.eu-central-1.amazonaws.com",
+		"CodeWhisperer 端点必须用传入的 region，而不是硬编码某个默认值")
+	require.Contains(t, eps[2].URL, "q.eu-central-1.amazonaws.com")
 
 	// 空 region 退回默认。
 	eps = EndpointsFor(false, "")

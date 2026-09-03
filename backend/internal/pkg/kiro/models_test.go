@@ -44,6 +44,15 @@ func TestMapModelIsCaseInsensitive(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4.6", MapModel("Claude-Sonnet-4-6"))
 }
 
+// TestMapModelOpusAliasesMapToDefaultSonnet 锁定 opus 别名的映射目标：
+// Kiro 没有 opus 型号，claude-opus-4-5 / claude-opus-4-6 都退到 claude-sonnet-4.6。
+func TestMapModelOpusAliasesMapToDefaultSonnet(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "claude-sonnet-4.6", MapModel("claude-opus-4-5"))
+	require.Equal(t, "claude-sonnet-4.6", MapModel("claude-opus-4-6"))
+}
+
 func TestDefaultModelsNonEmptyAndContainsDefault(t *testing.T) {
 	t.Parallel()
 
