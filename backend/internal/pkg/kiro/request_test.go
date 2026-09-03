@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -180,18 +181,55 @@ func TestBuildRequestStripsToolContentWhenNoTools(t *testing.T) {
 	out, err := BuildRequest(req, baseOpts())
 	require.NoError(t, err)
 
+	// 3 条消息规整后 current 是最后一条，history 保留前两条 —— 先断言结构本身
+	// 存在，否则若整段 history 或 assistant 条目消失，下面的空值检查也会误判通过。
+	require.Len(t, out.ConversationState.History, 2)
+
+	var assistantEntry *AssistantResponseMessage
 	for _, h := range out.ConversationState.History {
 		if h.AssistantResponseMessage != nil {
-			require.Empty(t, h.AssistantResponseMessage.ToolUses)
-		}
-		if h.UserInputMessage != nil && h.UserInputMessage.UserInputMessageContext != nil {
-			require.Empty(t, h.UserInputMessage.UserInputMessageContext.ToolResults)
+			assistantEntry = h.AssistantResponseMessage
 		}
 	}
+	require.NotNil(t, assistantEntry, "history 中必须存在 assistant 条目")
+	require.Empty(t, assistantEntry.ToolUses)
+
 	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
 	if ctx != nil {
 		require.Empty(t, ctx.ToolResults)
 	}
+}
+
+// TestBuildRequestMalformedToolSchemaDegradesGracefully 覆盖：InputSchema 是
+// 非法 JSON 时，processTools 里被忽略的 json.Unmarshal 错误必须安全退化成
+// SanitizeSchema(nil) 的 {}，而不是让整个请求出错，也不能让 payload marshal
+// 成 null（那会让上游 400）。
+func TestBuildRequestMalformedToolSchemaDegradesGracefully(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"go"`)},
+		},
+		Tools: []apicompat.AnthropicTool{{
+			Name:        "Broken",
+			InputSchema: json.RawMessage("{not json"),
+		}},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	spec := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools[0].ToolSpecification
+	require.NotNil(t, spec.InputSchema.JSON)
+	require.Empty(t, spec.InputSchema.JSON)
+
+	// 整个 payload 必须能正常 marshal；若退化成 nil map，会 marshal 成
+	// "json":null 而不是 "json":{}，上游会因此拒绝请求。
+	data, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"json":null`)
+	require.Contains(t, string(data), `"json":{}`)
 }
 
 func TestBuildRequestToolResultsMappedWithStatus(t *testing.T) {
