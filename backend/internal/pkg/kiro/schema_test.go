@@ -162,6 +162,61 @@ func TestSanitizeSchemaRequiredArrayNotAliased(t *testing.T) {
 	require.Equal(t, "a", inRequired[0], "输入 required 被输出修改污染")
 }
 
+// buildLargeFlatPropertiesSchema 构造一个带 n 个平级属性的 object schema，
+// required 列出全部 n 个属性名。每个属性自身只是一个廉价的标量 schema，
+// 节点数几乎全部来自属性的数量本身——n 远大于 maxSchemaNodes 时，
+// properties 内部循环必然会在预算耗尽后中途 break，产出一个只含部分
+// 属性名的 properties；用于验证 required 是否被同步截断（整分支复核 Finding）。
+func buildLargeFlatPropertiesSchema(n int) map[string]any {
+	props := make(map[string]any, n)
+	required := make([]any, 0, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%d", i)
+		props[name] = map[string]any{"type": "string"}
+		required = append(required, name)
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+		"required":   required,
+	}
+}
+
+// TestSanitizeSchemaRequiredNeverReferencesDroppedProperty 是整分支复核
+// Finding 的回归测试：预算耗尽会让 properties 内部循环中途 break，只保留
+// 已经产出的属性名；修复前 required 的复制发生在同一层循环里但完全绕过
+// 预算检查（case "required" 里的 continue 从不看 ctx.exhausted()），于是
+// required 原样带着全部属性名，其中一部分在 properties 里已经不存在——
+// 产出的 schema 自相矛盾，与本预算机制本要防止的 Kiro400 同构风险。
+//
+// 用大量平级属性（而非嵌套 $ref fanout）构造，让"是否发生截断"不依赖 Go
+// map 遍历顺序的随机性：只要 n 远大于 maxSchemaNodes，属性数量本身就足够
+// 触发预算耗尽，被砍掉的具体是哪些属性名才是随机的。
+func TestSanitizeSchemaRequiredNeverReferencesDroppedProperty(t *testing.T) {
+	t.Parallel()
+
+	const n = 20000
+	in := buildLargeFlatPropertiesSchema(n)
+	out := SanitizeSchema(in)
+
+	props, ok := out["properties"].(map[string]any)
+	require.True(t, ok, "顶层 properties 键本身不应该消失——顶层这次调用先于 properties 耗尽预算")
+	require.Less(t, len(props), n,
+		"本测试要求预算确实触发了截断（属性数 %d 远大于 maxSchemaNodes=%d），否则没测到目标场景", n, maxSchemaNodes)
+
+	required, ok := out["required"].([]any)
+	if !ok {
+		require.Empty(t, props, "properties 非空但 required 完全消失，二者不一致")
+		return
+	}
+	for _, name := range required {
+		nameStr, isStr := name.(string)
+		require.True(t, isStr)
+		require.Contains(t, props, nameStr,
+			"required 引用了输出 properties 里已不存在的属性 %q —— 预算截断产出了结构不一致的 schema", nameStr)
+	}
+}
+
 // countSchemaNodes 统计 schema 中的容器节点数（maps 和 slices），标量不计数。
 // 与 sanitizeCtx.nodes 统计的对象一致：每个 map/array 容器（含退化 stub）都算一个节点。
 func countSchemaNodes(value any) int {

@@ -148,18 +148,13 @@ func sanitizeValue(value any, ctx *sanitizeCtx, depth int) any {
 		out := make(map[string]any, len(v))
 		for key, val := range v {
 			switch key {
-			case "additionalProperties", "$defs", "definitions", "$schema", "$id":
-				continue
-			case "required":
-				arr, ok := val.([]any)
-				if !ok || len(arr) == 0 {
-					continue
-				}
-				// 复制而非别名：out 与入参共享底层数组会让调用方的 schema
-				// 被返回值的原地修改污染，违反"入参不会被修改"的约定。
-				required := make([]any, len(arr))
-				copy(required, arr)
-				out[key] = required
+			case "additionalProperties", "$defs", "definitions", "$schema", "$id", "required":
+				// required 延后到循环结束后处理（见下）：必须先知道
+				// out["properties"] 最终产出了什么，才能过滤掉预算耗尽时
+				// 被丢弃的属性名。map range 顺序是随机的，若像其它 key 一样
+				// 就地处理，"required" 有时会抢在 "properties" 被预算掐断
+				// 之前先落进 out，产出一个引用不存在属性的 required——这正是
+				// 本预算机制要防止的 Kiro400 同类风险（结构不一致的 schema）。
 				continue
 			}
 			// 预算耗尽时停止迭代剩余 key，已经产出的 key 保留在 out 里，
@@ -170,6 +165,11 @@ func sanitizeValue(value any, ctx *sanitizeCtx, depth int) any {
 				break
 			}
 			out[key] = sanitizeValue(val, ctx, depth+1)
+		}
+		if arr, ok := v["required"].([]any); ok && len(arr) > 0 {
+			if required := filterRequired(arr, v, out); len(required) > 0 {
+				out["required"] = required
+			}
 		}
 		return out
 
@@ -194,4 +194,45 @@ func sanitizeValue(value any, ctx *sanitizeCtx, depth int) any {
 	default:
 		return value
 	}
+}
+
+// filterRequired 过滤 required 数组，只保留在输出 properties 里仍然存在的
+// 属性名。预算耗尽可能让 properties 整体或部分被丢弃（见 sanitizeValue
+// map 分支的注释）；不过滤的话 required 会引用输出里已经不存在的属性，
+// 产生结构不一致的 schema，重新引入本预算机制本要防止的 Kiro400 风险。
+//
+// 只有原始 schema 本就带 "properties" 时才过滤——required 与 properties
+// 语义独立，没有本地 properties（例如只靠 patternProperties 约束）的
+// schema 不受影响，required 原样保留。
+//
+// 复制而非别名：返回值不能与入参共享底层数组，与本文件其它地方"入参不会
+// 被修改"的约定一致。
+func filterRequired(arr []any, original, out map[string]any) []any {
+	required := make([]any, len(arr))
+	copy(required, arr)
+
+	if _, hadProperties := original["properties"]; !hadProperties {
+		return required
+	}
+
+	// out["properties"] 可能整体被预算掐断（不存在或非 map，读到 nil），
+	// 也可能只是部分属性被掐断（存在但缺了几个 key）——props 是 nil 时，
+	// 对它做 map 查找是安全的零值读取，required 里的每个名字都查不到，
+	// 结果是 filtered 为空，required 整个被丢弃，与"properties 都没了，
+	// required 自然也不该留下"的直觉一致，不需要单独分支处理。
+	props, _ := out["properties"].(map[string]any)
+	filtered := make([]any, 0, len(required))
+	for _, name := range required {
+		nameStr, isStr := name.(string)
+		if !isStr {
+			// 非字符串的 required 元素本身就不合规范，原样透传，
+			// 保持与旧行为一致的宽松度，不在这里额外收紧。
+			filtered = append(filtered, name)
+			continue
+		}
+		if _, exists := props[nameStr]; exists {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
 }
