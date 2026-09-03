@@ -61,6 +61,9 @@ func RegisterAdminRoutes(
 		// Grok OAuth
 		registerGrokOAuthRoutes(admin, h)
 
+		// Kiro OAuth
+		registerKiroOAuthRoutes(v1, admin, h)
+
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
 		registerCNProviderRoutes(admin, h)
 
@@ -489,6 +492,37 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		grok.GET("/accounts/:id/quota", h.Admin.GrokOAuth.QueryQuota)
 		grok.POST("/accounts/:id/reset-quota", h.Admin.GrokOAuth.ResetQuota)
 		grok.GET("/runtime-sanity", h.Admin.GrokOAuth.RuntimeSanity)
+	}
+}
+
+// registerKiroOAuthRoutes 注册 Kiro（Amazon Q Developer / CodeWhisperer）OAuth 授权路由。
+//
+// /callback 是浏览器从 AWS SSO 门户直接跳转回来的地址（IdC 授权码流程用整页
+// 跳转，不是 JS fetch），拿不到管理员的 Authorization / x-api-key 头——普通
+// 页面导航发不出自定义 header。因此它不能挂在 adminAuth 中间件保护的 admin
+// 分组下：否则回调会先被 401 拦截，IdC 授权码流程永远走不完。这里直接注册
+// 在 v1 上（绕开 admin 分组的 adminAuth/panelRateLimiter/auditLog/合规中间件
+// 链），路径形状仍是 /admin/kiro/oauth/callback。session_id + state 是它仅有
+// 的防护（与 pkg/kiro/session.go 的注释、ExchangeCode 的 CSRF+单次消费闸门
+// 一致）——同样的处理方式在这个代码库里已有先例，见 routes/auth.go 里
+// GitHub/Google/LinuxDo 等第三方登录回调：那些回调本身也是公开路由，认证
+// 靠 state 而不是 adminAuth（Grok 的 OAuth 走 JS 弹窗而非整页跳转，从未需要
+// 一个 Callback 方法，这里不能照抄 Grok 的分组）。
+//
+// 其余四个端点（authorize-url / device/start / device/poll /
+// credentials/:session_id）都是管理面板前端发起的 fetch 调用，天然带
+// Authorization 头，正常挂在 admin 分组下即可——尤其是新增的
+// credentials/:session_id：管理员点「我已完成授权」时本来就已经登录在管理
+// 面板里，与 /callback 的匿名浏览器落地场景完全不同，不需要放宽鉴权。
+func registerKiroOAuthRoutes(v1 *gin.RouterGroup, admin *gin.RouterGroup, h *handler.Handlers) {
+	v1.GET("/admin/kiro/oauth/callback", h.Admin.KiroOAuth.Callback)
+
+	kiroOAuth := admin.Group("/kiro/oauth")
+	{
+		kiroOAuth.POST("/authorize-url", h.Admin.KiroOAuth.AuthorizeURL)
+		kiroOAuth.POST("/device/start", h.Admin.KiroOAuth.DeviceStart)
+		kiroOAuth.POST("/device/poll", h.Admin.KiroOAuth.DevicePoll)
+		kiroOAuth.GET("/credentials/:session_id", h.Admin.KiroOAuth.FetchCredentials)
 	}
 }
 

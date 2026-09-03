@@ -24,22 +24,24 @@ const kiroOAuthHTTPTimeout = 30 * time.Second
 //
 // social 与 api_key 不经过授权流：前者由管理员粘贴 refreshToken，后者直接粘 API Key。
 type KiroOAuthService struct {
-	sessionStore *kiro.SessionStore
-	proxyRepo    ProxyRepository
+	sessionStore    *kiro.SessionStore
+	credentialStash *kiro.CredentialStash
+	proxyRepo       ProxyRepository
 
 	// base URL 做成字段以便测试注入 httptest.Server。
 	oidcBase   func(region string) string
 	socialBase func(region string) string
 }
 
-// NewKiroOAuthService 创建服务，默认使用进程内存会话存储。
-// 生产环境由 wire 注入 Redis 版本（见 WithSessionStore）。
+// NewKiroOAuthService 创建服务，默认使用进程内存会话存储与凭据暂存。
+// 生产环境由 wire 注入 Redis 版本（见 WithSessionStore / WithCredentialStash）。
 func NewKiroOAuthService(proxyRepo ProxyRepository) *KiroOAuthService {
 	return &KiroOAuthService{
-		sessionStore: kiro.NewSessionStore(),
-		proxyRepo:    proxyRepo,
-		oidcBase:     kiro.OIDCBase,
-		socialBase:   kiro.SocialBase,
+		sessionStore:    kiro.NewSessionStore(),
+		credentialStash: kiro.NewCredentialStash(),
+		proxyRepo:       proxyRepo,
+		oidcBase:        kiro.OIDCBase,
+		socialBase:      kiro.SocialBase,
 	}
 }
 
@@ -55,11 +57,70 @@ func (s *KiroOAuthService) WithSessionStore(store *kiro.SessionStore) *KiroOAuth
 	return s
 }
 
-// Stop 释放会话存储的后台清理。
+// WithCredentialStash 替换凭据暂存。Redis 接线同样留在 wire providers 里。
+func (s *KiroOAuthService) WithCredentialStash(stash *kiro.CredentialStash) *KiroOAuthService {
+	if s != nil && stash != nil {
+		if s.credentialStash != nil {
+			s.credentialStash.Stop()
+		}
+		s.credentialStash = stash
+	}
+	return s
+}
+
+// WithBaseURLs 覆盖 OIDC / social 基地址解析函数。
+//
+// oidcBase / socialBase 字段本身未导出（见上），本包内的测试可以直接赋值，
+// 但跨包的 handler 测试（internal/handler/admin）拿到的只是 *KiroOAuthService
+// 指针，没法碰未导出字段——这个方法就是留给它们的注入口，好让 AuthorizeURL /
+// DeviceStart / DevicePoll 的端到端 handler 测试能指向本地 httptest.Server
+// 而不是打真实的 AWS 端点。生产环境的 ProvideKiroOAuthService 从不调用它，
+// NewKiroOAuthService 设的默认值（kiro.OIDCBase / kiro.SocialBase）在生产
+// 环境里始终生效。
+func (s *KiroOAuthService) WithBaseURLs(oidcBase, socialBase func(region string) string) *KiroOAuthService {
+	if s == nil {
+		return s
+	}
+	if oidcBase != nil {
+		s.oidcBase = oidcBase
+	}
+	if socialBase != nil {
+		s.socialBase = socialBase
+	}
+	return s
+}
+
+// Stop 释放会话存储与凭据暂存的后台清理。
 func (s *KiroOAuthService) Stop() {
-	if s != nil && s.sessionStore != nil {
+	if s == nil {
+		return
+	}
+	if s.sessionStore != nil {
 		s.sessionStore.Stop()
 	}
+	if s.credentialStash != nil {
+		s.credentialStash.Stop()
+	}
+}
+
+// StashCredentials 把兑换出的账号 credentials 暂存一次性存储，供管理面板
+// 轮询取回。IdC 授权码流程用浏览器整页跳转完成回调，前端 JS 拿不到 code，
+// 只能靠这个中转把 Callback 兑换出的结果带到前端下一步的建号请求里。
+func (s *KiroOAuthService) StashCredentials(ctx context.Context, sessionID string, creds map[string]any) {
+	if s == nil || s.credentialStash == nil {
+		return
+	}
+	s.credentialStash.Set(ctx, sessionID, creds)
+}
+
+// TakeStashedCredentials 取回并销毁暂存的 credentials（一次性）。
+// 找不到时可能是尚未到达、已被消费，或已过期——三者无法区分，调用方
+// （FetchCredentials handler）应统一视为 pending，不当错误处理。
+func (s *KiroOAuthService) TakeStashedCredentials(ctx context.Context, sessionID string) (map[string]any, bool) {
+	if s == nil || s.credentialStash == nil {
+		return nil, false
+	}
+	return s.credentialStash.TakeOnce(ctx, sessionID)
 }
 
 // KiroAuthURLInput 是发起 IdC 授权所需的参数。

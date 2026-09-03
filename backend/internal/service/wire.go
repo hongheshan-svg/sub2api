@@ -32,6 +32,7 @@ func ProvideKiroOAuthService(proxyRepo ProxyRepository, redisClient *redis.Clien
 	// wire.go is depguard-exempt for redis; construct the Redis session store here.
 	if redisClient != nil {
 		svc = svc.WithSessionStore(kiro.NewRedisSessionStore(redisClient))
+		svc = svc.WithCredentialStash(kiro.NewRedisCredentialStash(redisClient))
 	}
 	return svc
 }
