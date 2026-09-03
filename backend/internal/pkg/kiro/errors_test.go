@@ -119,6 +119,72 @@ func TestClassifyCreditsExhaustedPrecedesSuspensionMarker(t *testing.T) {
 	require.Equal(t, SignalCreditsExhausted, Classify(403, body))
 }
 
+// TestClassifyUpstreamErrorNilIsUnknown 锁定 nil 安全：ClassifyUpstreamError(nil)
+// 不得 panic，必须落到 SignalUnknown（跟 Classify 遇到无法识别状态码时的兜底一致）。
+func TestClassifyUpstreamErrorNilIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, SignalUnknown, ClassifyUpstreamError(nil))
+}
+
+// TestClassifyUpstreamErrorMessageMarkersPrecedeType 是 I6 的红线回归测试：
+// exception 帧的 Message 特征串必须优先于 Type 判定。AWS event-stream 的
+// ValidationException 常常伴随 INVALID_MODEL_ID，若先按 Type 判成
+// SignalBadRequest，会掩盖"这其实是网络问题"这一事实——与 Classify 对
+// 状态码 vs body 特征串的优先级要求同构。
+func TestClassifyUpstreamErrorMessageMarkersPrecedeType(t *testing.T) {
+	t.Parallel()
+
+	err := &UpstreamError{
+		Type:    "ValidationException",
+		Message: "Improperly formed request: INVALID_MODEL_ID",
+	}
+	got := ClassifyUpstreamError(err)
+	require.Equal(t, SignalNetworkRegion, got)
+	require.NotEqual(t, SignalBadRequest, got, "不得让 Type 掩盖 Message 里的网络/区域特征串")
+}
+
+// TestClassifyUpstreamErrorCreditsPrecedesSuspensionMarker 复现
+// TestClassifyCreditsExhaustedPrecedesSuspensionMarker 的顺序要求，但走
+// ClassifyUpstreamError 路径——两条路径共用 classifyMarkers，顺序必须一致。
+func TestClassifyUpstreamErrorCreditsPrecedesSuspensionMarker(t *testing.T) {
+	t.Parallel()
+
+	err := &UpstreamError{
+		Type:    "ValidationException",
+		Message: "account is suspended, monthly request limit reached",
+	}
+	require.Equal(t, SignalCreditsExhausted, ClassifyUpstreamError(err))
+}
+
+// TestClassifyUpstreamErrorTypeFallback 覆盖 Message 不含任何特征串时的
+// Type-based 分类，逐个锁定 switch 的每条分支目标。
+func TestClassifyUpstreamErrorTypeFallback(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		errType string
+		want    Signal
+	}{
+		{"ThrottlingException", SignalRateLimited},
+		{"TooManyRequestsException", SignalRateLimited},
+		{"AccessDeniedException", SignalAuthExpired},
+		{"UnauthorizedException", SignalAuthExpired},
+		{"UnrecognizedClientException", SignalAuthExpired},
+		{"ExpiredTokenException", SignalAuthExpired},
+		{"ValidationException", SignalBadRequest},
+		{"InvalidRequestException", SignalBadRequest},
+		{"SerializationException", SignalBadRequest},
+		{"BadRequestException", SignalBadRequest},
+		{"SomeUnmappedException", SignalUnknown},
+		{"", SignalUnknown},
+	}
+	for _, c := range cases {
+		got := ClassifyUpstreamError(&UpstreamError{Type: c.errType, Message: "nothing interesting here"})
+		require.Equal(t, c.want, got, "Type=%q", c.errType)
+	}
+}
+
 func TestSignalStringIsStable(t *testing.T) {
 	t.Parallel()
 

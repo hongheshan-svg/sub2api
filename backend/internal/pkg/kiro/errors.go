@@ -22,7 +22,10 @@ const (
 	// SignalRateLimited 表示该端点额度耗尽，应先换端点。
 	SignalRateLimited
 	// SignalNetworkRegion 表示网络/区域问题（典型是 INVALID_MODEL_ID）。
-	// 这不是账号的错，绝不能据此禁用账号。
+	// 这不是账号的错，绝不能据此禁用账号。Retryable=true 但问题根源是请求
+	// 命中的区域/网络路径本身（例如大陆直连必现 INVALID_MODEL_ID），换端点
+	// 重试大概率仍会复现；调用方必须给这个信号单独设一个重试上限，不能当作
+	// 普通瞬时错误无限重试（I7）。
 	SignalNetworkRegion
 	// SignalBadRequest 表示我们自己构造的请求不合法。
 	// 不可重试、不可换账号 —— 换了一样失败。
@@ -121,6 +124,28 @@ var (
 	}
 )
 
+// classifyMarkers 依次用 invalidModelIDMarkers / creditsExhaustedMarkers /
+// suspensionMarkers 检查一段已转小写的文本，命中即返回对应 Signal；
+// 全不命中返回 (SignalOK, false)，SignalOK 在这里只是占位，调用方必须看
+// ok 而不是这个零值。抽出来是因为 Classify 和 ClassifyUpstreamError 都要
+// 按同一套特征串、同一个优先级顺序匹配——INVALID_MODEL_ID 必须先于额度/
+// 停用判定，额度耗尽必须先于停用判定，两条路径不能各自维护一份顺序。
+func classifyMarkers(lower []byte) (Signal, bool) {
+	if len(lower) == 0 {
+		return SignalOK, false
+	}
+	if containsAny(lower, invalidModelIDMarkers) {
+		return SignalNetworkRegion, true
+	}
+	if containsAny(lower, creditsExhaustedMarkers) {
+		return SignalCreditsExhausted, true
+	}
+	if containsAny(lower, suspensionMarkers) {
+		return SignalSuspended, true
+	}
+	return SignalOK, false
+}
+
 func containsAny(haystack []byte, needles [][]byte) bool {
 	for _, n := range needles {
 		if bytes.Contains(haystack, n) {
@@ -144,27 +169,56 @@ func Classify(status int, body []byte) Signal {
 
 	lower := bytes.ToLower(bytes.TrimSpace(body))
 
-	if len(lower) > 0 {
-		// 网络/区域问题必须最先识别 —— 它伪装成 400。
-		if containsAny(lower, invalidModelIDMarkers) {
-			return SignalNetworkRegion
-		}
-		if containsAny(lower, creditsExhaustedMarkers) {
-			return SignalCreditsExhausted
-		}
-		if containsAny(lower, suspensionMarkers) {
-			return SignalSuspended
-		}
+	// 网络/区域问题必须最先识别 —— 它伪装成 400。
+	if sig, ok := classifyMarkers(lower); ok {
+		return sig
 	}
 
-	switch {
-	case status == 401 || status == 403:
+	switch status {
+	case 401, 403:
 		return SignalAuthExpired
-	case status == 402:
+	case 402:
 		return SignalOverage
-	case status == 429:
+	case 429:
 		return SignalRateLimited
-	case status == 400:
+	case 400:
+		return SignalBadRequest
+	default:
+		return SignalUnknown
+	}
+}
+
+// ClassifyUpstreamError 把流内异常帧（HTTP 200 之下的 exception 帧）归类为
+// Signal（I6）。
+//
+// exception 帧和 Classify 处理的「带状态码 + body」的响应是两条完全独立的
+// 路径：Kiro 用 HTTP 200 起流，真正的错误（限流、鉴权失效、
+// INVALID_MODEL_ID 等）会作为流内的 exception 帧出现，此时已经没有状态码
+// 可用。修复前 stream.go 的 handle() 只是把 exception 帧包成
+// *UpstreamError 原样往上抛，从未经过任何分类——调度侧拿到的是一个不知道
+// 能不能重试、能不能换账号的裸错误，只能靠 errors.As 拿到具体字段自己再
+// 判断一遍，等于每个调用点各写一套（还可能各写出不一致的一套）。
+//
+// 检查顺序与 Classify 保持一致（复用同一个 classifyMarkers）：Message 里的
+// 特征串优先于异常类型本身——AWS event-stream 的 ValidationException 常常
+// 伴随 INVALID_MODEL_ID，若先按类型判成 SignalBadRequest，会掩盖
+// "这其实是网络问题" 这一事实。
+func ClassifyUpstreamError(err *UpstreamError) Signal {
+	if err == nil {
+		return SignalUnknown
+	}
+
+	lower := bytes.ToLower(bytes.TrimSpace([]byte(err.Message)))
+	if sig, ok := classifyMarkers(lower); ok {
+		return sig
+	}
+
+	switch err.Type {
+	case "ThrottlingException", "TooManyRequestsException":
+		return SignalRateLimited
+	case "AccessDeniedException", "UnauthorizedException", "UnrecognizedClientException", "ExpiredTokenException":
+		return SignalAuthExpired
+	case "ValidationException", "InvalidRequestException", "SerializationException", "BadRequestException":
 		return SignalBadRequest
 	default:
 		return SignalUnknown
