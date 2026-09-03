@@ -131,6 +131,33 @@ func TestMergeAdjacentJoinsSameRole(t *testing.T) {
 	require.Equal(t, "assistant", out[1].Role)
 }
 
+func TestMergeAdjacentCarriesAllThreeSlices(t *testing.T) {
+	t.Parallel()
+
+	in := []Msg{
+		{
+			Role:        "user",
+			Text:        "first",
+			Images:      []Image{{Format: "png", Data: "AAA"}},
+			ToolCalls:   []ToolCall{{ID: "tc1", Name: "Foo", Input: []byte("{}")}},
+			ToolResults: []ToolResult{{ToolUseID: "tr1", Text: "result1"}},
+		},
+		{
+			Role:        "user",
+			Text:        "second",
+			Images:      []Image{{Format: "jpg", Data: "BBB"}},
+			ToolCalls:   []ToolCall{{ID: "tc2", Name: "Bar", Input: []byte("{}")}},
+			ToolResults: []ToolResult{{ToolUseID: "tr2", Text: "result2"}},
+		},
+	}
+
+	out := MergeAdjacent(in)
+	require.Len(t, out, 1)
+	require.Len(t, out[0].Images, 2, "合并时 Images 不得丢失")
+	require.Len(t, out[0].ToolCalls, 2, "合并时 ToolCalls 不得丢失")
+	require.Len(t, out[0].ToolResults, 2, "合并时 ToolResults 不得丢失")
+}
+
 func TestEnsureFirstIsUserDropsLeadingAssistant(t *testing.T) {
 	t.Parallel()
 
@@ -171,6 +198,27 @@ func TestStripToolContentRemovesCallsAndResults(t *testing.T) {
 	}})
 
 	require.Equal(t, "keep", out[0].Text)
+	require.Empty(t, out[0].ToolCalls)
+	require.Empty(t, out[0].ToolResults)
+}
+
+func TestStripToolContentDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	in := []Msg{{
+		Role:        "user",
+		Text:        "keep",
+		ToolCalls:   []ToolCall{{ID: "a"}},
+		ToolResults: []ToolResult{{ToolUseID: "b"}},
+	}}
+
+	out := StripToolContent(in)
+
+	// 输入必须保持不变
+	require.Len(t, in[0].ToolCalls, 1, "输入消息的 ToolCalls 不得被修改")
+	require.Len(t, in[0].ToolResults, 1, "输入消息的 ToolResults 不得被修改")
+
+	// 返回值必须被清空
 	require.Empty(t, out[0].ToolCalls)
 	require.Empty(t, out[0].ToolResults)
 }
