@@ -111,3 +111,90 @@ func TestEstimateRequestInputNil(t *testing.T) {
 	t.Parallel()
 	require.Zero(t, EstimateRequestInput(nil))
 }
+
+// TestEstimateRequestInputImageDoesNotScaleWithBase64Size 覆盖 I3：图片的
+// base64 payload 之前被整段字符串化后交给 EstimateText，字节数越大估算的
+// input token 越大——一张几 MB 的截图能把估算顶到几十万。修复后，图片只按
+// imageTokenEstimate 记一个固定近似值，与 base64 字节数无关。
+func TestEstimateRequestInputImageDoesNotScaleWithBase64Size(t *testing.T) {
+	t.Parallel()
+
+	smallImage := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"text","text":"look at this"},
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("A", 100)+`"}}
+			]`)},
+		},
+	}
+	largeImage := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"text","text":"look at this"},
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("A", 2_000_000)+`"}}
+			]`)},
+		},
+	}
+
+	small := EstimateRequestInput(smallImage)
+	large := EstimateRequestInput(largeImage)
+
+	require.Equal(t, small, large,
+		"图片体积从 100 字节涨到 200 万字节，估算的 input token 不应该变化")
+	require.Less(t, large, 10_000,
+		"修复前一张 2MB 的 base64 图片会把估算顶到几十万 token，实际得到 %d", large)
+}
+
+// TestEstimateRequestInputImageCountsFixedConstant 验证单张图片确实计入了
+// imageTokenEstimate 这个固定近似值，而不是被直接丢弃估算为 0——I3 的修复
+// 目标是"排除 base64 payload"，不是"图片完全不计费"。
+func TestEstimateRequestInputImageCountsFixedConstant(t *testing.T) {
+	t.Parallel()
+
+	withoutImage := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[{"type":"text","text":"look at this"}]`)},
+		},
+	}
+	withImage := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"text","text":"look at this"},
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("A", 100)+`"}}
+			]`)},
+		},
+	}
+
+	diff := EstimateRequestInput(withImage) - EstimateRequestInput(withoutImage)
+	require.Equal(t, imageTokenEstimate, diff,
+		"一张图片必须恰好贡献 imageTokenEstimate 个 token")
+}
+
+// TestEstimateRequestInputToolResultImageDoesNotScale 覆盖 tool_result 内容
+// 里夹带 image 块的情况（工具把图片结果传回模型）——这条路径必须走同一套
+// 递归估算，同样不能把 base64 payload 计入。
+func TestEstimateRequestInputToolResultImageDoesNotScale(t *testing.T) {
+	t.Parallel()
+
+	small := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"tool_result","tool_use_id":"tu_1","content":[
+					{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("B", 100)+`"}}
+				]}
+			]`)},
+		},
+	}
+	large := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `[
+				{"type":"tool_result","tool_use_id":"tu_1","content":[
+					{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+strings.Repeat("B", 2_000_000)+`"}}
+				]}
+			]`)},
+		},
+	}
+
+	require.Equal(t, EstimateRequestInput(small), EstimateRequestInput(large),
+		"tool_result 里的图片同样不能按 base64 字节数计费")
+}
