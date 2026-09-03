@@ -30,7 +30,10 @@ func TestSanitizeSchemaDropsAdditionalProperties(t *testing.T) {
 	out := SanitizeSchema(in)
 
 	require.NotContains(t, out, "additionalProperties")
-	nested := out["properties"].(map[string]any)["nested"].(map[string]any)
+	props, ok := out["properties"].(map[string]any)
+	require.True(t, ok)
+	nested, ok := props["nested"].(map[string]any)
+	require.True(t, ok)
 	require.NotContains(t, nested, "additionalProperties")
 }
 
@@ -65,7 +68,10 @@ func TestSanitizeSchemaFlattensRefs(t *testing.T) {
 	out := SanitizeSchema(in)
 
 	require.NotContains(t, out, "$defs")
-	origin := out["properties"].(map[string]any)["origin"].(map[string]any)
+	props, ok := out["properties"].(map[string]any)
+	require.True(t, ok)
+	origin, ok := props["origin"].(map[string]any)
+	require.True(t, ok)
 	require.NotContains(t, origin, "$ref")
 	require.Equal(t, "object", origin["type"])
 	require.Contains(t, origin["properties"], "x")
@@ -85,7 +91,12 @@ func TestSanitizeSchemaHandlesArrayItems(t *testing.T) {
 	}`)
 
 	out := SanitizeSchema(in)
-	items := out["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)
+	props, ok := out["properties"].(map[string]any)
+	require.True(t, ok)
+	arrayItems, ok := props["items"].(map[string]any)
+	require.True(t, ok)
+	items, ok := arrayItems["items"].(map[string]any)
+	require.True(t, ok)
 	require.NotContains(t, items, "additionalProperties")
 	require.NotContains(t, items, "required")
 }
@@ -141,11 +152,13 @@ func TestSanitizeSchemaRequiredArrayNotAliased(t *testing.T) {
 	out := SanitizeSchema(in)
 
 	// 获取输出的 required 数组并修改。
-	outRequired := out["required"].([]any)
+	outRequired, ok := out["required"].([]any)
+	require.True(t, ok)
 	outRequired[0] = "modified"
 
 	// 验证输入的 required 没有被修改。
-	inRequired := in["required"].([]any)
+	inRequired, ok := in["required"].([]any)
+	require.True(t, ok)
 	require.Equal(t, "a", inRequired[0], "输入 required 被输出修改污染")
 }
 

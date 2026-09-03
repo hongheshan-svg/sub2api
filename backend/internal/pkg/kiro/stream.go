@@ -270,7 +270,7 @@ func (t *StreamTranslator) emitThinking(s string) []apicompat.AnthropicStreamEve
 		return nil
 	}
 	t.sawContent = true
-	t.outputText.WriteString(s)
+	_, _ = t.outputText.WriteString(s)
 
 	var out []apicompat.AnthropicStreamEvent
 	if t.openKind != blockThinking {
@@ -290,7 +290,7 @@ func (t *StreamTranslator) emitText(s string) []apicompat.AnthropicStreamEvent {
 		return nil
 	}
 	t.sawContent = true
-	t.outputText.WriteString(s)
+	_, _ = t.outputText.WriteString(s)
 
 	var out []apicompat.AnthropicStreamEvent
 	if t.openKind != blockText {
@@ -325,7 +325,7 @@ func (t *StreamTranslator) handleToolUse(tu *ToolUse) []apicompat.AnthropicStrea
 		// 工具调用的输入 JSON 片段也要计入 output token——Anthropic 原生
 		// usage.output_tokens 本身包含 tool_use.input，本网关对外呈现
 		// Anthropic 兼容接口，口径要与之一致（I2）。
-		t.outputText.WriteString(tu.Input)
+		_, _ = t.outputText.WriteString(tu.Input)
 		out = append(out, apicompat.AnthropicStreamEvent{
 			Type:  "content_block_delta",
 			Index: intPtr(t.openIndex),
