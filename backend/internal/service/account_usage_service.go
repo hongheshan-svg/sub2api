@@ -215,6 +215,11 @@ type UsageInfo struct {
 	ThirtyDay   *UsageProgress      `json:"thirty_day,omitempty"`
 	GrokBilling *xai.BillingSummary `json:"grok_billing,omitempty"`
 
+	// Kiro credits 额度（AGENTIC_REQUEST 口径，UsedRequests/LimitRequests 是请求数）
+	KiroCredits           *UsageProgress `json:"kiro_credits,omitempty"`
+	KiroSubscriptionTitle string         `json:"kiro_subscription_title,omitempty"` // KIRO FREE / KIRO PRO+ ...
+	KiroOverageStatus     string         `json:"kiro_overage_status,omitempty"`     // ENABLED / DISABLED
+
 	// Antigravity 账号级信息
 	SubscriptionTier    string `json:"subscription_tier,omitempty"`     // 归一化订阅等级: FREE/PRO/ULTRA/UNKNOWN
 	SubscriptionTierRaw string `json:"subscription_tier_raw,omitempty"` // 上游原始订阅等级名称
@@ -296,6 +301,7 @@ type AccountUsageService struct {
 	geminiQuotaService      *GeminiQuotaService
 	antigravityQuotaFetcher *AntigravityQuotaFetcher
 	grokQuotaFetcher        *GrokQuotaFetcher
+	kiroQuotaFetcher        *KiroQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
 	cache                   *UsageCache
@@ -313,6 +319,7 @@ func NewAccountUsageService(
 	geminiQuotaService *GeminiQuotaService,
 	antigravityQuotaFetcher *AntigravityQuotaFetcher,
 	grokQuotaFetcher *GrokQuotaFetcher,
+	kiroQuotaFetcher *KiroQuotaFetcher,
 	grokQuotaService *GrokQuotaService,
 	openAIQuotaService *OpenAIQuotaService,
 	cache *UsageCache,
@@ -326,6 +333,7 @@ func NewAccountUsageService(
 		geminiQuotaService:      geminiQuotaService,
 		antigravityQuotaFetcher: antigravityQuotaFetcher,
 		grokQuotaFetcher:        grokQuotaFetcher,
+		kiroQuotaFetcher:        kiroQuotaFetcher,
 		grokQuotaService:        grokQuotaService,
 		openAIQuotaService:      openAIQuotaService,
 		cache:                   cache,
@@ -386,6 +394,16 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	if account.Platform == PlatformGrok {
 		usage, err := s.getGrokUsage(ctx, account, forceProbe)
 		if err == nil && usage != nil && usage.Error == "" {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
+	// Kiro 平台：使用 KiroQuotaFetcher 获取额度（无缓存/singleflight——
+	// 额度查询频率远低于 Antigravity/Grok 的转发热路径，不需要那层复杂度）。
+	if account.Platform == PlatformKiro {
+		usage, err := s.getKiroUsage(ctx, account)
+		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
@@ -1149,6 +1167,39 @@ func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account
 
 	enrichUsageWithAccountError(usage, account)
 	return usage, nil
+}
+
+// getKiroUsage 获取 Kiro 账户额度。
+//
+// 不复刻 getAntigravityUsage 那套缓存 + singleflight——额度查询走的是账号
+// 详情/配额监控这类低频路径，不像转发热路径那样需要防击穿，Task 20 的
+// 给定实现（KiroQuotaFetcher.FetchQuota）本身也没有缓存层。
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	if s.kiroQuotaFetcher == nil || !s.kiroQuotaFetcher.CanFetch(account) {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	proxyURL := s.resolveKiroProxyURL(account)
+	result, err := s.kiroQuotaFetcher.FetchQuota(ctx, account, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return result.UsageInfo, nil
+}
+
+// resolveKiroProxyURL 返回账号预加载的代理地址。
+//
+// 与 KiroGatewayService.resolveProxyURL（kiro_gateway_upstream.go）取法一致：
+// 直接读 account.Proxy，不做仓储兜底查询——KiroQuotaFetcher 和
+// KiroGatewayService 一样目前都没有 proxyRepo 依赖（不同于 Antigravity 的
+// GetProxyURL 需要按 ProxyID 现查仓储），account 在 accountRepo.GetByID
+// 里已经带 proxies 联查，这里只需要读预加载好的字段。
+func (s *AccountUsageService) resolveKiroProxyURL(account *Account) string {
+	if account == nil || account.Proxy == nil {
+		return ""
+	}
+	return account.Proxy.URL()
 }
 
 func grokLocalUsageForQuota(

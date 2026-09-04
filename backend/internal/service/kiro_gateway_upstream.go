@@ -33,6 +33,13 @@ type KiroGatewayService struct {
 	kiroOAuthService *KiroOAuthService
 	runtimeBlocker   AccountRuntimeBlocker
 
+	// schedulerSnapshot 用于 credits 耗尽时立即更新 Redis 里的账号调度快照
+	// （model_rate_limits），避免调度层要等下一次全量同步才看到最新冷却状态。
+	// 对齐 AntigravityGatewayService 同名字段的用法（antigravity_gateway_retry.go
+	// 的 updateAccountModelRateLimitInCache）。可为 nil——写缓存失败时降级为
+	// 只有 SetModelRateLimit 落库生效，调度快照会在下次全量同步时追上。
+	schedulerSnapshot *SchedulerSnapshotService
+
 	// callEndpointOverride 仅供测试使用，生产路径必须为 nil。
 	//
 	// kiro.EndpointsFor 返回的是真实的 AWS/CLI 域名（q.<region>.amazonaws.com
@@ -60,12 +67,14 @@ func NewKiroGatewayService(
 	oauthRefreshAPI *OAuthRefreshAPI,
 	kiroOAuthService *KiroOAuthService,
 	runtimeBlocker AccountRuntimeBlocker,
+	schedulerSnapshot *SchedulerSnapshotService,
 ) *KiroGatewayService {
 	return &KiroGatewayService{
-		accountRepo:      accountRepo,
-		oauthRefreshAPI:  oauthRefreshAPI,
-		kiroOAuthService: kiroOAuthService,
-		runtimeBlocker:   runtimeBlocker,
+		accountRepo:       accountRepo,
+		oauthRefreshAPI:   oauthRefreshAPI,
+		kiroOAuthService:  kiroOAuthService,
+		runtimeBlocker:    runtimeBlocker,
+		schedulerSnapshot: schedulerSnapshot,
 	}
 }
 

@@ -25,17 +25,6 @@ const kiroErrorBodyLimit = 64 * 1024
 // kiroErrorBodyLimit（64KB）对单条日志行来说仍然太长。
 const kiroBadRequestLogBodyLimit = 2 * 1024
 
-// kiroCreditsExhaustedCooldown 是账号额度耗尽（SignalCreditsExhausted）
-// 触发账号转移之后，给该账号加的调度冷却时长。
-//
-// 额度耗尽通常要等到下一个计费周期重置或人工充值才会恢复，不是几秒到几分钟
-// 内会自愈的瞬时状态。参照本仓库里同属"账号级订阅/额度问题"的先例——
-// grok 侧 payment required 类错误取 30 分钟冷却
-// （见 account_test_service.go）、openai_images_responses.go 的
-// openAIImagesOAuthUnavailableDefaultCooldown 同为 30 分钟——取同一量级。
-// 真实账号联调后可再调整。
-const kiroCreditsExhaustedCooldown = 30 * time.Minute
-
 // kiroRateLimitedExhaustedCooldown 是三个端点都被限流（SignalRateLimited
 // 且 hasMoreEndpoints=false）触发账号转移之后的调度冷却时长。
 //
@@ -149,7 +138,7 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 			if action == kiroActionNextEndpoint {
 				continue
 			}
-			return nil, s.finishWithAction(account, action, kiro.SignalUnknown, 0, nil)
+			return nil, s.finishWithAction(ctx, account, action, kiro.SignalUnknown, 0, nil)
 		}
 
 		status := resp.StatusCode
@@ -177,7 +166,7 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 			case kiroActionNextEndpoint:
 				continue
 			default:
-				return nil, s.finishWithAction(account, action, sig, status, errBody)
+				return nil, s.finishWithAction(ctx, account, action, sig, status, errBody)
 			}
 		}
 
@@ -369,7 +358,11 @@ func (s *KiroGatewayService) refreshAccountToken(ctx context.Context, account *A
 // statusCode/body 由调用方从 ForwardUpstream 循环里已经解析过的上游响应
 // 直接传入，而不是本函数再从某个 error 里重新提取——那份状态码和响应体
 // 就是 kiro.Classify 用来算出 sig 的原始输入，调用方手里已经有了。
-func (s *KiroGatewayService) finishWithAction(account *Account, action kiroAction, sig kiro.Signal, statusCode int, body []byte) error {
+//
+// ctx 是 Task 20 新增的参数：SignalCreditsExhausted 分支需要用它发起一次
+// 独立超时的 getUsageLimits 现场查询（creditsExhaustedCooldownUntil），
+// 并把结果落库（accountRepo.SetModelRateLimit）——两者都要求 context。
+func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Account, action kiroAction, sig kiro.Signal, statusCode int, body []byte) error {
 	failover := &UpstreamFailoverError{
 		StatusCode:   statusCode,
 		ResponseBody: body,
@@ -410,20 +403,94 @@ func (s *KiroGatewayService) finishWithAction(account *Account, action kiroActio
 
 	case kiroActionFailoverAccount:
 		// NextAccountAction 留零值：允许失败转移到下一个账号。
-		if s.runtimeBlocker != nil {
-			switch sig {
-			case kiro.SignalCreditsExhausted:
-				s.runtimeBlocker.BlockAccountScheduling(account, time.Now().Add(kiroCreditsExhaustedCooldown), "kiro_credits_exhausted")
-			case kiro.SignalRateLimited:
-				// 只有端点耗尽（hasMoreEndpoints=false）才会走到这里；还有
-				// 端点可换时 decideKiroAction 返回的是 NextEndpoint，不经过
-				// finishWithAction。
+		switch sig {
+		case kiro.SignalCreditsExhausted:
+			// until 优先来自一次现场 getUsageLimits 查询给出的真实
+			// nextDateReset，比 Antigravity 的固定 5 小时冷却更准确
+			// （本任务的核心改进，见 creditsExhaustedCooldownUntil 的文档）。
+			until := s.creditsExhaustedCooldownUntil(ctx, account)
+			if s.runtimeBlocker != nil {
+				s.runtimeBlocker.BlockAccountScheduling(account, until, "kiro_credits_exhausted")
+			}
+			if s.accountRepo != nil {
+				if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
+					slog.Warn("kiro_credits_exhausted_persist_failed", "account_id", account.ID, "error", err)
+				}
+				s.updateKiroModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
+			}
+		case kiro.SignalRateLimited:
+			// 只有端点耗尽（hasMoreEndpoints=false）才会走到这里；还有
+			// 端点可换时 decideKiroAction 返回的是 NextEndpoint，不经过
+			// finishWithAction。
+			if s.runtimeBlocker != nil {
 				s.runtimeBlocker.BlockAccountScheduling(account, time.Now().Add(kiroRateLimitedExhaustedCooldown), "kiro_rate_limited")
 			}
 		}
 	}
 
 	return failover
+}
+
+// creditsExhaustedCooldownUntil 尝试用一次现场 getUsageLimits 查询算出真实的
+// 冷却截止时间（本任务相对 Antigravity 固定窗口的核心改进）。这是在一个
+// 已经失败的请求路径上做的"顺手"查询——用独立的短超时（5 秒，不是常规
+// 额度查询的 20 秒），查询失败/超时就直接退回保守冷却，不让客户端因为
+// 这次额外探测被拖慢太多，也不把已经很差的失败请求体验搞得更差。
+func (s *KiroGatewayService) creditsExhaustedCooldownUntil(ctx context.Context, account *Account) time.Time {
+	now := time.Now()
+	fallback := now.Add(kiroCreditsFallbackCooldown)
+
+	shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	fetcher := NewKiroQuotaFetcher()
+	proxyURL := s.resolveProxyURL(shortCtx, account)
+	limits, _, err := fetcher.fetchUsageLimits(shortCtx, account, proxyURL)
+	if err != nil || limits == nil {
+		return fallback
+	}
+
+	b := limits.AgenticRequest()
+	until, ok := kiroCreditsCooldownUntil(b, now)
+	if !ok {
+		// kiroCreditsCooldownUntil 对 b == nil 或未耗尽都返回 ok=false——
+		// 都不能当成"不冷却"处理：我们已经确认账号触发了
+		// SignalCreditsExhausted（上游 403/429 已经这么分类过一次），这次
+		// 现场查询只是拿不到可信的重置时间，必须退回保守冷却，而不是放弃
+		// 冷却让账号立刻被重新调度。
+		return fallback
+	}
+	return until
+}
+
+// updateKiroModelRateLimitInCache 立即更新 Redis 中账号的模型限流状态。
+//
+// 与 AntigravityGatewayService.updateAccountModelRateLimitInCache
+// （antigravity_gateway_retry.go）同构但不共享实现——本仓库里每个网关服务
+// 各自维护一份，见该方法的文档：这是既有约定，不是需要抽公共 helper 的重复。
+func (s *KiroGatewayService) updateKiroModelRateLimitInCache(ctx context.Context, account *Account, modelKey string, resetAt time.Time) {
+	if s == nil || s.schedulerSnapshot == nil || account == nil || modelKey == "" {
+		return
+	}
+
+	if account.Extra == nil {
+		account.Extra = make(map[string]any)
+	}
+
+	limits, _ := account.Extra["model_rate_limits"].(map[string]any)
+	if limits == nil {
+		limits = make(map[string]any)
+		account.Extra["model_rate_limits"] = limits
+	}
+
+	limits[modelKey] = map[string]any{
+		"rate_limited_at":     time.Now().UTC().Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}
+
+	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
+		slog.Warn("kiro_model_rate_limit_cache_update_failed", "account_id", account.ID, "model_key", modelKey, "error", err)
+	}
 }
 
 // profileArnFor 返回请求要携带的 profileArn。
