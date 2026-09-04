@@ -127,8 +127,24 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 		}
 
 		if callErr != nil {
-			// 传输层失败：按未知信号处理。
+			// 传输层失败（DNS/TLS/连接被拒/超时等）：按未知信号处理。callErr
+			// 除了赋给 lastErr 外不会再被读取（lastErr 只在循环结束后、且这条
+			// 分支必然提前 return 的情况下才会被用到），如果这里不留一条日志，
+			// 排查一波连通性故障时只能看到 reason=kiro_unknown, status=0，
+			// 完全分不清是 DNS 失败、TLS 失败还是超时。sanitize 后再打印，
+			// 对齐 gateway_upstream_transport_error.go 的
+			// handleUpstreamTransportError 那套"先 sanitize 再落日志，不要把
+			// 原始错误文本直接倒出去"的规矩。
 			action := decideKiroAction(kiro.SignalUnknown, translator.SawContent(), refreshed, hasMore)
+			var accountID int64
+			if account != nil {
+				accountID = account.ID
+			}
+			slog.Warn("kiro_transport_error",
+				"account_id", accountID,
+				"endpoint", ep.Name,
+				"error", sanitizeUpstreamErrorMessage(callErr.Error()),
+			)
 			lastErr = callErr
 			if action == kiroActionNextEndpoint {
 				continue
@@ -302,6 +318,15 @@ func (s *KiroGatewayService) logBadRequest(account *Account, model string, toolC
 }
 
 // persistMachineIDIfGenerated 把 callEndpoint 内部首次生成的设备指纹落库。
+//
+// 必须经 persistAccountCredentials 这个"凭据写入的唯一汇聚点"
+// （account_credentials_persistence.go），不能直接 s.accountRepo.Update
+// 整行覆写：persistAccountCredentials 带 IsCredentialShadow 早退（防御性
+// 措施，避免把凭据误写进凭据透传母账号的影子行——外审第6轮 P1），并在
+// repo 支持窄写接口时优先走 UpdateCredentials 而不是整行 Update。这是本
+// 仓库除 admin/CRS 同步工具外，唯一一处在真实请求热路径上直接做凭据相关
+// 写库的调用点，必须和其它写入路径（token 刷新/订阅补全等）共用同一条
+// 安全收敛路径。
 func (s *KiroGatewayService) persistMachineIDIfGenerated(ctx context.Context, account *Account) {
 	if s == nil || s.accountRepo == nil || account == nil {
 		return
@@ -309,7 +334,7 @@ func (s *KiroGatewayService) persistMachineIDIfGenerated(ctx context.Context, ac
 	if strings.TrimSpace(account.KiroMachineID()) == "" {
 		return
 	}
-	if err := s.accountRepo.Update(ctx, account); err != nil {
+	if err := persistAccountCredentials(ctx, s.accountRepo, account, account.Credentials); err != nil {
 		slog.Warn("kiro_machine_id_persist_failed", "account_id", account.ID, "error", err)
 	}
 }
@@ -361,12 +386,25 @@ func (s *KiroGatewayService) finishWithAction(account *Account, action kiroActio
 
 		if sig == kiro.SignalSuspended && s.runtimeBlocker != nil {
 			// Abort 只挡住"这一次请求"的失败转移，不影响账号池后续调度；
-			// Suspended 是账号自身状态问题，必须额外做真实禁用，否则下一个
+			// Suspended 是账号自身状态问题，理应额外做真实禁用，否则下一个
 			// 请求还会继续被路由过来重复触发同样的失败。
-			// 用零值 time.Time{} 表示无限期禁用，与
-			// openai_account_runtime_block_fastpath.go 里"openai_access_state"
-			// / "upstream_disable" 两处永久性禁用调用约定一致（对照同文件
-			// 229 行附近 429 场景传入具体 cooldownUntil 的用法）。
+			//
+			// 用零值 time.Time{} 表示尽可能长的禁用。
+			//
+			// 注意：AccountRuntimeBlocker 目前在 wire.go 里唯一的绑定实现是
+			// OpenAIGatewayService.BlockAccountScheduling，它对 platform 做了
+			// openai/grok 专属门禁（isOpenAIAccount），对 kiro 账号是彻底的
+			// no-op；即便是 openai/grok 账号，零值 until 也只会被转成几分钟
+			// 量级的过渡冷却（blockAccountSchedulingLocked 里的
+			// openAIStopSchedulingBridgeCooldown），不是真正的无限期——真正的
+			// 永久禁用在 openai_access_state / upstream_disable 那两处走的是
+			// 另一条独立调用链（rateLimitService.handleAuthError /
+			// HandleUpstreamError），Kiro 这里没有等价物。这里调用
+			// BlockAccountScheduling 是"按接口正确调用"，但只有 Task 18 给
+			// KiroGatewayService 接一个真正对 kiro 账号生效的 runtimeBlocker
+			// 实现之后，Suspended 账号才会被真实禁用——接线前这行调用本身就
+			// 是 no-op。控制端已经在 SDD ledger 里把这条显式带进 Task 18 的
+			// 预检要求，不是本任务遗漏。
 			s.runtimeBlocker.BlockAccountScheduling(account, time.Time{}, "kiro_suspended")
 		}
 
