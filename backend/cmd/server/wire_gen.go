@@ -298,7 +298,13 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
 	legacyEngine := securityaudit.NewLegacyModerationAdapter(contentModerationService)
 	coordinator := securityaudit.NewCoordinator(legacyEngine, promptService)
-	gatewayHandler := handler.ProvideGatewayHandler(gatewayService, openAIGatewayService, geminiMessagesCompatService, antigravityGatewayService, userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, userMessageQueueService, configConfig, settingService, coordinator)
+	// kiroGatewayService 的 runtimeBlocker 参数传入 openAIGatewayService（唯一绑定实现，见
+	// service/wire.go 的 wire.Bind(AccountRuntimeBlocker, *OpenAIGatewayService)）。
+	// 注意：OpenAIGatewayService.BlockAccountScheduling 只对 openai/grok 账号生效，对
+	// kiro 账号当前是 no-op —— 这是已知的、有台账记录的缺口（kiro_gateway_service.go
+	// 里 Task 17 的修复轮注释已详细说明），不是本任务要解决的范围。
+	kiroGatewayService := service.NewKiroGatewayService(accountRepository, oAuthRefreshAPI, kiroOAuthService, openAIGatewayService)
+	gatewayHandler := handler.ProvideGatewayHandler(gatewayService, openAIGatewayService, geminiMessagesCompatService, antigravityGatewayService, kiroGatewayService, userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, userMessageQueueService, configConfig, settingService, coordinator)
 	openAIGatewayHandler := handler.ProvideOpenAIGatewayHandler(openAIGatewayService, pluginManager, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, grokQuotaService, configConfig, coordinator)
 	handlerSettingHandler := handler.ProvideSettingHandler(settingService, buildInfo, notificationEmailService)
 	totpHandler := handler.NewTotpHandler(totpService)
