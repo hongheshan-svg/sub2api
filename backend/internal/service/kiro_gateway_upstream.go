@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"golang.org/x/sync/singleflight"
 )
 
 // kiroUpstreamTimeout 是单次上游请求的总超时。
@@ -40,6 +41,20 @@ type KiroGatewayService struct {
 	// 只有 SetModelRateLimit 落库生效，调度快照会在下次全量同步时追上。
 	schedulerSnapshot *SchedulerSnapshotService
 
+	// creditsQuotaFlight 防止同一账号的并发失败请求各自独立发起
+	// getUsageLimits 现场查询（惊群）——credits 真耗尽时往往是一批并发请求
+	// 同时失败，N 个请求应该共享一次查询结果，而不是各打一次上游。
+	// 零值即可用，见 creditsExhaustedCooldownUntil。对齐
+	// account_usage_service.go 里 apiFlight/antigravityFlight 的既有用法。
+	creditsQuotaFlight singleflight.Group
+
+	// creditsQuotaFetcherOverride 仅供测试使用，生产路径必须为 nil。
+	//
+	// creditsExhaustedCooldownUntil 默认用 NewKiroQuotaFetcher() 现场构造一个
+	// 指向真实 q.<region>.amazonaws.com 的 fetcher；测试需要把它指向本地
+	// httptest 假上游才能验证 singleflight 去重效果，通过设置这个字段覆盖。
+	creditsQuotaFetcherOverride *KiroQuotaFetcher
+
 	// callEndpointOverride 仅供测试使用，生产路径必须为 nil。
 	//
 	// kiro.EndpointsFor 返回的是真实的 AWS/CLI 域名（q.<region>.amazonaws.com
@@ -50,6 +65,16 @@ type KiroGatewayService struct {
 	// 真实的端点数量/顺序，让 hasMoreEndpoints 相关的决策分支照常被真实
 	// 触达。见 forwardCallEndpoint。
 	callEndpointOverride func(ctx context.Context, account *Account, ep kiro.Endpoint, payload []byte) (*http.Response, error)
+}
+
+// creditsQuotaFetcher 返回 creditsExhaustedCooldownUntil 使用的额度获取器：
+// 测试设置了 creditsQuotaFetcherOverride 时用它，否则用真实的
+// NewKiroQuotaFetcher()。
+func (s *KiroGatewayService) creditsQuotaFetcher() *KiroQuotaFetcher {
+	if s.creditsQuotaFetcherOverride != nil {
+		return s.creditsQuotaFetcherOverride
+	}
+	return NewKiroQuotaFetcher()
 }
 
 // forwardCallEndpoint 是 ForwardUpstream 实际使用的调用入口：测试设置了

@@ -432,32 +432,70 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 }
 
 // creditsExhaustedCooldownUntil 尝试用一次现场 getUsageLimits 查询算出真实的
-// 冷却截止时间（本任务相对 Antigravity 固定窗口的核心改进）。这是在一个
-// 已经失败的请求路径上做的"顺手"查询——用独立的短超时（5 秒，不是常规
-// 额度查询的 20 秒），查询失败/超时就直接退回保守冷却，不让客户端因为
-// 这次额外探测被拖慢太多，也不把已经很差的失败请求体验搞得更差。
+// 冷却截止时间（相对 Antigravity 固定窗口的核心改进）。这是在一个已经失败
+// 的请求路径上做的"顺手"查询——用独立的短超时（5 秒，不是常规额度查询的
+// 20 秒），查询失败/超时就直接退回保守冷却，不让客户端因为这次额外探测被
+// 拖慢太多，也不把已经很差的失败请求体验搞得更差。
+//
+// Fix Round 1（Task 20 review Important 发现）：credits 真耗尽时往往是一批
+// 并发请求同时失败，原实现让每个失败请求都独立发起一次现场查询，在账号已
+// 经出问题的时刻对上游 getUsageLimits 造成惊群。两层防护，缺一不可：
+//
+//  1. 短路层——先看账号本地副本上 kiroCreditsExhaustedKey 的限流记录：如果
+//     还没过期，说明另一个并发请求刚做过这次查询并写回了结果，直接复用，
+//     不再打上游。account.Extra 是调用方在同一次请求处理过程中持有的账号
+//     快照；SetModelRateLimit 落库后紧跟着的 updateKiroModelRateLimitInCache
+//     会把这次查询结果同步写回 account.Extra，所以这一层能在真正命中
+//     singleflight 之前就拦掉后续在（大致）同一账号快照上重复调用的请求。
+//  2. singleflight 层——短路层拦不住的真正同一时刻的并发请求（各自持有
+//     还没被上一次结果更新过的账号快照），用 creditsQuotaFlight 按账号 ID
+//     去重，让它们共享同一次现场查询而不是各打一次。
 func (s *KiroGatewayService) creditsExhaustedCooldownUntil(ctx context.Context, account *Account) time.Time {
 	now := time.Now()
 	fallback := now.Add(kiroCreditsFallbackCooldown)
 
-	shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	fetcher := NewKiroQuotaFetcher()
-	proxyURL := s.resolveProxyURL(shortCtx, account)
-	limits, _, err := fetcher.fetchUsageLimits(shortCtx, account, proxyURL)
-	if err != nil || limits == nil {
+	if account == nil {
 		return fallback
 	}
 
-	b := limits.AgenticRequest()
-	until, ok := kiroCreditsCooldownUntil(b, now)
+	// 层 1：短路——账号本地副本上已有一条还没过期的记录。
+	if resetAt := account.modelRateLimitResetAt(kiroCreditsExhaustedKey); resetAt != nil && resetAt.After(now) {
+		return *resetAt
+	}
+
+	// 层 2：singleflight——真正同一时刻并发的失败请求共享同一次现场查询。
+	flightKey := fmt.Sprintf("kiro-credits:%d", account.ID)
+	v, err, _ := s.creditsQuotaFlight.Do(flightKey, func() (any, error) {
+		shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		fetcher := s.creditsQuotaFetcher()
+		proxyURL := s.resolveProxyURL(shortCtx, account)
+		limits, _, fetchErr := fetcher.fetchUsageLimits(shortCtx, account, proxyURL)
+		if fetchErr != nil || limits == nil {
+			// 现场查询失败/超时——退回保守冷却，不让 singleflight.Group.Do
+			// 自身的 err 承担这条已经有安全兜底值的路径；Do 的 err 只留给
+			// "类型断言之外还出了别的问题"这类不该发生的情况。
+			return fallback, nil
+		}
+
+		b := limits.AgenticRequest()
+		until, ok := kiroCreditsCooldownUntil(b, now)
+		if !ok {
+			// kiroCreditsCooldownUntil 对 b == nil 或未耗尽都返回 ok=false——
+			// 都不能当成"不冷却"处理：我们已经确认账号触发了
+			// SignalCreditsExhausted（上游 403/429 已经这么分类过一次），这次
+			// 现场查询只是拿不到可信的重置时间，必须退回保守冷却，而不是
+			// 放弃冷却让账号立刻被重新调度。
+			return fallback, nil
+		}
+		return until, nil
+	})
+	if err != nil {
+		return fallback
+	}
+	until, ok := v.(time.Time)
 	if !ok {
-		// kiroCreditsCooldownUntil 对 b == nil 或未耗尽都返回 ok=false——
-		// 都不能当成"不冷却"处理：我们已经确认账号触发了
-		// SignalCreditsExhausted（上游 403/429 已经这么分类过一次），这次
-		// 现场查询只是拿不到可信的重置时间，必须退回保守冷却，而不是放弃
-		// 冷却让账号立刻被重新调度。
 		return fallback
 	}
 	return until

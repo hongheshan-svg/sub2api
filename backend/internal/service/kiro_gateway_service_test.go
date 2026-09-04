@@ -283,3 +283,113 @@ func TestKiroForwardUpstreamInvalidModelIDExhaustsEndpointsWithoutBlockingAccoun
 
 	require.False(t, blocker.called(), "红线一：INVALID_MODEL_ID 绝不能禁用账号")
 }
+
+// --- Fix Round 1：creditsExhaustedCooldownUntil 惊群修复的验证 ---
+//
+// review 指出的 Important 发现：原实现在每一次触发 SignalCreditsExhausted
+// 的失败请求上都独立发起一次现场 getUsageLimits 查询，credits 真耗尽时
+// 恰好是一批并发请求同时失败的时刻，会对上游造成惊群。修复分两层：
+//  1. 短路层——account 本地副本上已有未过期的限流记录时直接复用；
+//  2. singleflight 层——真正同一时刻并发的调用共享同一次现场查询。
+//
+// creditsExhaustedCooldownUntil 本身不写回 account.Extra（写回是调用方
+// finishWithAction 在拿到返回值之后做的事），所以下面两个测试各自独立地
+// 覆盖一层：短路测试预置好 account.Extra 再断言零上游调用；并发测试从
+// 干净账号出发，只能靠 singleflight 收敛。
+
+// kiroTestCreditsFakeUpstream 起一个假的 getUsageLimits 端点，返回一条已
+// 耗尽且带真实 nextDateReset 的用量，并用 atomic 计数每次被命中的次数——
+// 与 kiroTestFakeUpstream 同款风格。
+func kiroTestCreditsFakeUpstream(t *testing.T, resetAt time.Time, delay time.Duration) (*httptest.Server, *int32) {
+	t.Helper()
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		_, _ = w.Write([]byte(`{
+			"subscriptionInfo":{"subscriptionTitle":"KIRO PRO+"},
+			"overageConfiguration":{"overageStatus":"ENABLED"},
+			"usageBreakdownList":[{
+				"resourceType":"AGENTIC_REQUEST",
+				"currentUsage":1000,"usageLimit":1000,
+				"nextDateReset":` + itoa(resetAt.Unix()) + `
+			}]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// TestKiroCreditsExhaustedCooldownShortCircuitsOnExistingRateLimit 覆盖层 1：
+// account 本地副本上已经有一条还没过期的 kiroCreditsExhaustedKey 记录（模拟
+// "另一个并发请求刚做过这次查询并写回结果"），creditsExhaustedCooldownUntil
+// 必须直接复用它，一次都不打上游。
+func TestKiroCreditsExhaustedCooldownShortCircuitsOnExistingRateLimit(t *testing.T) {
+	future := time.Now().Add(2 * time.Hour)
+	srv, hits := kiroTestCreditsFakeUpstream(t, future, 0)
+
+	svc := &KiroGatewayService{}
+	svc.creditsQuotaFetcherOverride = &KiroQuotaFetcher{qHostFor: func(*Account) string { return srv.URL }}
+
+	account := kiroTestOAuthAccount(200)
+	setAccountModelRateLimitSnapshot(account, kiroCreditsExhaustedKey, future, "kiro_credits_exhausted", time.Now())
+
+	until := svc.creditsExhaustedCooldownUntil(context.Background(), account)
+	require.WithinDuration(t, future, until, time.Second)
+	require.EqualValues(t, 0, atomic.LoadInt32(hits), "本地已有未过期记录时不应发起任何现场查询")
+}
+
+// TestKiroCreditsExhaustedCooldownConcurrentCallsCollapseViaSingleflight 覆盖
+// 层 2：从一个干净账号（没有预置限流记录，层 1 帮不上忙）出发，N 个 goroutine
+// 用一个启动屏障尽量同时调用 creditsExhaustedCooldownUntil，断言真正打到上游
+// 的次数远小于 goroutine 数——singleflight 应该把它们收敛到 1 次。
+func TestKiroCreditsExhaustedCooldownConcurrentCallsCollapseViaSingleflight(t *testing.T) {
+	reset := time.Now().Add(6 * time.Hour)
+	// 给假上游一点人为延迟，扩大"多个 goroutine 同时处于 Do() 内部"的窗口，
+	// 让并发收敛效果在没有屏障也能大概率复现；配合下面的启动屏障双重保险。
+	srv, hits := kiroTestCreditsFakeUpstream(t, reset, 20*time.Millisecond)
+
+	svc := &KiroGatewayService{}
+	svc.creditsQuotaFetcherOverride = &KiroQuotaFetcher{qHostFor: func(*Account) string { return srv.URL }}
+
+	account := kiroTestOAuthAccount(201)
+
+	const goroutines = 30
+	results := make([]time.Time, goroutines)
+
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var wg sync.WaitGroup
+	ready.Add(goroutines)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			results[idx] = svc.creditsExhaustedCooldownUntil(context.Background(), account)
+		}(i)
+	}
+	ready.Wait() // 等所有 goroutine 都已启动、卡在屏障前，最大化真正同时调用的概率
+	close(start)
+	wg.Wait()
+
+	got := atomic.LoadInt32(hits)
+	t.Logf("goroutines=%d upstream_hits=%d", goroutines, got)
+
+	// 期望正好收敛到 1 次：30 个 goroutine 共享同一个启动屏障，几乎同时进入
+	// creditsExhaustedCooldownUntil，account 又没有预置限流记录（层 1 不生效），
+	// 应该全部落进 singleflight.Do 的同一个 flightKey，只有第一个真正发起
+	// 请求、其余全部拿到共享结果。留 <=2 的容差是为了容住"个别 goroutine
+	// 被调度延迟到第一次 Do() 已经返回之后才进入"这种小概率时序窗口——
+	// 出现这种情况时 singleflight 无法再合并，会诚实地发起第二次查询，这
+	// 不代表去重失败，只是同一时刻并发窗口没有覆盖到全部 goroutine。
+	require.LessOrEqual(t, got, int32(2), "singleflight 应该把 %d 个并发调用收敛到至多 1-2 次现场查询", goroutines)
+	require.GreaterOrEqual(t, got, int32(1), "至少要真正发起一次查询，不能全部退回 fallback")
+
+	for i, until := range results {
+		require.WithinDuration(t, reset, until, 2*time.Second, "goroutine %d 应该拿到真实 nextDateReset，而不是 fallback 冷却", i)
+	}
+}
