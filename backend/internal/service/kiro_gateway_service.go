@@ -18,6 +18,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// kiroBillingMode 是 usage_log.billing_mode 的取值。
+// kiro 按估算 token 计费；credits 只记在账号层，不逐请求入库（设计文档 §7.4）。
+// 目前只被 kiro_billing_test.go（//go:build unit）引用，用于把这个计费口径决定
+// 固化成可回归的断言；golangci-lint 默认不带 -tags=unit 运行，看不到那处引用，
+// 故显式豁免 unused，而不是假装这个常量在生产代码里已经被消费。
+//
+//nolint:unused // only referenced from kiro_billing_test.go (//go:build unit)
+const kiroBillingMode = "token"
+
 // kiroErrorBodyLimit 限制读取错误响应体的字节数。
 const kiroErrorBodyLimit = 64 * 1024
 
