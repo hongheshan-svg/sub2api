@@ -36,21 +36,32 @@
           <p class="mb-2 text-xs text-blue-800 dark:text-blue-300">
             已在新标签页打开授权链接。若被浏览器拦截，
             <button type="button" class="underline" @click="reopenIdcWindow">点此重新打开</button>。
-            登录并完成授权后，回到这里点击「我已完成授权」。
+          </p>
+          <p class="mb-2 text-xs text-blue-800 dark:text-blue-300">
+            登录并同意授权后，浏览器会跳转到一个<strong>打不开</strong>的地址（显示"无法连接"，这是正常的——
+            该地址本来就没有服务监听）。请把<strong>地址栏里的完整 URL</strong>复制下来，粘贴到下方后点击提交。
           </p>
           <p class="mb-2 text-[11px]" :class="isExpired ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'">
             <template v-if="!isExpired">授权链接 {{ remainingSeconds }} 秒后失效</template>
             <template v-else>授权会话已过期，请重新生成授权链接</template>
           </p>
+          <textarea
+            v-model="callbackUrlInput"
+            data-test="kiro-wizard-callback-url"
+            rows="2"
+            class="input mb-2 w-full font-mono text-xs"
+            placeholder="http://127.0.0.1/oauth/callback?code=...&amp;state=..."
+            :disabled="isExpired"
+          ></textarea>
           <div class="flex gap-2">
             <button
               type="button"
               data-test="kiro-wizard-confirm"
               class="btn btn-primary btn-sm"
-              :disabled="loading || isExpired"
+              :disabled="loading || isExpired || !callbackUrlInput.trim()"
               @click="confirmIdcDone"
             >
-              {{ loading ? '查询中…' : '我已完成授权' }}
+              {{ loading ? '提交中…' : '提交回调地址' }}
             </button>
             <button type="button" class="btn btn-secondary btn-sm" @click="resetIdc">重新开始</button>
           </div>
@@ -101,7 +112,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { adminAPI } from '@/api/admin'
-import { buildApiUrl } from '@/api/url'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import Icon from '@/components/icons/Icon.vue'
 import type { KiroCredentialForm } from './kiroCredentials'
@@ -131,6 +141,7 @@ const nowTick = ref(Date.now())
 
 // IdC 专用
 const authorizeUrlValue = ref('')
+const callbackUrlInput = ref('')
 // Builder ID（设备码）专用
 const userCode = ref('')
 const verificationUriComplete = ref('')
@@ -149,12 +160,6 @@ const remainingSeconds = computed(() => {
 
 function resolvedRegion(): string {
   return (props.region || '').trim() || 'us-east-1'
-}
-
-// AWS SSO 要求 redirect_uri 是本服务可公开访问的绝对地址；buildApiUrl 只返回
-// 相对/已配置的 API 前缀，这里用 window.location.origin 兜底拼成绝对 URL。
-function buildCallbackRedirectURI(): string {
-  return new URL(buildApiUrl('/admin/kiro/oauth/callback'), window.location.origin).toString()
 }
 
 function clearPollTimer() {
@@ -214,7 +219,6 @@ async function startIdc() {
     const res = await adminAPI.kiro.authorizeUrl({
       issuer_url: issuer,
       region: resolvedRegion(),
-      redirect_uri: buildCallbackRedirectURI(),
       proxy_id: props.proxyId ?? undefined
     })
     sessionId.value = res.session_id
@@ -239,17 +243,26 @@ async function confirmIdcDone() {
     error.value = '授权会话已过期，请重新生成授权链接'
     return
   }
+  const callbackUrl = callbackUrlInput.value.trim()
+  if (!callbackUrl) {
+    error.value = '请粘贴授权后浏览器地址栏的完整 URL'
+    return
+  }
   loading.value = true
   error.value = ''
   try {
-    const res = await adminAPI.kiro.fetchCredentials(sessionId.value)
+    const res = await adminAPI.kiro.completeIdC({
+      session_id: sessionId.value,
+      callback_url: callbackUrl,
+      proxy_id: props.proxyId ?? undefined
+    })
     if (res.status === 'ok' && res.credentials) {
       applyCredentials(res.credentials)
     } else {
-      error.value = '尚未完成授权，请确认已在打开的页面登录并完成授权'
+      error.value = '未能从粘贴的地址里解析出授权结果，请确认复制的是完整地址栏 URL'
     }
   } catch (err) {
-    error.value = extractApiErrorMessage(err, '查询授权结果失败')
+    error.value = extractApiErrorMessage(err, '完成授权失败')
   } finally {
     loading.value = false
   }
@@ -258,6 +271,7 @@ async function confirmIdcDone() {
 function resetIdc() {
   if (phase.value !== 'idle') phase.value = 'idle'
   authorizeUrlValue.value = ''
+  callbackUrlInput.value = ''
   sessionId.value = ''
   expiresAt.value = null
   error.value = ''

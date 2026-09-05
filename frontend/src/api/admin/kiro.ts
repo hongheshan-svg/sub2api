@@ -1,19 +1,23 @@
 /**
  * Admin Kiro (Amazon Q Developer / CodeWhisperer) OAuth API endpoints.
  *
- * 对应后端 Task 14 的四个管理端点（`internal/handler/admin/kiro_oauth_handler.go`）：
- * authorize-url（IdC 授权码）、device/start + device/poll（Builder ID 设备码）、
- * credentials/:session_id（IdC 回调落地后前端轮询取回一次性凭据）。
+ * 对应后端 `internal/handler/admin/kiro_oauth_handler.go` 的四个管理端点：
+ * authorize-url（IdC 授权码，生成授权链接）、idc/complete（IdC 授权码，
+ * 用管理员手动粘贴回来的回调 URL 完成兑换）、device/start + device/poll
+ * （Builder ID 设备码）。
  *
- * `/admin/kiro/oauth/callback` 不在此列——它是浏览器整页跳转落地的 HTML
- * 页面，不是 JS fetch 调用的 JSON API。
+ * IdC 流程没有服务端回调页——真实账号联调验证过，AWS SSO-OIDC 的
+ * client/register 对 public client 强制要求 redirect_uri 是裸 loopback
+ * 地址，服务端自建回调页会被直接拒绝（invalid_redirect_uri）。redirect_uri
+ * 现在固定在后端（`http://127.0.0.1/oauth/callback`，没有任何服务监听），
+ * 授权完成后浏览器会跳到这个打不开的地址，管理员手动复制地址栏完整 URL
+ * 粘贴回来，交给 idc/complete 解析并换取 token。
  */
 
 import { apiClient } from '../client'
 
 export interface KiroAuthorizeUrlRequest {
   proxy_id?: number | null
-  redirect_uri: string
   issuer_url: string
   region?: string
 }
@@ -22,6 +26,13 @@ export interface KiroAuthorizeUrlResponse {
   session_id: string
   authorize_url: string
   expires_in: number
+}
+
+export interface KiroIdCCompleteRequest {
+  session_id: string
+  /** 管理员从浏览器地址栏复制粘贴回来的完整回调 URL（含 code+state，或 error）。 */
+  callback_url: string
+  proxy_id?: number | null
 }
 
 export interface KiroDeviceStartRequest {
@@ -66,7 +77,7 @@ export interface KiroDevicePollResponse {
   credentials?: KiroRawCredentials
 }
 
-export interface KiroFetchCredentialsResponse {
+export interface KiroIdCCompleteResponse {
   status: KiroOAuthPollStatus
   credentials?: KiroRawCredentials
 }
@@ -76,6 +87,16 @@ export async function authorizeUrl(
 ): Promise<KiroAuthorizeUrlResponse> {
   const { data } = await apiClient.post<KiroAuthorizeUrlResponse>(
     '/admin/kiro/oauth/authorize-url',
+    payload
+  )
+  return data
+}
+
+export async function completeIdC(
+  payload: KiroIdCCompleteRequest
+): Promise<KiroIdCCompleteResponse> {
+  const { data } = await apiClient.post<KiroIdCCompleteResponse>(
+    '/admin/kiro/oauth/idc/complete',
     payload
   )
   return data
@@ -101,16 +122,9 @@ export async function devicePoll(
   return data
 }
 
-export async function fetchCredentials(sessionId: string): Promise<KiroFetchCredentialsResponse> {
-  const { data } = await apiClient.get<KiroFetchCredentialsResponse>(
-    `/admin/kiro/oauth/credentials/${encodeURIComponent(sessionId)}`
-  )
-  return data
-}
-
 export default {
   authorizeUrl,
+  completeIdC,
   deviceStart,
-  devicePoll,
-  fetchCredentials
+  devicePoll
 }

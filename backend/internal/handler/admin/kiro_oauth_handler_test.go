@@ -4,7 +4,6 @@ package admin
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-func TestKiroAuthorizeURLRequiresIssuerAndRedirect(t *testing.T) {
+func TestKiroAuthorizeURLRequiresIssuer(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := NewKiroOAuthHandler(nil)
@@ -32,57 +31,30 @@ func TestKiroAuthorizeURLRequiresIssuerAndRedirect(t *testing.T) {
 	require.GreaterOrEqual(t, w.Code, 400, "缺少必填参数必须报错")
 }
 
-// TestKiroCallbackRendersHTMLWithoutLeakingSecrets 覆盖回调页的两条要求：
-// 返回给人看的 HTML，且不回显任何敏感值。
-func TestKiroCallbackRendersHTMLWithoutLeakingSecrets(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	h := NewKiroOAuthHandler(nil)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet,
-		"/admin/kiro/oauth/callback?error=access_denied&state=st", nil)
-
-	h.Callback(c)
-
-	require.Contains(t, w.Header().Get("Content-Type"), "text/html")
-	body := w.Body.String()
-	require.NotContains(t, body, "client_secret")
-	require.NotContains(t, body, "code=")
-}
-
-// TestKiroCallbackMissingCodeRendersErrorPage 覆盖回调页在没有 error 也没有
-// code 的畸形访问下（比如有人直接手改 URL）也走人类可读的错误页，而不是
-// panic 或裸 JSON。
-func TestKiroCallbackMissingCodeRendersErrorPage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	h := NewKiroOAuthHandler(nil)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/kiro/oauth/callback?session_id=sid", nil)
-
-	h.Callback(c)
-
-	require.Contains(t, w.Header().Get("Content-Type"), "text/html")
-	require.GreaterOrEqual(t, w.Code, 400)
-}
-
-// TestKiroCallbackEndToEndRecoversSessionIDFromStateWhenMissing 是 C2 的
-// 回归：AuthorizeURL / Callback 各自的单测都是绿的，但从没有人把两者串起来
-// 按浏览器真实回调的样子走一遍——真实的 AWS SSO 回调只会原样带上
-// authorize 请求里发出的 code + state，不知道也不会带上 sub2api 自己的
-// session_id 查询参数，之前的实现因此永远拿不到 session_id，IdC 授权码
-// 流程 100% 失败。这里从 GenerateAuthURL 返回的 authorize_url 里取出真实
-// 注册的 redirect_uri，拼出一个「只有 code + state」的回调 URL（不带
-// session_id，就像浏览器重定向那样），验证 Callback 依然能兑换成功并把
-// credentials 暂存到（能通过 state 还原出的）正确 session_id 下。
-func TestKiroCallbackEndToEndRecoversSessionIDFromStateWhenMissing(t *testing.T) {
+// TestKiroAuthorizeURLIdCEndToEndCompletesViaPastedCallbackURL 是真实账号
+// 联调发现的回归：AWS SSO-OIDC 的 client/register 对 IdC（clientType=public）
+// 强制要求 redirect_uri 是裸 loopback 地址——sub2api 自建回调页这条路（浏览器
+// 整页跳转回我们自己的服务器）在真实账号上直接被 AWS 拒绝
+// （invalid_redirect_uri / "Requested client type must use loopback
+// interface for redirect"），根本到不了回调页那一步。
+//
+// 正确流程改成跟已验证可用的参考实现 Kiro-Go 一致：redirect_uri 固定指向
+// 一个没有服务监听的 loopback 地址，管理员在浏览器完成登录后手动复制地址栏
+// 里"无法连接"页面的完整 URL，粘贴回来交给 CompleteIdC 解析 code/state 并
+// 换取 token。这里端到端串联 AuthorizeURL → CompleteIdC，验证整条链路。
+func TestKiroAuthorizeURLIdCEndToEndCompletesViaPastedCallbackURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/client/register":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			// 真实账号测试发现的核心断言：注册请求的 redirectUris 必须是
+			// 裸 loopback 地址，不能是我们自己拼的服务端回调地址。
+			redirectURIs, _ := body["redirectUris"].([]any)
+			require.Len(t, redirectURIs, 1)
+			require.Equal(t, "http://127.0.0.1/oauth/callback", redirectURIs[0])
 			_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
 		case "/token":
 			_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))
@@ -103,43 +75,92 @@ func TestKiroCallbackEndToEndRecoversSessionIDFromStateWhenMissing(t *testing.T)
 	urlW := httptest.NewRecorder()
 	urlC, _ := gin.CreateTestContext(urlW)
 	urlC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/authorize-url",
-		strings.NewReader(`{"redirect_uri":"https://gw.example.com/admin/kiro/oauth/callback",`+
-			`"issuer_url":"https://d-x.awsapps.com/start","region":"us-east-1"}`))
+		strings.NewReader(`{"issuer_url":"https://d-x.awsapps.com/start","region":"us-east-1"}`))
 	urlC.Request.Header.Set("Content-Type", "application/json")
 	h.AuthorizeURL(urlC)
 	require.Equal(t, http.StatusOK, urlW.Code)
 
 	var urlResp struct {
 		Data struct {
+			SessionID    string `json:"session_id"`
 			AuthorizeURL string `json:"authorize_url"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(urlW.Body.Bytes(), &urlResp))
+	require.NotEmpty(t, urlResp.Data.SessionID)
 
 	parsed, err := url.Parse(urlResp.Data.AuthorizeURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
-	require.NotEmpty(t, redirectURI, "authorize_url 里必须带上真正注册的 redirect_uri")
+	require.Equal(t, "http://127.0.0.1/oauth/callback", redirectURI)
 	state := parsed.Query().Get("state")
 	require.NotEmpty(t, state)
 
-	// 真实浏览器回调:只有 code + state，没有 session_id —— 这正是 C2 描述的场景。
-	callbackURL := redirectURI + "?code=authcode&state=" + url.QueryEscape(state)
-	require.NotContains(t, callbackURL, "session_id", "回调 URL 里不应该也不可能带 session_id")
+	// 真实场景：管理员在浏览器登录完成后，AWS 把浏览器带到这个打不开的
+	// loopback 地址，手动复制地址栏完整 URL 粘贴回来——session_id 是前端
+	// 早先从 authorize-url 响应里拿到、自己持有的，不需要（也不可能）从这个
+	// URL 里解析出来。
+	pastedURL := redirectURI + "?code=authcode&state=" + url.QueryEscape(state)
 
-	cbW := httptest.NewRecorder()
-	cbC, _ := gin.CreateTestContext(cbW)
-	cbC.Request = httptest.NewRequest(http.MethodGet, callbackURL, nil)
-	h.Callback(cbC)
+	completeBody, err := json.Marshal(map[string]string{
+		"session_id":   urlResp.Data.SessionID,
+		"callback_url": pastedURL,
+	})
+	require.NoError(t, err)
+	completeW := httptest.NewRecorder()
+	completeC, _ := gin.CreateTestContext(completeW)
+	completeC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/idc/complete", bytes.NewReader(completeBody))
+	completeC.Request.Header.Set("Content-Type", "application/json")
+	h.CompleteIdC(completeC)
 
-	require.Equal(t, http.StatusOK, cbW.Code, "回调必须成功，不能因为 session_id 缺失而报错: %s", cbW.Body.String())
+	require.Equal(t, http.StatusOK, completeW.Code, "完成授权必须成功: %s", completeW.Body.String())
+	var completeResp struct {
+		Data struct {
+			Status      string         `json:"status"`
+			Credentials map[string]any `json:"credentials"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(completeW.Body.Bytes(), &completeResp))
+	require.Equal(t, "ok", completeResp.Data.Status)
+	require.Equal(t, "at", completeResp.Data.Credentials["access_token"])
+	require.Equal(t, "arn:x", completeResp.Data.Credentials["profile_arn"])
+}
 
-	sessionID := svc.SessionIDFromState(state)
-	require.NotEmpty(t, sessionID)
-	creds, ok := svc.TakeStashedCredentials(context.Background(), sessionID)
-	require.True(t, ok, "Callback 必须把兑换结果暂存到能通过 state 还原出的 session_id 下")
-	require.Equal(t, "at", creds["access_token"])
-	require.Equal(t, "arn:x", creds["profile_arn"])
+// TestKiroCompleteIdCSurfacesAuthorizeError 覆盖管理员在 AWS 门户拒绝/取消
+// 授权时的路径：粘贴回来的 URL 带的是 ?error=... 而不是 ?code=...，
+// CompleteIdC 必须报错，不能把 error 参数当 code 传下去。
+func TestKiroCompleteIdCSurfacesAuthorizeError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	svc := service.NewKiroOAuthService(nil)
+	defer svc.Stop()
+	h := NewKiroOAuthHandler(svc)
+
+	body, err := json.Marshal(map[string]string{
+		"session_id":   "sid",
+		"callback_url": "http://127.0.0.1/oauth/callback?error=access_denied&error_description=User+declined",
+	})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/idc/complete", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.CompleteIdC(c)
+
+	require.GreaterOrEqual(t, w.Code, 400)
+}
+
+func TestKiroCompleteIdCRequiresSessionIDAndCallbackURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewKiroOAuthHandler(nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/idc/complete", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.CompleteIdC(c)
+
+	require.GreaterOrEqual(t, w.Code, 400)
 }
 
 // TestKiroDevicePollPendingIsNotAnError 是「pending 不是错误」这条契约的
@@ -215,76 +236,4 @@ func TestKiroDevicePollPendingIsNotAnError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(pollW.Body.Bytes(), &pollResp))
 	require.Equal(t, "pending", pollResp.Data.Status)
 	require.Positive(t, pollResp.Data.Interval)
-}
-
-// TestKiroFetchCredentialsPendingIsNotAnError 覆盖 FetchCredentials 的
-// pending 契约：还没轮到 / 已被消费 / 已过期三种情况都无法区分，统一返回
-// 200 + {"status":"pending"}，不是 404。
-func TestKiroFetchCredentialsPendingIsNotAnError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	svc := service.NewKiroOAuthService(nil)
-	defer svc.Stop()
-	h := NewKiroOAuthHandler(svc)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/kiro/oauth/credentials/never-stashed", nil)
-	c.Params = gin.Params{{Key: "session_id", Value: "never-stashed"}}
-
-	h.FetchCredentials(c)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp struct {
-		Data struct {
-			Status string `json:"status"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "pending", resp.Data.Status)
-}
-
-// TestKiroFetchCredentialsReturnsStashedCredentialsOnce 覆盖 FetchCredentials
-// 的一次性读取：第一次拿到 Callback 暂存的 credentials，第二次必须回落到
-// pending（而不是把同一份凭据再吐一次）。
-func TestKiroFetchCredentialsReturnsStashedCredentialsOnce(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	svc := service.NewKiroOAuthService(nil)
-	defer svc.Stop()
-	h := NewKiroOAuthHandler(svc)
-
-	svc.StashCredentials(context.Background(), "sid", map[string]any{"access_token": "at"})
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/admin/kiro/oauth/credentials/sid", nil)
-	c.Params = gin.Params{{Key: "session_id", Value: "sid"}}
-	h.FetchCredentials(c)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp struct {
-		Data struct {
-			Status      string         `json:"status"`
-			Credentials map[string]any `json:"credentials"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "ok", resp.Data.Status)
-	require.Equal(t, "at", resp.Data.Credentials["access_token"])
-
-	// 第二次：同一个 session_id 必须回落到 pending。
-	w2 := httptest.NewRecorder()
-	c2, _ := gin.CreateTestContext(w2)
-	c2.Request = httptest.NewRequest(http.MethodGet, "/admin/kiro/oauth/credentials/sid", nil)
-	c2.Params = gin.Params{{Key: "session_id", Value: "sid"}}
-	h.FetchCredentials(c2)
-
-	var resp2 struct {
-		Data struct {
-			Status string `json:"status"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
-	require.Equal(t, "pending", resp2.Data.Status, "同一 session_id 第二次读取不得再返回凭据")
 }

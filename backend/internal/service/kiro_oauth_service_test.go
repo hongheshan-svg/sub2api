@@ -36,9 +36,22 @@ func newTestKiroOAuthService(t *testing.T, srv *httptest.Server) *KiroOAuthServi
 	return svc
 }
 
+// TestKiroGenerateAuthURLRegistersClientAndStoresSession 同时覆盖真实账号
+// 联调发现的回归：AWS SSO-OIDC 的 client/register 对 clientType=public 强制
+// 要求 redirect_uri 是裸 loopback 地址（服务端自建回调页会被拒，见
+// kiroIdCRedirectURI 的文档），必须固定用这个值注册/授权，不能再接受调用方
+// 传入的地址。
 func TestKiroGenerateAuthURLRegistersClientAndStoresSession(t *testing.T) {
+	var registeredRedirectURIs []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/client/register", r.URL.Path)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		if raw, ok := body["redirectUris"].([]any); ok {
+			for _, v := range raw {
+				registeredRedirectURIs = append(registeredRedirectURIs, v.(string))
+			}
+		}
 		_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
 	}))
 	defer srv.Close()
@@ -46,19 +59,23 @@ func TestKiroGenerateAuthURLRegistersClientAndStoresSession(t *testing.T) {
 	svc := newTestKiroOAuthService(t, srv)
 
 	res, err := svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{
-		RedirectURI: "https://gw.example.com/admin/kiro/oauth/callback",
-		IssuerURL:   "https://d-90667b4f8e.awsapps.com/start",
-		Region:      "us-east-1",
+		IssuerURL: "https://d-90667b4f8e.awsapps.com/start",
+		Region:    "us-east-1",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, res.SessionID)
 	require.Positive(t, res.ExpiresIn)
+
+	require.Equal(t, []string{kiroIdCRedirectURI}, registeredRedirectURIs,
+		"client/register 必须固定用裸 loopback 地址注册，不能是服务端自建回调页——"+
+			"真实 AWS 账号会拒绝后者（invalid_redirect_uri）")
 
 	u, err := url.Parse(res.AuthorizeURL)
 	require.NoError(t, err)
 	q := u.Query()
 	require.Equal(t, "cid", q.Get("client_id"))
 	require.Equal(t, "S256", q.Get("code_challenge_method"))
+	require.Equal(t, kiroIdCRedirectURI, q.Get("redirect_uri"))
 	require.NotEmpty(t, q.Get("state"))
 
 	// 会话必须落库，且带上 PKCE verifier 与客户端凭据。
@@ -68,17 +85,76 @@ func TestKiroGenerateAuthURLRegistersClientAndStoresSession(t *testing.T) {
 	require.Equal(t, "cid", sess.ClientID)
 	require.Equal(t, "csec", sess.ClientSecret)
 	require.NotEmpty(t, sess.Verifier)
+	require.Equal(t, kiroIdCRedirectURI, sess.RedirectURI)
 	require.Equal(t, q.Get("state"), sess.State)
 }
 
-func TestKiroGenerateAuthURLRequiresRedirectAndIssuer(t *testing.T) {
+func TestKiroGenerateAuthURLRequiresIssuer(t *testing.T) {
 	svc := NewKiroOAuthService(nil)
 	defer svc.Stop()
 
-	_, err := svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{IssuerURL: "https://x/start"})
+	_, err := svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{})
 	require.Error(t, err)
+}
 
-	_, err = svc.GenerateAuthURL(context.Background(), &KiroAuthURLInput{RedirectURI: "https://x/cb"})
+// --- CompleteIdCLogin：管理员手动粘贴回调 URL 完成 IdC 授权码兑换 ---
+
+func TestKiroCompleteIdCLoginParsesCallbackURLAndExchanges(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/token", r.URL.Path)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "the-code", body["code"])
+		_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))
+	}))
+	defer srv.Close()
+
+	svc := newTestKiroOAuthService(t, srv)
+	ctx := context.Background()
+	svc.sessionStore.Set(ctx, "sid", &kiro.OAuthSession{
+		Method: kiro.AuthIdC, State: "st", ClientID: "cid", ClientSecret: "csec",
+		Verifier: "ver", RedirectURI: kiroIdCRedirectURI, Region: "us-east-1",
+		ExpiresAt: time.Now().Add(kiro.SessionTTL),
+	})
+
+	// 真实场景：这个 URL 是浏览器地址栏里"无法连接"页面的完整地址，
+	// 管理员手动复制粘贴过来的。
+	pasted := kiroIdCRedirectURI + "?code=the-code&state=st"
+
+	ts, sess, err := svc.CompleteIdCLogin(ctx, "sid", pasted, nil)
+	require.NoError(t, err)
+	require.Equal(t, "at", ts.AccessToken)
+	require.Equal(t, "arn:x", ts.ProfileArn)
+	require.Equal(t, kiro.AuthIdC, sess.Method)
+}
+
+func TestKiroCompleteIdCLoginSurfacesAuthorizeError(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+	ctx := context.Background()
+	svc.sessionStore.Set(ctx, "sid", &kiro.OAuthSession{
+		Method: kiro.AuthIdC, State: "st", ExpiresAt: time.Now().Add(kiro.SessionTTL),
+	})
+
+	pasted := kiroIdCRedirectURI + "?error=access_denied&error_description=User+declined"
+	_, _, err := svc.CompleteIdCLogin(ctx, "sid", pasted, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "access_denied")
+}
+
+func TestKiroCompleteIdCLoginRejectsUnparsableURL(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	_, _, err := svc.CompleteIdCLogin(context.Background(), "sid", "://not a url", nil)
+	require.Error(t, err)
+}
+
+func TestKiroCompleteIdCLoginRequiresSessionID(t *testing.T) {
+	svc := NewKiroOAuthService(nil)
+	defer svc.Stop()
+
+	_, _, err := svc.CompleteIdCLogin(context.Background(), "", kiroIdCRedirectURI+"?code=c&state=s", nil)
 	require.Error(t, err)
 }
 

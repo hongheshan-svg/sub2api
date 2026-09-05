@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,38 +17,49 @@ import (
 // kiroOAuthHTTPTimeout 是授权/刷新请求的总超时。
 const kiroOAuthHTTPTimeout = 30 * time.Second
 
-// kiroOAuthStateSeparator 分隔 GenerateAuthURL 编码进 state 里的
-// session_id 与 CSRF 随机后缀（见 GenerateAuthURL / SessionIDFromState 上的
-// 注释，C2）。kiro.GenerateSessionID 用 base64.RawURLEncoding，字母表是
-// A-Za-z0-9-_，不含 "."，所以拿它切分永远不会切错。
-const kiroOAuthStateSeparator = "."
+// kiroIdCRedirectURI 是 IdC 授权码流程注册/授权/换码三步统一使用的
+// redirect_uri，固定值，不由调用方传入。
+//
+// 真实账号联调验证：AWS SSO-OIDC 的 client/register 对 clientType=public
+// 的客户端强制要求 redirect_uri 是裸的 loopback 地址——带自定义端口/业务
+// 路径的服务端回调地址（哪怕 host 就是 127.0.0.1）会被直接拒绝，报
+// invalid_redirect_uri / "Requested client type must use loopback
+// interface for redirect"，卡在注册这一步，根本到不了回调页。
+//
+// 这个值精确复刻已验证可用的参考实现 Kiro-Go（真实 Kiro 账号跑通过）的写死
+// 常量：授权完成后浏览器会跳到这个地址，本地/远程都没有任何服务监听在这，
+// 浏览器显示"无法连接"，但地址栏里的完整 URL（带 code+state）还在——管理员
+// 手动复制整个地址栏 URL 粘贴回来（见 CompleteIdCLogin），这不是体验妥协，
+// 是 AWS 这边唯一可行的方式。sub2api 自建回调页（原 Callback handler）的
+// 设计在真实账号测试中被证伪：AWS 永远不会把浏览器带到我们自己的服务器。
+const kiroIdCRedirectURI = "http://127.0.0.1/oauth/callback"
 
 // KiroOAuthService 负责 Kiro 账号的授权与令牌刷新。
 //
 // 两条初始授权路径：
-//   - idc：动态注册 → PKCE → /authorize → 自建回调页 → /token
+//   - idc：动态注册 → PKCE → /authorize → 管理员手动粘贴回调 URL → /token
+//     （redirect_uri 固定指向一个没有服务监听的 loopback 地址，浏览器整页
+//     跳转到我们自己服务器这条路已被真实账号测试证伪，见 kiroIdCRedirectURI）
 //   - builder_id：动态注册（device_code）→ /device_authorization → 轮询 /token
 //
 // social 与 api_key 不经过授权流：前者由管理员粘贴 refreshToken，后者直接粘 API Key。
 type KiroOAuthService struct {
-	sessionStore    *kiro.SessionStore
-	credentialStash *kiro.CredentialStash
-	proxyRepo       ProxyRepository
+	sessionStore *kiro.SessionStore
+	proxyRepo    ProxyRepository
 
 	// base URL 做成字段以便测试注入 httptest.Server。
 	oidcBase   func(region string) string
 	socialBase func(region string) string
 }
 
-// NewKiroOAuthService 创建服务，默认使用进程内存会话存储与凭据暂存。
-// 生产环境由 wire 注入 Redis 版本（见 WithSessionStore / WithCredentialStash）。
+// NewKiroOAuthService 创建服务，默认使用进程内存会话存储。
+// 生产环境由 wire 注入 Redis 版本（见 WithSessionStore）。
 func NewKiroOAuthService(proxyRepo ProxyRepository) *KiroOAuthService {
 	return &KiroOAuthService{
-		sessionStore:    kiro.NewSessionStore(),
-		credentialStash: kiro.NewCredentialStash(),
-		proxyRepo:       proxyRepo,
-		oidcBase:        kiro.OIDCBase,
-		socialBase:      kiro.SocialBase,
+		sessionStore: kiro.NewSessionStore(),
+		proxyRepo:    proxyRepo,
+		oidcBase:     kiro.OIDCBase,
+		socialBase:   kiro.SocialBase,
 	}
 }
 
@@ -59,17 +71,6 @@ func (s *KiroOAuthService) WithSessionStore(store *kiro.SessionStore) *KiroOAuth
 			s.sessionStore.Stop()
 		}
 		s.sessionStore = store
-	}
-	return s
-}
-
-// WithCredentialStash 替换凭据暂存。Redis 接线同样留在 wire providers 里。
-func (s *KiroOAuthService) WithCredentialStash(stash *kiro.CredentialStash) *KiroOAuthService {
-	if s != nil && stash != nil {
-		if s.credentialStash != nil {
-			s.credentialStash.Stop()
-		}
-		s.credentialStash = stash
 	}
 	return s
 }
@@ -96,7 +97,7 @@ func (s *KiroOAuthService) WithBaseURLs(oidcBase, socialBase func(region string)
 	return s
 }
 
-// Stop 释放会话存储与凭据暂存的后台清理。
+// Stop 释放会话存储的后台清理。
 func (s *KiroOAuthService) Stop() {
 	if s == nil {
 		return
@@ -104,36 +105,11 @@ func (s *KiroOAuthService) Stop() {
 	if s.sessionStore != nil {
 		s.sessionStore.Stop()
 	}
-	if s.credentialStash != nil {
-		s.credentialStash.Stop()
-	}
-}
-
-// StashCredentials 把兑换出的账号 credentials 暂存一次性存储，供管理面板
-// 轮询取回。IdC 授权码流程用浏览器整页跳转完成回调，前端 JS 拿不到 code，
-// 只能靠这个中转把 Callback 兑换出的结果带到前端下一步的建号请求里。
-func (s *KiroOAuthService) StashCredentials(ctx context.Context, sessionID string, creds map[string]any) {
-	if s == nil || s.credentialStash == nil {
-		return
-	}
-	s.credentialStash.Set(ctx, sessionID, creds)
-}
-
-// TakeStashedCredentials 取回并销毁暂存的 credentials（一次性）。
-// 找不到时可能是尚未到达、已被消费，或已过期——三者无法区分，调用方
-// （FetchCredentials handler）应统一视为 pending，不当错误处理。
-func (s *KiroOAuthService) TakeStashedCredentials(ctx context.Context, sessionID string) (map[string]any, bool) {
-	if s == nil || s.credentialStash == nil {
-		return nil, false
-	}
-	return s.credentialStash.TakeOnce(ctx, sessionID)
 }
 
 // KiroAuthURLInput 是发起 IdC 授权所需的参数。
 type KiroAuthURLInput struct {
 	ProxyID *int64
-	// RedirectURI 必须是本服务可公开访问的回调地址。
-	RedirectURI string
 	// IssuerURL 是组织的 SSO 门户地址，如 https://d-xxxx.awsapps.com/start。
 	IssuerURL string
 	Region    string
@@ -149,10 +125,7 @@ type KiroAuthURLResult struct {
 // GenerateAuthURL 动态注册客户端、生成 PKCE，并返回授权跳转地址。
 // 管理员在浏览器打开它，用组织的用户名/密码在 AWS 门户完成登录。
 func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthURLInput) (*KiroAuthURLResult, error) {
-	if input == nil || strings.TrimSpace(input.RedirectURI) == "" {
-		return nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_REDIRECT_REQUIRED", "redirect URI is required")
-	}
-	if strings.TrimSpace(input.IssuerURL) == "" {
+	if input == nil || strings.TrimSpace(input.IssuerURL) == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_ISSUER_REQUIRED", "issuer URL is required")
 	}
 
@@ -162,7 +135,7 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthU
 	}
 
 	base := s.oidcBase(input.Region)
-	reg, err := kiro.RegisterOIDCClient(ctx, hc, base, input.IssuerURL, input.RedirectURI, false)
+	reg, err := kiro.RegisterOIDCClient(ctx, hc, base, input.IssuerURL, kiroIdCRedirectURI, false)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_REGISTER_FAILED", "client registration failed: %v", err)
 	}
@@ -175,17 +148,10 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthU
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_SESSION_FAILED", "failed to generate session id: %v", err)
 	}
-	csrfSuffix, err := kiro.GenerateSessionID()
+	state, err := kiro.GenerateSessionID()
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_STATE_FAILED", "failed to generate state: %v", err)
 	}
-	// state 编码成 "<session_id>.<csrf 随机后缀>"：AWS SSO 的授权回调只会
-	// 原样回传 code + state，不知道、也不会带上 sub2api 自己的
-	// session_id 查询参数（C2 的根因）。把 session_id 嵌进 state 里，
-	// Callback 才能在 session_id 缺失时从 state 里还原出会话；CSRF 后缀
-	// 依旧是独立随机值，state 整体仍然靠 ExchangeCode 里既有的
-	// subtle.ConstantTimeCompare 校验，安全性不减弱。
-	state := sessionID + kiroOAuthStateSeparator + csrfSuffix
 
 	s.sessionStore.Set(ctx, sessionID, &kiro.OAuthSession{
 		Method:       kiro.AuthIdC,
@@ -195,34 +161,15 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthU
 		State:        state,
 		Region:       input.Region,
 		IssuerURL:    input.IssuerURL,
-		RedirectURI:  input.RedirectURI,
+		RedirectURI:  kiroIdCRedirectURI,
 		ExpiresAt:    time.Now().Add(kiro.SessionTTL),
 	})
 
 	return &KiroAuthURLResult{
 		SessionID:    sessionID,
-		AuthorizeURL: kiro.BuildAuthorizeURL(base, reg.ClientID, input.RedirectURI, state, pkce.Challenge),
+		AuthorizeURL: kiro.BuildAuthorizeURL(base, reg.ClientID, kiroIdCRedirectURI, state, pkce.Challenge),
 		ExpiresIn:    int(kiro.SessionTTL / time.Second),
 	}, nil
-}
-
-// SessionIDFromState 从回调携带的 state 里还原 GenerateAuthURL 生成时嵌入
-// 的 session_id（见 GenerateAuthURL 里 state 的组装注释，C2）。AWS SSO 的
-// OIDC 回调只会原样带上 authorize 请求里发出的 code + state，浏览器整页
-// 跳转过去，前端 JS 全程插不上手，也没法额外挂一个 session_id 查询参数——
-// state 因此是回调这一侧唯一能找回会话的信息来源。
-//
-// 找不到分隔符时返回空字符串，调用方（Callback）据此按“缺少 session_id”
-// 处理，走已有的错误页分支，不会 panic。
-func (s *KiroOAuthService) SessionIDFromState(state string) string {
-	if s == nil {
-		return ""
-	}
-	id, _, ok := strings.Cut(state, kiroOAuthStateSeparator)
-	if !ok {
-		return ""
-	}
-	return id
 }
 
 // KiroExchangeCodeInput 是回调兑换所需的参数。
@@ -275,6 +222,39 @@ func (s *KiroOAuthService) ExchangeCode(ctx context.Context, input *KiroExchange
 		return nil, nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_OAUTH_EXCHANGE_FAILED", "code exchange failed: %v", err)
 	}
 	return ts, sess, nil
+}
+
+// CompleteIdCLogin 用管理员手动粘贴回来的回调 URL 完成 IdC 授权码兑换。
+//
+// redirect_uri 固定指向一个没有任何服务监听的 loopback 地址
+// （kiroIdCRedirectURI），AWS 授权完成后浏览器会跳过去、显示"无法连接"，
+// 但地址栏里的完整 URL（?code=...&state=...，或失败时 ?error=...）还在。
+// 这里把粘贴回来的整个 URL 解析出 code/state/error，再走已有的 ExchangeCode
+// （state 校验 + 单次消费 + 换 token 三步不重复）。
+func (s *KiroOAuthService) CompleteIdCLogin(ctx context.Context, sessionID, callbackURL string, proxyID *int64) (*kiro.TokenSet, *kiro.OAuthSession, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_SESSION_REQUIRED", "session id is required")
+	}
+	parsed, err := url.Parse(strings.TrimSpace(callbackURL))
+	if err != nil {
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_INVALID_CALLBACK_URL", "the pasted URL could not be parsed")
+	}
+
+	q := parsed.Query()
+	if errParam := q.Get("error"); errParam != "" {
+		msg := errParam
+		if desc := q.Get("error_description"); desc != "" {
+			msg = errParam + ": " + desc
+		}
+		return nil, nil, infraerrors.New(http.StatusBadRequest, "KIRO_OAUTH_AUTHORIZE_FAILED", msg)
+	}
+
+	return s.ExchangeCode(ctx, &KiroExchangeCodeInput{
+		SessionID: sessionID,
+		Code:      q.Get("code"),
+		State:     q.Get("state"),
+		ProxyID:   proxyID,
+	})
 }
 
 // KiroDeviceAuthResult 是设备码授权的展示信息。
