@@ -185,7 +185,7 @@ func kiroAccumulateAnthropicResponse(events []apicompat.AnthropicStreamEvent) (*
 					b = &strings.Builder{}
 					pendingToolInput[idx] = b
 				}
-				b.WriteString(ev.Delta.PartialJSON)
+				_, _ = b.WriteString(ev.Delta.PartialJSON)
 			}
 
 		case "content_block_stop":
