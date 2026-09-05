@@ -58,7 +58,30 @@ const kiroSuspendedCooldown = 4 * time.Hour
 // 失败决策全部委托给 decideKiroAction —— 本函数只负责执行决策。
 // 只在同一账号的多个端点间重试；换账号由调用方（Task 18 接线的外层账号
 // 选择循环）负责，本函数通过返回 *UpstreamFailoverError 发出信号。
+//
+// 真实流量必须过本地模型白名单（见 forwardUpstream 的 bypassModelWhitelist
+// 参数文档）：不能让一个真实用户的请求因为白名单猜错而白白转发一次
+// 消耗真实 Kiro 配额去确认"这个模型到底存不存在"——那是管理员主动发起的
+// 测试连接（见 TestConnection）该做的事，不是生产流量该承担的代价。
 func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	return s.forwardUpstream(ctx, c, account, body, false)
+}
+
+// forwardUpstream 是 ForwardUpstream/TestConnection 共用的核心转发逻辑。
+//
+// bypassModelWhitelist 为 true 时（仅 TestConnection 使用）：不管
+// kiroModelAliases 认不认识这个模型名，都直接转发给 Kiro 真实上游，用
+// 真实响应验证它到底支不支持——管理员主动发起的一次性诊断调用，请求体
+// 很小（TestConnection 固定用 max_tokens:64 的短提示词），代价可以忽略，
+// 换来的是不用靠猜/靠第三方参考实现就能确认一个模型名到底对不对（真实
+// 账号测试连续两次证明本地白名单会猜错：claude-fable-5 被误收，
+// claude-sonnet-5 被误拒——两次错误方向相反，说明"猜"这件事本身不可靠，
+// 能直接问上游的场合就不该猜）。
+//
+// false 时（真实网关流量）：走 MapModel 的白名单闸门，未收录直接拒绝，
+// 不浪费一次真实用户的 Kiro 配额去确认一个大概率是错的模型名——见
+// ForwardUpstream 的文档。
+func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte, bypassModelWhitelist bool) (*ForwardResult, error) {
 	startTime := time.Now()
 
 	var inbound apicompat.AnthropicRequest
@@ -69,12 +92,21 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 	// 真实账号测试发现：MapModel 之前对任何未识别的模型名（含明显不属于
 	// Kiro 的名字）都静默兜底成 claude-sonnet-4.6 并正常转发——客户端会
 	// 看到请求"成功"，却从未意识到自己请求的模型从未被真正服务过。现在
-	// ok=false 时必须直接拒绝，不能静默换模型再假装成功——与 Antigravity
-	// 的 getMappedModel==""→writeClaudeError 是同一约定（见 MapModel 文档：
-	// 维护一份准确的白名单，命中就映射、未命中就干净拒绝）。
+	// ok=false 时（真实流量）必须直接拒绝，不能静默换模型再假装成功——
+	// 与 Antigravity 的 getMappedModel==""→writeClaudeError 是同一约定
+	// （见 MapModel 文档：维护一份准确的白名单，命中就映射、未命中就干净
+	// 拒绝）。bypassModelWhitelist 时改用去掉日期后缀的原始请求名直接
+	// 转发，不查白名单也不拒绝——见本函数文档。
 	upstreamModel, modelOK := kiro.MapModel(inbound.Model)
 	if !modelOK {
-		return nil, s.writeKiroModelUnsupportedError(c, inbound.Model)
+		if !bypassModelWhitelist {
+			return nil, s.writeKiroModelUnsupportedError(c, inbound.Model)
+		}
+		trimmed := strings.ToLower(strings.TrimSpace(inbound.Model))
+		if trimmed == "" {
+			return nil, s.writeKiroModelUnsupportedError(c, inbound.Model)
+		}
+		upstreamModel = trimmed
 	}
 
 	endpoints := kiro.EndpointsFor(account.IsKiroAPIKeyAccount(), account.KiroRegion())
@@ -741,12 +773,17 @@ type KiroTestConnectionResult struct {
 }
 
 // TestConnection 测试 Kiro 账号连接：发一个最小的非流式请求，完整复用
-// ForwardUpstream 的端点选择/失败决策/token 刷新/计费逻辑，与真实请求走的
+// forwardUpstream 的端点选择/失败决策/token 刷新/计费逻辑，与真实请求走的
 // 是同一条代码路径——不是另起一套简化的连通性探测，因此这里验证的就是
-// 真实转发链路是否工作，而不是仅仅"能不能连上 AWS"。
+// 真实转发链路是否工作，而不是仅仅"能不能连上 AWS"。唯一的差异是
+// bypassModelWhitelist=true（见 forwardUpstream 文档）：管理员主动点一次
+// 测试连接，代价是一个 max_tokens:64 的短请求，完全负担得起直接问 Kiro
+// 真实上游"这个模型到底支不支持"，不需要先过本地白名单——真实账号测试
+// 已经两次证明本地白名单会猜错（一次误收 claude-fable-5、一次误拒
+// claude-sonnet-5，方向相反），能直接问上游拿真实答案的场合就不该猜。
 //
-// 需要一个 *gin.Context 给 ForwardUpstream 写非流式 JSON 响应——这里用
-// httptest 合成一个：不是在写测试，是 ForwardUpstream 的签名深度依赖
+// 需要一个 *gin.Context 给 forwardUpstream 写非流式 JSON 响应——这里用
+// httptest 合成一个：不是在写测试，是 forwardUpstream 的签名深度依赖
 // gin.Context（conversationIDFor 用它读客户端会话信号、nonStreamToClient
 // 用它写响应头/JSON body），比另外拆一条不依赖 gin.Context 的平行路径要
 // simpler、且保证测试连接与真实流量共享完全相同的行为。
@@ -775,7 +812,10 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	ginCtx, _ := gin.CreateTestContext(rec)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 
-	if _, err := s.ForwardUpstream(ctx, ginCtx, account, body); err != nil {
+	// bypassModelWhitelist=true：管理员主动发起的一次性诊断调用，不查本地
+	// 白名单——直接问 Kiro 真实上游这个模型到底支不支持（见 forwardUpstream
+	// 的文档：真实账号测试连续两次证明本地白名单会猜错，方向还不一样）。
+	if _, err := s.forwardUpstream(ctx, ginCtx, account, body, true); err != nil {
 		return nil, err
 	}
 

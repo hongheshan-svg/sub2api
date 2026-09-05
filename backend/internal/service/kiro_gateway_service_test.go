@@ -544,15 +544,23 @@ func TestKiroTestConnectionSurfacesUpstreamFailure(t *testing.T) {
 	require.Error(t, err, "上游拒绝时测试连接必须报错，不能悄悄返回空文本假装成功")
 }
 
-// TestKiroTestConnectionRejectsUnsupportedModel 是用户真实账号测试报告的
-// 症状在管理端"测试连接"入口的直接覆盖（ForwardUpstream 层面的覆盖见
-// TestKiroForwardUpstreamRejectsUnsupportedModel）：选择一个白名单确认不
-// 支持的模型时，测试连接必须报错，不能显示"完成"，也不该真的去问上游
-// （已知不支持，问了是浪费一次上游调用）。
-func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
+// TestKiroTestConnectionBypassesWhitelistAndAsksRealUpstream 是用户明确
+// 要求的行为，也是对 ForwardUpstream 白名单拒绝（见
+// TestKiroForwardUpstreamRejectsUnsupportedModel）的刻意不对称：测试连接
+// 是管理员主动发起的一次性诊断调用，代价小（这里固定 max_tokens:64 的短
+// 请求），完全负担得起直接问 Kiro 真实上游"这个模型到底支不支持"，不需要
+// 先过本地白名单再猜——本地白名单已经两次证明会猜错（一次误收
+// claude-fable-5、一次误拒 claude-sonnet-5，方向相反），能直接问上游拿
+// 真实答案的场合就不该猜。这里断言一个本地白名单里没有的模型名确实会被
+// 转发到上游（不会被拦下来），且上游的真实响应（这里模拟一次成功）会
+// 原样返回给调用方。
+func TestKiroTestConnectionBypassesWhitelistAndAsksRealUpstream(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"OK"}`),
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+	)
 	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
-		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
-		return 0, nil
+		return http.StatusOK, frames
 	})
 
 	svc := &KiroGatewayService{}
@@ -560,10 +568,34 @@ func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
 
 	account := kiroTestOAuthAccount(504)
 
-	_, err := svc.TestConnection(context.Background(), account, "claude-fable-5-2")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not supported")
-	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+	result, err := svc.TestConnection(context.Background(), account, "claude-sonnet-5")
+	require.NoError(t, err, "测试连接不应该在本地拦截白名单没有的模型名")
+	require.Equal(t, "OK", result.Text)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls), "必须真的转发到上游，不能在本地被拦下来")
+}
+
+// TestKiroTestConnectionSurfacesRealUpstreamRejectionForUnsupportedModel
+// 覆盖上游真的拒绝的情况（真实场景：claude-fable-5 被 Kiro 判定
+// INVALID_MODEL_ID）——测试连接必须把上游的真实拒绝原样报错给调用方，
+// 而不是显示"完成"。INVALID_MODEL_ID 命中 classifyMarkers 归类成
+// SignalNetworkRegion（"红线2"：网络/区域问题不能归咎账号），
+// decideKiroAction 会在有更多端点时换端点重试，所以这里会看到 3 次调用
+// （kiroTestOAuthAccount 是非 API Key 账号，对应 3 个端点）而不是 1 次——
+// 与 TestKiroForwardUpstreamInvalidModelIDExhaustsEndpointsWithoutBlockingAccount
+// 覆盖的是同一条不变式。
+func TestKiroTestConnectionSurfacesRealUpstreamRejectionForUnsupportedModel(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusBadRequest, []byte(`{"message":"Invalid model. Please select a different model to continue.","reason":"INVALID_MODEL_ID"}`)
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(505)
+
+	_, err := svc.TestConnection(context.Background(), account, "claude-fable-5")
+	require.Error(t, err, "上游真实拒绝时必须报错，不能显示成功")
+	require.EqualValues(t, 3, atomic.LoadInt32(calls), "INVALID_MODEL_ID 必须换遍所有端点重试，不归咎账号")
 }
 
 // TestKiroForwardUpstreamRejectsUnsupportedModel 是用户真实账号测试报告的
