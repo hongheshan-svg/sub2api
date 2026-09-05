@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"time"
 
@@ -694,4 +696,64 @@ func (s *KiroGatewayService) conversationIDFor(c *gin.Context, account *Account)
 	}
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", sessionID, accountID)))
 	return "conv_" + hex.EncodeToString(h[:16])
+}
+
+// KiroTestConnectionResult 是管理端"测试连接"功能的结果——与
+// AntigravityGatewayService.TestConnectionResult 保持相同的字段形状，
+// 方便 AccountTestService 用同一套事件推送逻辑处理两个平台。
+type KiroTestConnectionResult struct {
+	Text string
+}
+
+// TestConnection 测试 Kiro 账号连接：发一个最小的非流式请求，完整复用
+// ForwardUpstream 的端点选择/失败决策/token 刷新/计费逻辑，与真实请求走的
+// 是同一条代码路径——不是另起一套简化的连通性探测，因此这里验证的就是
+// 真实转发链路是否工作，而不是仅仅"能不能连上 AWS"。
+//
+// 需要一个 *gin.Context 给 ForwardUpstream 写非流式 JSON 响应——这里用
+// httptest 合成一个：不是在写测试，是 ForwardUpstream 的签名深度依赖
+// gin.Context（conversationIDFor 用它读客户端会话信号、nonStreamToClient
+// 用它写响应头/JSON body），比另外拆一条不依赖 gin.Context 的平行路径要
+// simpler、且保证测试连接与真实流量共享完全相同的行为。
+func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*KiroTestConnectionResult, error) {
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		models := kiro.DefaultModels()
+		if len(models) > 0 {
+			testModelID = models[0]
+		}
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":      testModelID,
+		"max_tokens": 64,
+		"stream":     false,
+		"messages": []map[string]any{
+			{"role": "user", "content": "Say 'OK' and nothing else."},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kiro: build test request: %w", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	if _, err := s.ForwardUpstream(ctx, ginCtx, account, body); err != nil {
+		return nil, err
+	}
+
+	var resp apicompat.AnthropicResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		return nil, fmt.Errorf("kiro: parse test response: %w", err)
+	}
+
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			_, _ = text.WriteString(block.Text)
+		}
+	}
+	return &KiroTestConnectionResult{Text: text.String()}, nil
 }

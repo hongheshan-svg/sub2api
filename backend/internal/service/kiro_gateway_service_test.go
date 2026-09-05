@@ -500,3 +500,46 @@ func TestKiroForwardUpstreamInStreamExceptionWithoutPriorContentRoutesThroughDec
 
 	require.Empty(t, recorder.Body.String(), "分类失败必须在写出任何 SSE 事件之前发生——metadataEvent 本身不产出事件")
 }
+
+// --- TestConnection：管理端"测试连接"功能 ---
+//
+// 真实账号联调发现的回归：AccountTestService 里从来没有 Kiro 分支，任何
+// Kiro 账号点"测试连接"都会落进通用的 testClaudeAccountConnection，报
+// "No API key available"（Kiro 账号创建时 Type 统一填的是 apikey，不管实际
+// auth_method）——KiroGatewayService.TestConnection 就是补上的真实实现，
+// 完整复用 ForwardUpstream，不是另起一套简化探测。
+
+func TestKiroTestConnectionReturnsResponseText(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"OK"}`),
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+	)
+
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(500)
+
+	result, err := svc.TestConnection(context.Background(), account, "")
+	require.NoError(t, err)
+	require.Equal(t, "OK", result.Text)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+}
+
+func TestKiroTestConnectionSurfacesUpstreamFailure(t *testing.T) {
+	srv, _ := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusBadRequest, []byte(`{"message":"malformed schema"}`)
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(501)
+
+	_, err := svc.TestConnection(context.Background(), account, "")
+	require.Error(t, err, "上游拒绝时测试连接必须报错，不能悄悄返回空文本假装成功")
+}
