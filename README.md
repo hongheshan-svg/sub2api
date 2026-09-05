@@ -191,7 +191,7 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 - **Smart Scheduling** - Intelligent account selection with sticky sessions
 - **Concurrency Control** - Per-user and per-account concurrency limits
 - **Rate Limiting** - Configurable request and token rate limits
-- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, and Stripe for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
+- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, Stripe, and Airwallex for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
 - **Admin Dashboard** - Web interface for monitoring and management
 - **Composite Groups** - Admin routing layer that resolves requested models to concrete providers for multi-provider groups ([Operator Guide](docs/COMPOSITE_GROUPS.md))
 - **External System Integration** - Embed external systems (e.g. ticketing) via iframe to extend the admin dashboard
@@ -244,7 +244,7 @@ One-click installation script that downloads pre-built binaries from GitHub Rele
 #### Installation Steps
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 The script will:
@@ -294,7 +294,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # Uninstall
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -317,7 +317,7 @@ Use the automated deployment script for easy setup:
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # Download and run deployment preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/docker-deploy.sh | bash
 
 # Start services
 docker compose up -d
@@ -339,7 +339,7 @@ If you prefer manual setup:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api/deploy
 
 # 2. Copy environment configuration
@@ -469,7 +469,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple-silicon Macs running macOS 26 can run the full Sub2API, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -486,7 +486,7 @@ Build and run from source code for development or customization.
 
 #### Prerequisites
 
-- Go 1.21+
+- Go 1.27.0
 - Node.js 18+
 - PostgreSQL 15+
 - Redis 7+
@@ -495,7 +495,7 @@ Build and run from source code for development or customization.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api
 
 # 2. Install pnpm (if not already installed)
@@ -833,6 +833,43 @@ Administrators can override automatic media eligibility through the account crea
 
 ---
 
+## Kimi / Zhipu / DeepSeek Support
+
+Sub2API supports three domestic (China) OpenAI-compatible providers — Kimi (Moonshot), Zhipu GLM, and DeepSeek — as API-key accounts forwarded through the same OpenAI-compatible gateway as Grok.
+
+### Supported Scope
+
+- Platform names: `kimi`, `zhipu`, `deepseek`
+- Account type: API Key only (no OAuth)
+- Public targets: `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses` (+ subpaths), `/v1/chat/completions`, and the bare aliases (`/responses`, `/chat/completions`, `/backend-api/codex/responses`) that omit the `/v1` prefix
+- Not supported: `/v1/embeddings` and the image/video endpoints (OpenAI- and Grok-only) — these three platforms are text/chat only
+- Example models: Kimi `kimi-k2`, `kimi-k2.5`, `kimi-k2.6`, `kimi-k2-thinking`; Zhipu `glm-4.5`, `glm-4.6`, `glm-4.7`, `glm-5`, `glm-5-turbo`, `glm-5.1`, `glm-5.2`; DeepSeek `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`
+
+### Account Configuration
+
+Each account has two independent settings:
+
+- **Account mode** (`payg` billed pay-as-you-go vs `coding` a provider Coding Plan subscription) — determines which quota/balance signal Sub2API monitors. Kimi and Zhipu both offer a Coding Plan; DeepSeek is pay-as-you-go only.
+- **API protocol** (`chat_completions` default, `anthropic`, `responses`, or `adaptive`) — determines which upstream endpoint shape the account forwards to, independent of account mode. `anthropic` lets the account serve Claude Code-style `/v1/messages` clients natively; `responses` serves Codex-style clients natively and is only available for Kimi and DeepSeek (Zhipu has no native Responses endpoint); `adaptive` picks the native endpoint that matches the inbound request protocol. Same-protocol requests forward untouched; cross-protocol combinations go through Sub2API's conversion layer.
+
+Default base URLs by platform / mode / protocol:
+
+| Platform | Mode | Chat Completions | Anthropic | Responses |
+|----------|------|-------------------|-----------|-----------|
+| Kimi | PayG | `https://api.moonshot.cn/v1` | `https://api.moonshot.cn/anthropic` | `https://api.moonshot.cn/v1` |
+| Kimi | Coding | `https://api.kimi.com/coding/v1` | `https://api.kimi.com/coding` | `https://api.kimi.com/coding/v1` |
+| Zhipu | PayG | `https://open.bigmodel.cn/api/paas/v4` | `https://open.bigmodel.cn/api/anthropic` | — |
+| Zhipu | Coding | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/anthropic` | — |
+| DeepSeek | PayG | `https://api.deepseek.com` | `https://api.deepseek.com/anthropic` | `https://api.deepseek.com` |
+
+These are pre-filled presets in the create-account dialog; the base URL field accepts any custom forwarding endpoint.
+
+### Usage And Quota Display
+
+`payg` Kimi and DeepSeek accounts show a balance signal from the provider's account API (Zhipu does not expose one in PayG mode). `coding` Kimi and Zhipu accounts show a rolling usage-window signal instead (5-hour and weekly windows), matching how each provider's Coding Plan actually resets quota — DeepSeek has no Coding Plan, so this doesn't apply to it. A per-platform scheduling threshold can pause a Kimi or Zhipu account once its window usage crosses a configured percentage, so traffic fails over to other accounts before the provider starts throttling.
+
+---
+
 ## Antigravity Support
 
 Sub2API supports [Antigravity](https://antigravity.so/) accounts. After authorization, dedicated endpoints are available for Claude and Gemini models.
@@ -868,9 +905,8 @@ sub2api/
 │   ├── internal/             # Internal modules
 │   │   ├── config/           # Configuration
 │   │   ├── model/            # Data models
-│   │   ├── service/          # Business logic
-│   │   ├── handler/          # HTTP handlers
-│   │   └── gateway/          # API gateway core
+│   │   ├── service/          # Business logic (includes gateway/relay core)
+│   │   └── handler/          # HTTP handlers
 │   └── resources/            # Static resources
 │
 ├── frontend/                 # Vue 3 frontend

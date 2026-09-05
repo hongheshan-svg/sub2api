@@ -7,7 +7,7 @@
 | 项目 | 说明 |
 |------|------|
 | **上游仓库** | Wei-Shaw/sub2api |
-| **Fork 仓库** | bayma888/sub2api-bmai |
+| **Fork 仓库** | hongheshan-svg/sub2api |
 | **技术栈** | Go 后端 (Ent ORM + Gin) + Vue3 前端 (pnpm) |
 | **数据库** | PostgreSQL 16 + Redis |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
@@ -49,7 +49,7 @@ npm install -g pnpm
 |----------|----------|----------|
 | **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.13 |
 | **security-scan.yml** | push, pull_request, 每周一 | govulncheck + gosec + pnpm audit |
-| **release.yml** | tag `v*` | 构建发布（PR 不触发） |
+| **release.yml** | tag `v*`，或手动 `workflow_dispatch`（输入已存在的 tag，可选 `simple_release`） | 构建发布（PR 不触发） |
 
 ### CI 要求
 
@@ -75,6 +75,8 @@ cd frontend && pnpm install
 ### 发版流程与 Release Notes 规范
 
 **触发**：推送 `v*` tag 触发 `release.yml`，它会：①从 tag 名取版本号写入 VERSION；②构建前端；③通过 **GoReleaser** 构建多架构镜像推送到 **GHCR**（`ghcr.io/<owner>/sub2api`，Docker Hub 仅在配了 `DOCKERHUB_USERNAME` secret 时才推）；④**GoReleaser 自动创建一个已发布（非草稿）的 GitHub Release**，标题 `Sub2API X.Y.Z`、并附构建产物归档；⑤`sync-version-file` job 自动把 `chore: sync VERSION to X [skip ci]` 提交回 main。**所以发版无需手动改 VERSION、也无需手动创建 Release，只需打 tag。**
+
+也可以在 Actions 页手动 `workflow_dispatch` 触发（无需重新推 tag）：输入已存在的 `tag`（如 `v1.0.0`），可选勾选 `simple_release`（仅构建 x86_64 GHCR 镜像，跳过其余产物）——用于给已打好的 tag 重跑失败的发布，或临时出一个精简镜像。
 
 ```bash
 # 在已同步的 main 上发版（fork 版本与上游 1:1 对齐，见「坑 12」）
@@ -387,7 +389,7 @@ golangci-lint run ./...
 ## 六、项目结构速览
 
 ```
-sub2api-bmai/
+sub2api/
 ├── backend/
 │   ├── cmd/server/          # 主程序入口
 │   ├── ent/                 # Ent ORM 生成代码
@@ -408,8 +410,9 @@ sub2api-bmai/
 │   │   └── i18n/            # 国际化
 │   ├── package.json         # 依赖配置
 │   └── pnpm-lock.yaml       # pnpm 锁文件（必须提交）
-└── .claude/
-    └── CLAUDE.md            # 本文档
+├── DEV_GUIDE.md             # 本文档
+├── CLAUDE.md                # Claude Code 指南（gitignored，本地文件）
+└── AGENTS.md                # Codex 指南（gitignored，本地文件）
 ```
 
 ## 七、参考资源
