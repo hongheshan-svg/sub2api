@@ -62,6 +62,7 @@
           autocomplete="off"
           @input="update('clientSecret', ($event.target as HTMLInputElement).value)"
         />
+        <p v-if="hasExistingClientSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
       </div>
       <div>
         <label class="input-label">Region</label>
@@ -73,6 +74,22 @@
           placeholder="us-east-1"
           @input="update('region', ($event.target as HTMLInputElement).value)"
         />
+      </div>
+      <div>
+        <label class="input-label">Profile ARN（可选）</label>
+        <input
+          data-test="kiro-profile-arn"
+          type="text"
+          :value="modelValue.profileArn"
+          class="input font-mono text-xs"
+          placeholder="arn:aws:codewhisperer:<region>:<account-id>:profile/xxxxxxxxxxxx"
+          @input="update('profileArn', ($event.target as HTMLInputElement).value)"
+        />
+        <p class="input-hint">
+          Builder ID/IdC 登录拿到的令牌不带 profileArn，只有 Social 登录会自动带。
+          不填时账号级额度查询/模型列表等依赖 profileArn 的接口可能受限；可从本机
+          Kiro CLI 运行一次 <code>kiro-cli profile</code> 后在其本地状态里找到，或找组织管理员要。
+        </p>
       </div>
     </template>
 
@@ -123,6 +140,7 @@
           autocomplete="off"
           @input="update('clientSecret', ($event.target as HTMLInputElement).value)"
         />
+        <p v-if="hasExistingClientSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
       </div>
       <div>
         <label class="input-label">Region</label>
@@ -134,6 +152,23 @@
           placeholder="us-east-1"
           @input="update('region', ($event.target as HTMLInputElement).value)"
         />
+      </div>
+      <div>
+        <label class="input-label">Profile ARN（可选）</label>
+        <input
+          data-test="kiro-profile-arn"
+          type="text"
+          :value="modelValue.profileArn"
+          class="input font-mono text-xs"
+          placeholder="arn:aws:codewhisperer:<region>:<account-id>:profile/xxxxxxxxxxxx"
+          @input="update('profileArn', ($event.target as HTMLInputElement).value)"
+        />
+        <p class="input-hint">
+          IAM Identity Center 登录拿到的令牌不带 profileArn，需要组织管理员在
+          AWS 控制台配置好 Q Developer Profile 后提供这个 ARN；不填时账号级额度
+          查询/模型列表等依赖 profileArn 的接口可能受限。可从本机 Kiro CLI 运行
+          一次 <code>kiro-cli profile</code> 后在其本地状态里找到。
+        </p>
       </div>
     </template>
 
@@ -201,8 +236,10 @@ import type { KiroCredentialForm } from './kiroCredentials'
 
 interface Props {
   modelValue: Partial<KiroCredentialForm>
-  /** 编辑态：该账号已配置某个敏感字段，留空提交代表不修改而非清空。 */
+  /** 编辑态：该账号已配置 refreshToken/apiKey，留空提交代表不修改而非清空。 */
   hasExistingSecret?: boolean
+  /** 编辑态：该账号已配置 clientSecret（idc/builder_id），留空提交代表不修改而非清空。 */
+  hasExistingClientSecret?: boolean
 }
 
 const props = defineProps<Props>()

@@ -102,42 +102,38 @@ func kiroTestOverrideCallingServer(srv *httptest.Server) func(ctx context.Contex
 	}
 }
 
-// kiroBlockRecorder 记录每一次 BlockAccountScheduling 调用，
-// 用于红线断言："绝不能因为 INVALID_MODEL_ID 禁用账号"。
-type kiroBlockRecorder struct {
-	mu     sync.Mutex
-	blocks []kiroBlockCall
+// kiroRateLimitRecorder 记录每一次 SetModelRateLimit 调用——kiro 账号的
+// 调度冷却走这个机制（model_rate_limit.go 的 PlatformKiro case），不经过
+// AccountRuntimeBlocker（那个接口唯一的绑定实现对 kiro 账号恒为 no-op，
+// 见 NewKiroGatewayService 的文档），所以红线断言（"绝不能因为
+// INVALID_MODEL_ID 禁用账号"）与冷却断言都改成对这个 repo 调用记录做
+// 断言，而不是对已删除的 runtimeBlocker 字段做断言。
+type kiroRateLimitRecorder struct {
+	AccountRepository
+	mu    sync.Mutex
+	calls []kiroRateLimitCall
 }
 
-type kiroBlockCall struct {
+type kiroRateLimitCall struct {
 	accountID int64
-	until     time.Time
-	reason    string
+	scope     string
+	resetAt   time.Time
 }
 
-func newKiroBlockRecorder() *kiroBlockRecorder {
-	return &kiroBlockRecorder{}
-}
-
-func (r *kiroBlockRecorder) BlockAccountScheduling(account *Account, until time.Time, reason string) {
+func (r *kiroRateLimitRecorder) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, _ ...string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var accountID int64
-	if account != nil {
-		accountID = account.ID
-	}
-	r.blocks = append(r.blocks, kiroBlockCall{accountID: accountID, until: until, reason: reason})
+	r.calls = append(r.calls, kiroRateLimitCall{accountID: id, scope: scope, resetAt: resetAt})
+	return nil
 }
 
-func (r *kiroBlockRecorder) ClearAccountSchedulingBlock(int64) {}
-
-func (r *kiroBlockRecorder) called() bool {
+func (r *kiroRateLimitRecorder) called() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.blocks) > 0
+	return len(r.calls) > 0
 }
 
-var _ AccountRuntimeBlocker = (*kiroBlockRecorder)(nil)
+var _ AccountRepository = (*kiroRateLimitRecorder)(nil)
 
 func kiroTestOAuthAccount(id int64) *Account {
 	return &Account{
@@ -152,6 +148,68 @@ func kiroTestOAuthAccount(id int64) *Account {
 }
 
 const kiroTestRequestBody = `{"model":"claude-sonnet-4-5-20250929","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`
+
+// TestKiroResolveProxyURLFallsBackToRepositoryWhenNotPreloaded 覆盖真实
+// 账号测试后走查代码发现的缺口：account.Proxy 没有预加载时，之前的实现
+// 直接返回空代理（悄悄走直连），跟 GrokQuotaService.resolveProxyURL 的
+// 既有仓储兜底约定不一致。这里断言账号配了代理但 Proxy 字段是 nil（只有
+// ProxyID）时，会去查 proxyRepo 补上，而不是假装没配代理。
+func TestKiroResolveProxyURLFallsBackToRepositoryWhenNotPreloaded(t *testing.T) {
+	proxyID := int64(7)
+	repo := &mockProxyRepoForOAuth{
+		getByIDFunc: func(ctx context.Context, id int64) (*Proxy, error) {
+			require.EqualValues(t, proxyID, id)
+			return &Proxy{ID: proxyID, Protocol: "http", Host: "proxy.internal", Port: 8080}, nil
+		},
+	}
+
+	svc := &KiroGatewayService{proxyRepo: repo}
+	account := &Account{ID: 1, Platform: PlatformKiro, ProxyID: &proxyID}
+
+	got := svc.resolveProxyURL(context.Background(), account)
+	require.Equal(t, "http://proxy.internal:8080", got)
+	require.NotNil(t, account.Proxy, "查到之后应该把结果写回 account.Proxy，避免同一账号在同一次请求里重复查仓储")
+}
+
+// TestKiroResolveProxyURLPrefersPreloadedProxyOverRepository 覆盖已预加载
+// 场景：account.Proxy 已经有值时，不应该再打一次仓储——快路径必须保留。
+func TestKiroResolveProxyURLPrefersPreloadedProxyOverRepository(t *testing.T) {
+	proxyID := int64(7)
+	repo := &mockProxyRepoForOAuth{
+		getByIDFunc: func(ctx context.Context, id int64) (*Proxy, error) {
+			t.Fatal("account.Proxy 已经预加载时不应该再查仓储")
+			return nil, nil
+		},
+	}
+
+	svc := &KiroGatewayService{proxyRepo: repo}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformKiro,
+		ProxyID:  &proxyID,
+		Proxy:    &Proxy{ID: proxyID, Protocol: "socks5", Host: "preloaded.internal", Port: 1080},
+	}
+
+	got := svc.resolveProxyURL(context.Background(), account)
+	require.Equal(t, "socks5://preloaded.internal:1080", got)
+}
+
+// TestKiroResolveProxyURLReturnsEmptyWhenAccountHasNoProxy 覆盖账号本来就
+// 没配代理的情况（ProxyID 为 nil）——不应该去查仓储，直接走直连。
+func TestKiroResolveProxyURLReturnsEmptyWhenAccountHasNoProxy(t *testing.T) {
+	repo := &mockProxyRepoForOAuth{
+		getByIDFunc: func(ctx context.Context, id int64) (*Proxy, error) {
+			t.Fatal("账号没配代理（ProxyID 为 nil）不应该查仓储")
+			return nil, nil
+		},
+	}
+
+	svc := &KiroGatewayService{proxyRepo: repo}
+	account := &Account{ID: 1, Platform: PlatformKiro}
+
+	got := svc.resolveProxyURL(context.Background(), account)
+	require.Equal(t, "", got)
+}
 
 func kiroTestContext() (*httptest.ResponseRecorder, *gin.Context) {
 	gin.SetMode(gin.TestMode)
@@ -264,8 +322,8 @@ func TestKiroForwardUpstreamInvalidModelIDExhaustsEndpointsWithoutBlockingAccoun
 	svc := &KiroGatewayService{}
 	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
 
-	blocker := newKiroBlockRecorder()
-	svc.runtimeBlocker = blocker
+	repo := &kiroRateLimitRecorder{}
+	svc.accountRepo = repo
 
 	account := kiroTestOAuthAccount(4)
 	_, c := kiroTestContext()
@@ -281,7 +339,7 @@ func TestKiroForwardUpstreamInvalidModelIDExhaustsEndpointsWithoutBlockingAccoun
 
 	require.EqualValues(t, 3, atomic.LoadInt32(calls), "OAuth 账号应轮完全部 3 个端点后才中止")
 
-	require.False(t, blocker.called(), "红线一：INVALID_MODEL_ID 绝不能禁用账号")
+	require.False(t, repo.called(), "红线一：INVALID_MODEL_ID 绝不能禁用账号")
 }
 
 // --- Fix Round 1：creditsExhaustedCooldownUntil 惊群修复的验证 ---
@@ -476,8 +534,8 @@ func TestKiroForwardUpstreamInStreamExceptionWithoutPriorContentRoutesThroughDec
 
 	svc := &KiroGatewayService{}
 	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
-	blocker := newKiroBlockRecorder()
-	svc.runtimeBlocker = blocker
+	repo := &kiroRateLimitRecorder{}
+	svc.accountRepo = repo
 
 	account := kiroTestOAuthAccount(301)
 	recorder, c := kiroTestContext()
@@ -494,9 +552,11 @@ func TestKiroForwardUpstreamInStreamExceptionWithoutPriorContentRoutesThroughDec
 	require.Equal(t, NextAccountLegacyRetry, failoverErr.NextAccountAction,
 		"SignalRateLimited 走 FailoverAccount，必须允许换账号重试，不能被误判成 Abort")
 
-	require.True(t, blocker.called(), "分类后的 SignalRateLimited 必须触发账号调度冷却")
-	require.Equal(t, "kiro_rate_limited", blocker.blocks[0].reason)
-	require.Equal(t, account.ID, blocker.blocks[0].accountID)
+	require.True(t, repo.called(), "分类后的 SignalRateLimited 必须触发账号调度冷却（写 model_rate_limits）")
+	require.Equal(t, kiroCreditsExhaustedKey, repo.calls[0].scope,
+		"kiro 的调度冷却统一走 KiroCredits 这一个 key，不分模型，见 model_rate_limit.go 的 PlatformKiro case")
+	require.Equal(t, account.ID, repo.calls[0].accountID)
+	require.WithinDuration(t, time.Now().Add(kiroRateLimitedExhaustedCooldown), repo.calls[0].resetAt, 5*time.Second)
 
 	require.Empty(t, recorder.Body.String(), "分类失败必须在写出任何 SSE 事件之前发生——metadataEvent 本身不产出事件")
 }
@@ -831,4 +891,49 @@ func TestKiroForwardUpstreamRejectsEmptyModel(t *testing.T) {
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "permission_error")
+}
+
+// TestFinishWithActionAbortSuspendedWritesModelRateLimit 直接调用
+// finishWithAction（不经过 ForwardUpstream 的三个真实调用点，它们目前都
+// 恒以 sawContent=false 调 decideKiroAction，见 decideKiroAction 的文档：
+// sawContent=true 时流式路径走的是优雅截断+成功返回，从不到达
+// finishWithAction——TestKiroForwardUpstreamPartialContentBeforeInStreamExceptionIsWrittenToClient
+// 覆盖的就是这条路径）。
+//
+// 这里验证的是 finishWithAction 自身对 (kiroActionAbort, SignalSuspended)
+// 这个组合的正确性，不依赖当前调用方是否真的会产出这个组合——decideKiroAction
+// 的不变式 1 明确允许 sawContent&&sig!=OK 走到 Abort，finishWithAction
+// 必须对这个组合也做真实的账号冷却，而不是像修复前那样只调用一个对 kiro
+// 恒为 no-op 的 AccountRuntimeBlocker。
+func TestFinishWithActionAbortSuspendedWritesModelRateLimit(t *testing.T) {
+	repo := &kiroRateLimitRecorder{}
+	svc := &KiroGatewayService{accountRepo: repo}
+	account := kiroTestOAuthAccount(600)
+
+	err := svc.finishWithAction(context.Background(), account, kiroActionAbort, kiro.SignalSuspended, http.StatusForbidden, []byte(`{"message":"account is suspended"}`))
+	require.Error(t, err)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, NextAccountStop, failoverErr.NextAccountAction, "Abort 必须显式挡住失败转移")
+
+	require.True(t, repo.called(), "Suspended 账号必须被真实冷却，不能只调用对 kiro 无效的 runtimeBlocker")
+	require.Equal(t, kiroCreditsExhaustedKey, repo.calls[0].scope)
+	require.Equal(t, account.ID, repo.calls[0].accountID)
+	require.WithinDuration(t, time.Now().Add(kiroSuspendedCooldown), repo.calls[0].resetAt, 5*time.Second)
+}
+
+// TestFinishWithActionAbortOverageWritesModelRateLimit 覆盖同一组合的
+// SignalOverage 变体——与 kiroActionFailoverAccount 分支把 Suspended/
+// Overage 同等对待一致，Abort 分支不应该只处理 Suspended 漏掉 Overage。
+func TestFinishWithActionAbortOverageWritesModelRateLimit(t *testing.T) {
+	repo := &kiroRateLimitRecorder{}
+	svc := &KiroGatewayService{accountRepo: repo}
+	account := kiroTestOAuthAccount(601)
+
+	err := svc.finishWithAction(context.Background(), account, kiroActionAbort, kiro.SignalOverage, http.StatusForbidden, []byte(`{"message":"overage limit reached"}`))
+	require.Error(t, err)
+
+	require.True(t, repo.called(), "Overage 账号必须被真实冷却，与 Suspended 同等对待")
+	require.Equal(t, kiroCreditsExhaustedKey, repo.calls[0].scope)
 }

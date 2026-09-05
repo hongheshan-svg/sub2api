@@ -20,15 +20,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// kiroBillingMode 是 usage_log.billing_mode 的取值。
-// kiro 按估算 token 计费；credits 只记在账号层，不逐请求入库（设计文档 §7.4）。
-// 目前只被 kiro_billing_test.go（//go:build unit）引用，用于把这个计费口径决定
-// 固化成可回归的断言；golangci-lint 默认不带 -tags=unit 运行，看不到那处引用，
-// 故显式豁免 unused，而不是假装这个常量在生产代码里已经被消费。
-//
-//nolint:unused // only referenced from kiro_billing_test.go (//go:build unit)
-const kiroBillingMode = "token"
-
 // kiroErrorBodyLimit 限制读取错误响应体的字节数。
 const kiroErrorBodyLimit = 64 * 1024
 
@@ -575,28 +566,23 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 		// 端点耗尽 / BadRequest）形同虚设。
 		failover.NextAccountAction = NextAccountStop
 
-		if sig == kiro.SignalSuspended && s.runtimeBlocker != nil {
+		if (sig == kiro.SignalSuspended || sig == kiro.SignalOverage) && s.accountRepo != nil {
 			// Abort 只挡住"这一次请求"的失败转移，不影响账号池后续调度；
-			// Suspended 是账号自身状态问题，理应额外做真实禁用，否则下一个
-			// 请求还会继续被路由过来重复触发同样的失败。
-			//
-			// 用零值 time.Time{} 表示尽可能长的禁用。
-			//
-			// 注意：AccountRuntimeBlocker 目前在 wire.go 里唯一的绑定实现是
-			// OpenAIGatewayService.BlockAccountScheduling，它对 platform 做了
-			// openai/grok 专属门禁（isOpenAIAccount），对 kiro 账号是彻底的
-			// no-op；即便是 openai/grok 账号，零值 until 也只会被转成几分钟
-			// 量级的过渡冷却（blockAccountSchedulingLocked 里的
-			// openAIStopSchedulingBridgeCooldown），不是真正的无限期——真正的
-			// 永久禁用在 openai_access_state / upstream_disable 那两处走的是
-			// 另一条独立调用链（rateLimitService.handleAuthError /
-			// HandleUpstreamError），Kiro 这里没有等价物。这里调用
-			// BlockAccountScheduling 是"按接口正确调用"，但只有 Task 18 给
-			// KiroGatewayService 接一个真正对 kiro 账号生效的 runtimeBlocker
-			// 实现之后，Suspended 账号才会被真实禁用——接线前这行调用本身就
-			// 是 no-op。控制端已经在 SDD ledger 里把这条显式带进 Task 18 的
-			// 预检要求，不是本任务遗漏。
-			s.runtimeBlocker.BlockAccountScheduling(account, time.Time{}, "kiro_suspended")
+			// Suspended/Overage 是账号自身状态问题，理应额外做真实禁用，
+			// 否则下一个请求还会继续被路由过来重复触发同样的失败——这里走的
+			// 分支是"已经吐出部分内容"（不变式 1）叠加账号本身有问题的场景，
+			// 与 kiroActionFailoverAccount 分支里 SignalSuspended/SignalOverage
+			// 的处理是同一件事，必须用同一套机制（真实账号测试后走查代码
+			// 发现：之前这里只调用 AccountRuntimeBlocker，它唯一的绑定实现
+			// OpenAIGatewayService.BlockAccountScheduling 对 platform 做了
+			// openai/grok 专属门禁，kiro 账号在这里恒为 no-op——kiro 自己的
+			// 调度走的是 model_rate_limits 机制，见 model_rate_limit.go 的
+			// PlatformKiro case，不经过 AccountRuntimeBlocker 这个接口）。
+			until := time.Now().Add(kiroSuspendedCooldown)
+			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
+				slog.Warn("kiro_subscription_issue_persist_failed", "account_id", account.ID, "signal", sig.String(), "error", err)
+			}
+			s.updateKiroModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
 		}
 
 	case kiroActionFailoverAccount:
@@ -607,9 +593,6 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 			// nextDateReset，比 Antigravity 的固定 5 小时冷却更准确
 			// （本任务的核心改进，见 creditsExhaustedCooldownUntil 的文档）。
 			until := s.creditsExhaustedCooldownUntil(ctx, account)
-			if s.runtimeBlocker != nil {
-				s.runtimeBlocker.BlockAccountScheduling(account, until, "kiro_credits_exhausted")
-			}
 			if s.accountRepo != nil {
 				if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
 					slog.Warn("kiro_credits_exhausted_persist_failed", "account_id", account.ID, "error", err)
@@ -621,14 +604,6 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 			// （不像 credits 耗尽），用保守的固定长冷却——这类账号需要管理员
 			// 介入才能恢复，不是几分钟到几小时会自愈的瞬时状态（C3）。
 			until := time.Now().Add(kiroSuspendedCooldown)
-			if s.runtimeBlocker != nil {
-				s.runtimeBlocker.BlockAccountScheduling(account, time.Time{}, "kiro_"+sig.String())
-				// AccountRuntimeBlocker 目前对 kiro 账号仍是 no-op（见上面
-				// kiroActionAbort 分支里 SignalSuspended 那段注释，已在
-				// SDD ledger 里登记、留给未来任务接线）——这里保留调用是为了
-				// 将来真正给 Kiro 接上 runtimeBlocker 实现之后直接生效，
-				// 不需要再补一处调用点。
-			}
 			if s.accountRepo != nil {
 				// 复用 kiroCreditsExhaustedKey 而不是新开一个 key：C4 让
 				// modelRateLimitKeysForRequest 对 Kiro 账号无条件检查这一个
@@ -644,14 +619,7 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 			// 端点可换时 decideKiroAction 返回的是 NextEndpoint，不经过
 			// finishWithAction。
 			until := time.Now().Add(kiroRateLimitedExhaustedCooldown)
-			if s.runtimeBlocker != nil {
-				s.runtimeBlocker.BlockAccountScheduling(account, until, "kiro_rate_limited")
-			}
 			if s.accountRepo != nil {
-				// 修复前这里只调用了目前对 kiro 恒为 no-op 的 runtimeBlocker，
-				// 从未写 model_rate_limits——即便按接口"正确"调用，实际调度
-				// 效果是零。补齐与 CreditsExhausted/Suspended/Overage 一致的
-				// 落库路径，让端点耗尽也能真正排除账号（C3 顺带修复）。
 				if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
 					slog.Warn("kiro_rate_limited_persist_failed", "account_id", account.ID, "error", err)
 				}
@@ -698,7 +666,16 @@ func (s *KiroGatewayService) creditsExhaustedCooldownUntil(ctx context.Context, 
 	// 层 2：singleflight——真正同一时刻并发的失败请求共享同一次现场查询。
 	flightKey := fmt.Sprintf("kiro-credits:%d", account.ID)
 	v, err, _ := s.creditsQuotaFlight.Do(flightKey, func() (any, error) {
-		shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// context.WithoutCancel：这次现场查询由 singleflight 在多个并发失败
+		// 请求间共享，只有恰好赢得这次 Do() 的那个请求的 ctx 会被用来发起
+		// 查询——如果直接用 ctx，赢家自己的请求提前结束/客户端断开会连带
+		// 取消所有还在等待同一个 flightKey 的其它请求的查询，即便它们自己
+		// 的 ctx 依然存活（Task 20 评审记录的 deferred minor：与
+		// apiFlight/antigravityFlight 两个既有先例同样的问题，本身就不
+		// 统一，这里先按仓库里 30+ 处已确立的
+		// context.WithTimeout(context.WithoutCancel(ctx), ...) 惯用法修，
+		// 那两处留给后续任务一起处理）。
+		shortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 
 		fetcher := s.creditsQuotaFetcher()

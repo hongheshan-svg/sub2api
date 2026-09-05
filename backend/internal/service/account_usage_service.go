@@ -307,6 +307,7 @@ type AccountUsageService struct {
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
+	proxyRepo               ProxyRepository
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
 }
@@ -325,6 +326,7 @@ func NewAccountUsageService(
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	proxyRepo ProxyRepository,
 ) *AccountUsageService {
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
@@ -339,6 +341,7 @@ func NewAccountUsageService(
 		cache:                   cache,
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
+		proxyRepo:               proxyRepo,
 	}
 }
 
@@ -1180,7 +1183,7 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 		return &UsageInfo{UpdatedAt: &now}, nil
 	}
 
-	proxyURL := s.resolveKiroProxyURL(account)
+	proxyURL := s.resolveKiroProxyURL(ctx, account)
 	result, err := s.kiroQuotaFetcher.FetchQuota(ctx, account, proxyURL)
 	if err != nil {
 		return nil, err
@@ -1188,18 +1191,24 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 	return result.UsageInfo, nil
 }
 
-// resolveKiroProxyURL 返回账号预加载的代理地址。
-//
-// 与 KiroGatewayService.resolveProxyURL（kiro_gateway_upstream.go）取法一致：
-// 直接读 account.Proxy，不做仓储兜底查询——KiroQuotaFetcher 和
-// KiroGatewayService 一样目前都没有 proxyRepo 依赖（不同于 Antigravity 的
-// GetProxyURL 需要按 ProxyID 现查仓储），account 在 accountRepo.GetByID
-// 里已经带 proxies 联查，这里只需要读预加载好的字段。
-func (s *AccountUsageService) resolveKiroProxyURL(account *Account) string {
-	if account == nil || account.Proxy == nil {
+// resolveKiroProxyURL 返回账号的代理地址：优先用已预加载的 account.Proxy，
+// 未预加载时按 ProxyID 现查仓储兜底——与 KiroGatewayService.resolveProxyURL
+// （kiro_gateway_upstream.go）取法一致，对齐 GrokQuotaService 的既有模式。
+// 之前两处都只有快路径，account.Proxy 没预加载时会悄悄查询走直连。
+func (s *AccountUsageService) resolveKiroProxyURL(ctx context.Context, account *Account) string {
+	if account == nil || account.ProxyID == nil {
 		return ""
 	}
-	return account.Proxy.URL()
+	switch {
+	case account.Proxy != nil:
+		return account.Proxy.URL()
+	case s != nil && s.proxyRepo != nil:
+		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
+			account.Proxy = proxy
+			return proxy.URL()
+		}
+	}
+	return ""
 }
 
 func grokLocalUsageForQuota(

@@ -32,7 +32,7 @@ type KiroGatewayService struct {
 	accountRepo      AccountRepository
 	oauthRefreshAPI  *OAuthRefreshAPI
 	kiroOAuthService *KiroOAuthService
-	runtimeBlocker   AccountRuntimeBlocker
+	proxyRepo        ProxyRepository
 
 	// schedulerSnapshot 用于 credits 耗尽时立即更新 Redis 里的账号调度快照
 	// （model_rate_limits），避免调度层要等下一次全量同步才看到最新冷却状态。
@@ -87,19 +87,26 @@ func (s *KiroGatewayService) forwardCallEndpoint(ctx context.Context, account *A
 }
 
 // NewKiroGatewayService 创建转发编排服务。
+//
+// 不接 AccountRuntimeBlocker：它唯一的绑定实现 OpenAIGatewayService.
+// BlockAccountScheduling 对 platform 做了 openai/grok 专属门禁
+// （isOpenAIAccount），kiro 账号在这里恒为 no-op；kiro 自己的调度冷却走
+// model_rate_limits 机制（model_rate_limit.go 的 PlatformKiro case），
+// 已经足够且已验证生效——加一个永远读不到的 blocker 依赖只是误导性的
+// 死代码（真实账号测试后走查代码发现，见 finishWithAction 的说明）。
 func NewKiroGatewayService(
 	accountRepo AccountRepository,
 	oauthRefreshAPI *OAuthRefreshAPI,
 	kiroOAuthService *KiroOAuthService,
-	runtimeBlocker AccountRuntimeBlocker,
 	schedulerSnapshot *SchedulerSnapshotService,
+	proxyRepo ProxyRepository,
 ) *KiroGatewayService {
 	return &KiroGatewayService{
 		accountRepo:       accountRepo,
 		oauthRefreshAPI:   oauthRefreshAPI,
 		kiroOAuthService:  kiroOAuthService,
-		runtimeBlocker:    runtimeBlocker,
 		schedulerSnapshot: schedulerSnapshot,
+		proxyRepo:         proxyRepo,
 	}
 }
 
@@ -164,11 +171,22 @@ func (s *KiroGatewayService) httpClientFor(ctx context.Context, account *Account
 	return hc, nil
 }
 
-// resolveProxyURL 返回账号预加载的代理地址；仓储兜底留给后续任务补上
-// （KiroGatewayService 目前还没有 proxyRepo 依赖）。
-func (s *KiroGatewayService) resolveProxyURL(_ context.Context, account *Account) string {
-	if account == nil || account.Proxy == nil {
+// resolveProxyURL 返回账号的代理地址：优先用已预加载的 account.Proxy，
+// 未预加载时按 ProxyID 现查仓储兜底——对齐 GrokQuotaService.resolveProxyURL
+// 的既有模式（真实账号测试后走查代码发现 Kiro 这条路径之前没有兜底，账号
+// 配了代理但调用路径没预加载 Proxy 时会悄悄走直连，不是假设性风险）。
+func (s *KiroGatewayService) resolveProxyURL(ctx context.Context, account *Account) string {
+	if account == nil || account.ProxyID == nil {
 		return ""
 	}
-	return account.Proxy.URL()
+	switch {
+	case account.Proxy != nil:
+		return account.Proxy.URL()
+	case s != nil && s.proxyRepo != nil:
+		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
+			account.Proxy = proxy
+			return proxy.URL()
+		}
+	}
+	return ""
 }

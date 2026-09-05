@@ -17,9 +17,19 @@ type Bonus struct {
 
 // FreeTrialInfo 是免费试用信息。
 type FreeTrialInfo struct {
-	Status     string     `json:"freeTrialStatus"`
-	ExpiryDate *time.Time `json:"-"`
-	RawExpiry  float64    `json:"freeTrialExpiry"`
+	Status     string
+	ExpiryDate *time.Time
+}
+
+// rawFreeTrialInfo 镜像上游 freeTrialInfo 的原始 JSON 形状，只用作解析
+// 中间态。RawExpiry 是 unix 秒的原始浮点值，转换成 ExpiryDate 后就不再
+// 需要——之前 FreeTrialInfo 同时当公开类型和 JSON 解析目标用，导致这个
+// 只在解析阶段有意义的原始字段一直留在对外的公开结构体上（Task 19 评审
+// 记录的 deferred minor）。拆成两个类型后公开的 FreeTrialInfo 只暴露
+// 调用方真正需要的 Status/ExpiryDate。
+type rawFreeTrialInfo struct {
+	Status    string  `json:"freeTrialStatus"`
+	RawExpiry float64 `json:"freeTrialExpiry"`
 }
 
 // UsageBreakdown 是某一资源类型的用量明细。
@@ -56,17 +66,17 @@ type rawUsageLimits struct {
 		OverageStatus string `json:"overageStatus"`
 	} `json:"overageConfiguration"`
 	UsageBreakdownList []struct {
-		ResourceType              string         `json:"resourceType"`
-		CurrentUsage              float64        `json:"currentUsage"`
-		CurrentUsageWithPrecision *float64       `json:"currentUsageWithPrecision"`
-		UsageLimit                float64        `json:"usageLimit"`
-		UsageLimitWithPrecision   *float64       `json:"usageLimitWithPrecision"`
-		OverageCap                float64        `json:"overageCap"`
-		OverageRate               float64        `json:"overageRate"`
-		CurrentOverages           float64        `json:"currentOverages"`
-		NextDateReset             *float64       `json:"nextDateReset"`
-		Bonuses                   []Bonus        `json:"bonuses"`
-		FreeTrialInfo             *FreeTrialInfo `json:"freeTrialInfo"`
+		ResourceType              string            `json:"resourceType"`
+		CurrentUsage              float64           `json:"currentUsage"`
+		CurrentUsageWithPrecision *float64          `json:"currentUsageWithPrecision"`
+		UsageLimit                float64           `json:"usageLimit"`
+		UsageLimitWithPrecision   *float64          `json:"usageLimitWithPrecision"`
+		OverageCap                float64           `json:"overageCap"`
+		OverageRate               float64           `json:"overageRate"`
+		CurrentOverages           float64           `json:"currentOverages"`
+		NextDateReset             *float64          `json:"nextDateReset"`
+		Bonuses                   []Bonus           `json:"bonuses"`
+		FreeTrialInfo             *rawFreeTrialInfo `json:"freeTrialInfo"`
 	} `json:"usageBreakdownList"`
 }
 
@@ -104,7 +114,6 @@ func ParseUsageLimits(raw []byte) (*UsageLimits, error) {
 			CurrentOverages: b.CurrentOverages,
 			NextDateReset:   unixPtr(b.NextDateReset),
 			Bonuses:         b.Bonuses,
-			FreeTrial:       b.FreeTrialInfo,
 		}
 		// 有精确值时优先，避免整数截断造成的额度误判。
 		if b.CurrentUsageWithPrecision != nil {
@@ -113,8 +122,11 @@ func ParseUsageLimits(raw []byte) (*UsageLimits, error) {
 		if b.UsageLimitWithPrecision != nil {
 			item.UsageLimit = *b.UsageLimitWithPrecision
 		}
-		if item.FreeTrial != nil {
-			item.FreeTrial.ExpiryDate = unixPtr(&item.FreeTrial.RawExpiry)
+		if b.FreeTrialInfo != nil {
+			item.FreeTrial = &FreeTrialInfo{
+				Status:     b.FreeTrialInfo.Status,
+				ExpiryDate: unixPtr(&b.FreeTrialInfo.RawExpiry),
+			}
 		}
 		out.Breakdowns = append(out.Breakdowns, item)
 	}

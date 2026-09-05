@@ -201,18 +201,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokQuotaService := service.ProvideGrokQuotaService(accountRepository, proxyRepository, grokTokenProvider, httpUpstream, configConfig, usageLogRepository, settingService)
 	openAIQuotaService := service.ProvideOpenAIQuotaService(accountRepository, proxyRepository, openAITokenProvider, privacyClientFactory, openAIGatewayService)
 	usageCache := service.NewUsageCache()
-	accountUsageService := service.ProvideAccountUsageService(accountRepository, usageLogRepository, claudeUsageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, kiroQuotaFetcher, grokQuotaService, openAIQuotaService, usageCache, identityCache, tlsFingerprintProfileService, openAIGatewayService)
+	accountUsageService := service.ProvideAccountUsageService(accountRepository, usageLogRepository, claudeUsageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, kiroQuotaFetcher, grokQuotaService, openAIQuotaService, usageCache, identityCache, tlsFingerprintProfileService, openAIGatewayService, proxyRepository)
 	pluginRepository := repository.NewPluginRepository(db)
 	pluginHostInfo := providePluginHostInfo(buildInfo)
 	pluginManager := service.NewPluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo)
-	// kiroGatewayService 的 runtimeBlocker 参数传入 openAIGatewayService（唯一绑定实现，见
-	// service/wire.go 的 wire.Bind(AccountRuntimeBlocker, *OpenAIGatewayService)）。
-	// 注意：OpenAIGatewayService.BlockAccountScheduling 只对 openai/grok 账号生效，对
-	// kiro 账号当前是 no-op —— 这是已知的、有台账记录的缺口（kiro_gateway_service.go
-	// 里 Task 17 的修复轮注释已详细说明），不是本任务要解决的范围。
+	// KiroGatewayService 不接 AccountRuntimeBlocker——kiro 账号的调度冷却走
+	// model_rate_limits 机制，不经过那个只对 openai/grok 生效的接口，见
+	// NewKiroGatewayService 的文档。
 	// 构造点提到这里（原来在 gatewayHandler 之前）是因为 accountTestService 现在也需要它
 	// （用于"测试连接"功能，见 account_test_service.go 的 testKiroAccountConnection）。
-	kiroGatewayService := service.NewKiroGatewayService(accountRepository, oAuthRefreshAPI, kiroOAuthService, openAIGatewayService, schedulerSnapshotService)
+	kiroGatewayService := service.NewKiroGatewayService(accountRepository, oAuthRefreshAPI, kiroOAuthService, schedulerSnapshotService, proxyRepository)
 	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, kiroGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager)
 	crsSyncService := service.NewCRSSyncService(accountRepository, proxyRepository, oAuthService, openAIOAuthService, geminiOAuthService, configConfig)
 	accountHandler := admin.ProvideAccountHandler(adminService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, rateLimitService, accountUsageService, accountTestService, concurrencyService, crsSyncService, sessionLimitCache, rpmCache, compositeTokenCacheInvalidator, grokQuotaService)

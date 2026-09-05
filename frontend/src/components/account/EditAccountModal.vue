@@ -564,7 +564,11 @@
           @filled="(v) => Object.assign(kiroForm, v)"
         />
 
-        <KiroCredentialFields v-model="kiroForm" :has-existing-secret="kiroHasExistingSecret" />
+        <KiroCredentialFields
+          v-model="kiroForm"
+          :has-existing-secret="kiroHasExistingSecret"
+          :has-existing-client-secret="kiroHasExistingClientSecret"
+        />
 
         <!-- Kiro model restriction（可选，参照 Antigravity 的账号级限制约定；
              未配置时不影响任何行为，见后端 forwardUpstream 的账号级限制说明） -->
@@ -3289,15 +3293,37 @@ const kiroHasExistingSecret = computed(() => {
   }
   return status?.has_refresh_token ?? Boolean(currentCredentials.refresh_token)
 })
+// client_secret 是独立于 refresh_token/api_key 的另一个敏感字段（idc/
+// builder_id 才有），同样脱敏，需要自己的"留空即保留"信号——不能复用
+// kiroHasExistingSecret，两者可能不同时为真/假。
+const kiroHasExistingClientSecret = computed(() => {
+  const currentCredentials = (props.account?.credentials as Record<string, unknown>) || {}
+  const status = props.account?.credentials_status
+  return status?.has_client_secret ?? Boolean(currentCredentials.client_secret)
+})
 // Edit 态校验：密钥类字段留空但账号已有值时视为"保持不变"，不强制要求重填；
 // 非密钥字段（client_id/issuer_url 等）始终必填，与 kiroCredentials.ts 的
 // validateKiroCredentials 保持一致口径，只在校验前临时补一个非空占位值。
-function validateKiroCredentialsForEdit(form: KiroCredentialForm, hasExistingSecret: boolean): string | null {
-  const secretField: keyof KiroCredentialForm = form.authMethod === 'api_key' ? 'apiKey' : 'refreshToken'
+// refreshToken/apiKey 与 clientSecret 是两个独立的敏感字段，各自按自己的
+// "已有值"信号决定要不要打占位符，不能共用一个判断（I7 耦合修复）。
+function validateKiroCredentialsForEdit(
+  form: KiroCredentialForm,
+  hasExistingSecret: boolean,
+  hasExistingClientSecret: boolean
+): string | null {
+  const secretField: 'apiKey' | 'refreshToken' = form.authMethod === 'api_key' ? 'apiKey' : 'refreshToken'
+  const patched: KiroCredentialForm = { ...form }
   if (hasExistingSecret && !String(form[secretField] || '').trim()) {
-    return validateKiroCredentials({ ...form, [secretField]: '__existing__' })
+    patched[secretField] = '__existing__'
   }
-  return validateKiroCredentials(form)
+  if (
+    (form.authMethod === 'idc' || form.authMethod === 'builder_id') &&
+    hasExistingClientSecret &&
+    !form.clientSecret.trim()
+  ) {
+    patched.clientSecret = '__existing__'
+  }
+  return validateKiroCredentials(patched)
 }
 const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
@@ -4107,14 +4133,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     kiroForm.value = {
       authMethod:
         method === 'builder_id' || method === 'idc' || method === 'api_key' ? method : 'social',
-      // refresh_token/access_token/api_key 已被后端脱敏，原文不会回传，留空
-      // 由 kiroHasExistingSecret 驱动"留空即保留"提示；其余字段未被脱敏，直接回填
-      // （client_secret 目前不在后端 SensitiveCredentialKeys 清单里，属已知的
-      // 后端既有缺口，不在本任务改动范围——见 task-23-report.md）。
+      // refresh_token/access_token/api_key/client_secret 都在后端
+      // SensitiveCredentialKeys 清单里，已被脱敏，原文不会回传，留空由
+      // kiroHasExistingSecret/kiroHasExistingClientSecret 驱动"留空即保留"
+      // 提示；其余字段未被脱敏，直接回填（client_secret 之前遗漏在清单外，
+      // 会明文回传——I7 修复，见 account_credentials_redact.go）。
       refreshToken: '',
       accessToken: '',
       clientId: str('client_id'),
-      clientSecret: str('client_secret'),
+      clientSecret: '',
       issuerUrl: str('issuer_url'),
       region: str('region'),
       profileArn: str('profile_arn'),
@@ -4875,7 +4902,11 @@ const handleSubmit = async () => {
     // For Kiro, handle credentials update — 独立分支（Task 22 kiroCredentials.ts），
     // 不复用下面通用 apikey 分支的 base_url/model_mapping/pool_mode 等逻辑。
     if (props.account.platform === 'kiro') {
-      const kiroError = validateKiroCredentialsForEdit(kiroForm.value, kiroHasExistingSecret.value)
+      const kiroError = validateKiroCredentialsForEdit(
+        kiroForm.value,
+        kiroHasExistingSecret.value,
+        kiroHasExistingClientSecret.value
+      )
       if (kiroError) {
         appStore.showError(kiroError)
         return
@@ -4883,15 +4914,23 @@ const handleSubmit = async () => {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const built = buildKiroCredentials(kiroForm.value)
       const newCredentials: Record<string, unknown> = { ...currentCredentials, ...built }
-      // 密钥类字段留空 = 保持不变：refresh_token/api_key 属于后端
-      // MergePreservingSensitiveCreds 的通用敏感键清单，从提交对象里删掉这个键
-      // 就能让后端自动保留旧值——绝不能提交空字符串，那会被当成"显式清空"直接覆盖。
+      // 密钥类字段留空 = 保持不变：refresh_token/api_key/client_secret 都属于
+      // 后端 MergePreservingSensitiveCreds 的通用敏感键清单，从提交对象里删掉
+      // 这个键就能让后端自动保留旧值——绝不能提交空字符串，那会被当成"显式
+      // 清空"直接覆盖。
       if (!kiroForm.value.refreshToken.trim()) {
         delete newCredentials.refresh_token
       }
       if (kiroForm.value.authMethod === 'api_key' && !kiroForm.value.apiKey.trim()) {
         delete newCredentials.api_key
       }
+      if (
+        (kiroForm.value.authMethod === 'idc' || kiroForm.value.authMethod === 'builder_id') &&
+        !kiroForm.value.clientSecret.trim()
+      ) {
+        delete newCredentials.client_secret
+      }
+
       // Model restriction（可选）：与其它平台复用同一套 allowedModels/
       // modelMappings 状态构建，留空表示不限制，与新建时的行为一致。
       const kiroModelMapping = buildModelRestrictionMapping()
