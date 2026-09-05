@@ -543,3 +543,53 @@ func TestKiroTestConnectionSurfacesUpstreamFailure(t *testing.T) {
 	_, err := svc.TestConnection(context.Background(), account, "")
 	require.Error(t, err, "上游拒绝时测试连接必须报错，不能悄悄返回空文本假装成功")
 }
+
+// TestKiroTestConnectionRejectsUnsupportedModel 是用户真实账号测试报告的
+// 回归："不管选什么模型都显示完成，比如选了 fable5，实际上 Kiro 不支持"。
+// 根因：MapModel 之前对任何未识别模型名都静默兜底成 claude-sonnet-4.6 并
+// 正常转发。这里断言选择一个 Kiro 明确不支持的模型（claude-fable-5-1）时
+// TestConnection 必须报错，且完全不能碰上游（不能真的拿这个不支持的模型
+// 名去问 Kiro，因为我们已经知道它不支持，问了也是浪费一次上游调用）。
+func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
+		return 0, nil
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(502)
+
+	_, err := svc.TestConnection(context.Background(), account, "claude-fable-5-1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not supported")
+	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+}
+
+// TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream 是
+// 同一回归在 ForwardUpstream 层面的直接覆盖（TestConnection 只是它的一个
+// 调用方）：真实网关请求路径同样会静默换模型，不是只有管理端"测试连接"
+// 才会碰到——任何走 Kiro 分组的 API Key 请求一个不支持的模型都会触发。
+func TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
+		return 0, nil
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(503)
+	recorder, c := kiroTestContext()
+
+	body := []byte(`{"model":"claude-fable-5-1","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := svc.ForwardUpstream(context.Background(), c, account, body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "permission_error")
+	require.Contains(t, recorder.Body.String(), "claude-fable-5-1")
+}
