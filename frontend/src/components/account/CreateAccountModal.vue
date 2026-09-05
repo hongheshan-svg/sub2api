@@ -263,6 +263,78 @@
         />
 
         <KiroCredentialFields v-model="kiroForm" class="mt-4" />
+
+        <!-- Kiro model restriction（可选，参照 Antigravity 的账号级限制约定；
+             未配置时不影响任何行为，见后端 forwardUpstream 的账号级限制说明） -->
+        <div class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <!-- Mode Toggle -->
+          <div class="mb-4 flex gap-2">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+
+          <!-- Whitelist Mode -->
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector
+              v-model="allowedModels"
+              platform="kiro"
+            />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+              <span v-if="allowedModels.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
+            </p>
+          </div>
+
+          <!-- Mapping Mode -->
+          <div v-else class="space-y-3">
+            <div v-for="(mapping, index) in modelMappings" :key="getModelMappingKey(mapping)" class="flex items-center gap-2">
+              <input v-model="mapping.from" type="text" class="input flex-1" :placeholder="t('admin.accounts.requestModel')" />
+              <span class="text-gray-400">→</span>
+              <input v-model="mapping.to" type="text" class="input flex-1" :placeholder="t('admin.accounts.actualModel')" />
+              <button type="button" @click="removeModelMapping(index)" class="text-red-500 hover:text-red-700">
+                <Icon name="trash" size="sm" />
+              </button>
+            </div>
+            <button type="button" @click="addModelMapping" class="btn btn-secondary text-sm">
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presetMappings"
+                :key="preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -5647,8 +5719,11 @@ const handleSubmit = async () => {
 
   // For Kiro, create directly — 独立分支（Task 22 kiroCredentials.ts）。
   // Kiro 的凭证形状（auth_method/refresh_token/api_key/...）与下面的通用
-  // base_url+api_key 路径无关，不应落入那条路径（也不应被 model_mapping/
-  // pool_mode 等通用 apikey 后处理污染）。
+  // base_url+api_key 路径无关，不应落入那条路径（也不应被 pool_mode 等
+  // 通用 apikey 后处理污染）。model_mapping 是例外——账号级模型限制
+  // （可选）复用与其它平台相同的 modelRestrictionMode/allowedModels/
+  // modelMappings 状态，见上方 Kiro 凭证区块下的独立小节，这里显式构建，
+  // 不经过 createAccountAndFinish 内只对 grok 生效的那段通用逻辑。
   if (form.platform === 'kiro') {
     if (!form.name.trim()) {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
@@ -5660,6 +5735,10 @@ const handleSubmit = async () => {
       return
     }
     const credentials = buildKiroCredentials(kiroForm.value)
+    const kiroModelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+    if (kiroModelMapping) {
+      credentials.model_mapping = kiroModelMapping
+    }
     await createAccountAndFinish('kiro', 'apikey' as AccountType, credentials)
     return
   }

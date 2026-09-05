@@ -89,7 +89,7 @@ const antigravityModels = [
 ]
 
 // Kiro（Amazon Q Developer / CodeWhisperer）—— 与后端 kiro.DefaultModels() 保持一致
-const kiroModels = ['claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'claude-sonnet-4']
+const kiroModels = ['claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'claude-opus-5']
 
 // 智谱 GLM
 const zhipuModels = [
@@ -369,6 +369,18 @@ const antigravityPresetMappings = [
   { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' }
 ]
 
+// Kiro 预设映射 —— 与后端 kiroModelAliases（models.go）保持一致，只收录真实
+// 账号测试验证过的模型，不能照抄其它平台的候选名单（见 models.go 的详细
+// 教训记录）。from===to（点号原生形态）用于"账号只允许服务这个模型"的
+// 白名单写法；点击即在限制列表里加一条精确条目。
+const kiroPresetMappings = [
+  { label: 'Sonnet 4', from: 'claude-sonnet-4', to: 'claude-sonnet-4', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
+  { label: 'Sonnet 4.5', from: 'claude-sonnet-4.5', to: 'claude-sonnet-4.5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
+  { label: 'Sonnet 4.6', from: 'claude-sonnet-4.6', to: 'claude-sonnet-4.6', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
+  { label: 'Haiku 4.5', from: 'claude-haiku-4.5', to: 'claude-haiku-4.5', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
+  { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' }
+]
+
 // Bedrock 预设映射（与后端 DefaultBedrockModelMapping 保持一致）
 const bedrockPresetMappings = [
   { label: 'Fable 5.1', from: 'claude-fable-5-1', to: 'anthropic.claude-fable-5-1', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
@@ -458,6 +470,7 @@ export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'gemini') return geminiPresetMappings
   if (platform === 'grok' || platform === 'xai') return grokPresetMappings
   if (platform === 'antigravity') return antigravityPresetMappings
+  if (platform === 'kiro') return kiroPresetMappings
   if (platform === 'bedrock') return bedrockPresetMappings
   return anthropicPresetMappings
 }

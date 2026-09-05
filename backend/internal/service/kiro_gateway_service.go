@@ -109,6 +109,43 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 		upstreamModel = trimmed
 	}
 
+	// 管理端可选的账号级模型限制（"kiro需要增加类似反重力的模型限制功能
+	// （可选）"）：credentials["model_mapping"] 未配置时 len(mapping)==0，
+	// 完全不进这个分支——这就是"可选"的含义，默认关闭，不影响任何既有账号
+	// （含本文件其余全部既有测试的既有断言）。复用 Account.GetModelMapping/
+	// ResolveMappedModel 这套本仓库已有的通用机制（Antigravity/Grok/Bedrock
+	// 等平台的既有约定，见 account.go），不是另起一套 Kiro 专属的映射结构。
+	//
+	// 必须用上面 kiro.MapModel 已经求出的 upstreamModel（Kiro 规范点号形态）
+	// 去查账号级映射表，不能用 inbound.Model 原始请求名——管理端前端的模型
+	// 选择器（ModelWhitelistSelector）展示、预设映射填的都是 kiroModels 里的
+	// 点号原生名，真实客户端请求大多是连字符/带日期后缀形态（如本文件
+	// kiroTestRequestBody 用的 claude-sonnet-4-5-20250929）；如果直接拿原始
+	// 请求名去比对，同一个模型只因客户端用了连字符写法就会被误判"不在限制
+	// 列表里"而拒绝——这是本次实现前审出来的真实风险，不是假设性边界情况。
+	//
+	// mapping 模式下 to 侧是管理端自由文本，不保证已经是 Kiro 能识别的名字，
+	// 映射结果必须重新过一次 kiro.MapModel 才能进入下面的转发流程——管理员
+	// 配置错了目标模型名，也不能绕开"未经真实验证的模型名不能打真实流量"这条
+	// 红线（本函数文档里 bypassModelWhitelist 说明的同一条红线）。
+	//
+	// bypassModelWhitelist=true（仅 TestConnection）时跳过这一整段：管理员
+	// 主动发起的一次性诊断调用不该被自己配置的账号级限制挡住——那正是用来
+	// 验证"这个模型到底支不支持"的探测通道，见 TestConnection 文档。
+	if !bypassModelWhitelist {
+		if mapping := account.GetModelMapping(); len(mapping) > 0 {
+			resolvedModel, matched := account.ResolveMappedModel(upstreamModel)
+			if !matched {
+				return nil, s.writeKiroModelUnsupportedError(c, inbound.Model)
+			}
+			revalidated, ok := kiro.MapModel(resolvedModel)
+			if !ok {
+				return nil, s.writeKiroModelUnsupportedError(c, resolvedModel)
+			}
+			upstreamModel = revalidated
+		}
+	}
+
 	endpoints := kiro.EndpointsFor(account.IsKiroAPIKeyAccount(), account.KiroRegion())
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("kiro: no endpoints available for account")

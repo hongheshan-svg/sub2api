@@ -632,6 +632,183 @@ func TestKiroForwardUpstreamRejectsUnsupportedModel(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "claude-fable-5-2")
 }
 
+// TestKiroForwardUpstreamAccountModelRestrictionUnconfiguredIsNoop 是"可选"
+// 这个要求的核心断言：账号没有配置 credentials["model_mapping"] 时（本文件
+// kiroTestOAuthAccount 构造的所有账号都是这个状态），新加的账号级限制分支
+// 必须完全不改变行为——不能因为加了这个可选功能就让任何既有账号突然被
+// 挡住。复用 kiroTestRequestBody 的连字符+日期后缀模型名，与其余全部既有
+// 测试共享同一条基线请求体。
+func TestKiroForwardUpstreamAccountModelRestrictionUnconfiguredIsNoop(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"ok"}`),
+	)
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(506)
+	_, c := kiroTestContext()
+
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+}
+
+// TestKiroForwardUpstreamAccountModelRestrictionRejectsModelNotInWhitelist
+// 覆盖白名单写法（前端 modelRestrictionMode='whitelist' 产出的 from==to）：
+// 账号配置成只服务 claude-haiku-4.5，请求 claude-sonnet-4.6 必须被本地
+// 拒绝，不浪费一次真实上游调用——与 TestKiroForwardUpstreamRejectsUnsupportedModel
+// 覆盖的是同一条"不确定/不允许的模型不能打上游"红线，只是这次拒绝原因是
+// 账号级限制而不是全局白名单。
+func TestKiroForwardUpstreamAccountModelRestrictionRejectsModelNotInWhitelist(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		t.Fatal("账号级限制之外的模型必须在到达上游之前就被拒绝")
+		return 0, nil
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(507)
+	account.Credentials["model_mapping"] = map[string]any{
+		"claude-haiku-4.5": "claude-haiku-4.5",
+	}
+	recorder, c := kiroTestContext()
+
+	// kiroTestRequestBody 请求的是 claude-sonnet-4-5-20250929（映射到
+	// claude-sonnet-4.5），不在账号只允许 haiku-4.5 的限制列表里。
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "permission_error")
+}
+
+// TestKiroForwardUpstreamAccountModelRestrictionAllowsWhitelistedModelDespiteHyphenForm
+// 是本次实现前审出来的真实风险的回归测试：管理端模型选择器/预设映射填的
+// 是 Kiro 规范点号形态（claude-sonnet-4.6），但真实客户端请求几乎总是
+// 连字符+日期后缀形态。账号级限制必须按 kiro.MapModel 转换后的规范名去
+// 匹配，而不是按客户端原始请求名——否则同一个被允许的模型只因客户端写法
+// 不同就会被误拒。
+func TestKiroForwardUpstreamAccountModelRestrictionAllowsWhitelistedModelDespiteHyphenForm(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"ok"}`),
+	)
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(508)
+	account.Credentials["model_mapping"] = map[string]any{
+		"claude-sonnet-4.5": "claude-sonnet-4.5",
+	}
+	_, c := kiroTestContext()
+
+	// kiroTestRequestBody 请求的是连字符+日期后缀形态的
+	// claude-sonnet-4-5-20250929，账号限制列表里写的是规范点号形态。
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.NoError(t, err, "账号限制列表用规范名写的模型，客户端用连字符形态请求时不应该被误拒")
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+}
+
+// TestKiroForwardUpstreamAccountModelRestrictionMappingModeRemapsModel 覆盖
+// 映射写法（from!=to）：账号把请求的 sonnet 模型强制改发成 opus-5——用于
+// 管理员按账号做成本/质量调度的场景，与 Antigravity 的账号级映射是同一个
+// 使用目的。
+func TestKiroForwardUpstreamAccountModelRestrictionMappingModeRemapsModel(t *testing.T) {
+	var gotBody []byte
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, kiroTestConcatFrames(
+			kiroTestEventFrame("assistantResponseEvent", `{"content":"ok"}`),
+		)
+	})
+	// kiroTestFakeUpstream 不暴露请求体，另起一个中间层记录送到上游的原始
+	// payload，验证映射结果（claude-opus-5）而不是原始请求模型（sonnet）
+	// 真的被送了出去。
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = func(ctx context.Context, account *Account, ep kiro.Endpoint, payload []byte) (*http.Response, error) {
+		gotBody = payload
+		return kiroTestOverrideCallingServer(srv)(ctx, account, ep, payload)
+	}
+
+	account := kiroTestOAuthAccount(509)
+	account.Credentials["model_mapping"] = map[string]any{
+		"claude-sonnet-4.5": "claude-opus-5",
+	}
+	_, c := kiroTestContext()
+
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+	require.Contains(t, string(gotBody), "claude-opus-5", "映射模式必须真的把请求改发成映射目标模型")
+	require.NotContains(t, string(gotBody), "claude-sonnet-4.5")
+}
+
+// TestKiroForwardUpstreamAccountModelRestrictionMappingModeTargetStillNeedsRealValidation
+// 覆盖管理员配置错映射目标的情况：mapping 的 to 侧是自由文本，不保证是
+// Kiro 真的认识的模型名，映射结果必须重新过 kiro.MapModel 白名单闸门——
+// 不能因为账号级限制"匹配上了"就绕开"未经验证的模型名不能打真实流量"这条
+// 红线（TestKiroForwardUpstreamRejectsUnsupportedModel 覆盖的同一条红线）。
+func TestKiroForwardUpstreamAccountModelRestrictionMappingModeTargetStillNeedsRealValidation(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		t.Fatal("映射目标不是已验证的 Kiro 模型名时，必须在到达上游之前就被拒绝")
+		return 0, nil
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(510)
+	account.Credentials["model_mapping"] = map[string]any{
+		"claude-sonnet-4.5": "claude-fable-5",
+	}
+	recorder, c := kiroTestContext()
+
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+// TestKiroTestConnectionBypassesAccountModelRestriction 覆盖 TestConnection
+// 与账号级限制的交互：管理员主动发起的一次性诊断调用不应该被自己配置的
+// 限制挡住——与它已经绕开全局白名单（TestKiroTestConnectionBypassesWhitelistAndAsksRealUpstream）
+// 是同一条设计红线的延伸。
+func TestKiroTestConnectionBypassesAccountModelRestriction(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"OK"}`),
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+	)
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(511)
+	account.Credentials["model_mapping"] = map[string]any{
+		"claude-haiku-4.5": "claude-haiku-4.5",
+	}
+
+	result, err := svc.TestConnection(context.Background(), account, "claude-sonnet-5")
+	require.NoError(t, err, "测试连接不应该被账号自己配置的模型限制挡住")
+	require.Equal(t, "OK", result.Text)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+}
+
 // TestKiroForwardUpstreamRejectsEmptyModel 覆盖同一路径的空模型名情况：
 // 连请求都构造不出来，同样不需要（也不应该）浪费一次上游调用。
 func TestKiroForwardUpstreamRejectsEmptyModel(t *testing.T) {

@@ -267,6 +267,33 @@ function buildGrokOAuthAccount() {
   } as any
 }
 
+function buildKiroAccount() {
+  return {
+    id: 8,
+    name: 'Kiro Account',
+    notes: '',
+    platform: 'kiro',
+    type: 'apikey',
+    credentials: {
+      auth_method: 'social',
+      region: 'us-east-1',
+      model_mapping: {
+        'claude-sonnet-4.6': 'claude-sonnet-4.6'
+      }
+    },
+    credentials_status: { has_refresh_token: true },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function buildGrokAPIKeyAccount() {
   return {
     ...buildAccount(),
@@ -1394,6 +1421,38 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
       'antigravity_project_id'
     )
+  })
+
+  // Kiro 模型限制功能（可选，参照 Antigravity 的账号级限制约定）：与
+  // CreateAccountModal.spec.ts 的同名场景对应，这里额外覆盖编辑态特有的
+  // "打开时从已有 credentials.model_mapping 回填" 这一步（loadModelRestrictionFromMapping）。
+  it('rehydrates the Kiro model restriction from existing credentials.model_mapping', async () => {
+    const account = buildKiroAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('claude-sonnet-4.6')
+  })
+
+  it('sends the updated Kiro model restriction on submit', async () => {
+    const account = buildKiroAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="rewrite-to-snapshot"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'gpt-5.2-2025-12-11': 'gpt-5.2-2025-12-11'
+    })
   })
 })
 

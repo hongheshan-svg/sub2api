@@ -544,4 +544,42 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
+
+  // Kiro 模型限制功能（可选，参照 Antigravity 的账号级限制约定）：验证
+  // Kiro 凭证区块下新增的限制小节真的把 model_mapping 接到了提交的
+  // credentials 里——buildModelMappingObject 本身已经在 useModelWhitelist.spec.ts
+  // 里单独测过，这里只测本文件新增的这段 CreateAccountModal 接线代码。
+  it('does not attach model_mapping for a Kiro account when left in mapping mode with no entries', async () => {
+    // whitelist 模式在切换平台时会自动填充"该平台全部已知模型"（这是本文件
+    // 其余全部平台共用的既有行为，见下方 modelRestrictionMode/form.platform
+    // 的 watch），所以"真的不限制"要靠切到 mapping 模式且不添加任何条目——
+    // 与 t('admin.accounts.supportsAllModels') 在两种模式下传达的是同一件事：
+    // 留空 = 不限制。
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('kiro account')
+    await wrapper.get('[data-test="kiro-refresh-token"]').setValue('rt-1')
+    await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+    expect(credentials.model_mapping).toBeUndefined()
+  })
+
+  it('attaches the configured model_mapping to a Kiro account on create', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('kiro account')
+    await wrapper.get('[data-test="kiro-refresh-token"]').setValue('rt-1')
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const call = createAccountMock.mock.calls[0]?.[0]
+    expect(call.platform).toBe('kiro')
+    expect(call.credentials.model_mapping).toEqual({ 'public-glm': 'public-glm' })
+  })
 })

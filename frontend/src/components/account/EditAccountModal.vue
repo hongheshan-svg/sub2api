@@ -565,6 +565,78 @@
         />
 
         <KiroCredentialFields v-model="kiroForm" :has-existing-secret="kiroHasExistingSecret" />
+
+        <!-- Kiro model restriction（可选，参照 Antigravity 的账号级限制约定；
+             未配置时不影响任何行为，见后端 forwardUpstream 的账号级限制说明） -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <!-- Mode Toggle -->
+          <div class="mb-4 flex gap-2">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+
+          <!-- Whitelist Mode -->
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector
+              v-model="allowedModels"
+              platform="kiro"
+            />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+              <span v-if="allowedModels.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
+            </p>
+          </div>
+
+          <!-- Mapping Mode -->
+          <div v-else class="space-y-3">
+            <div v-for="(mapping, index) in modelMappings" :key="getModelMappingKey(mapping)" class="flex items-center gap-2">
+              <input v-model="mapping.from" type="text" class="input flex-1" :placeholder="t('admin.accounts.requestModel')" />
+              <span class="text-gray-400">→</span>
+              <input v-model="mapping.to" type="text" class="input flex-1" :placeholder="t('admin.accounts.actualModel')" />
+              <button type="button" @click="removeModelMapping(index)" class="text-red-500 hover:text-red-700">
+                <Icon name="trash" size="sm" />
+              </button>
+            </div>
+            <button type="button" @click="addModelMapping" class="btn btn-secondary text-sm">
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presetMappings"
+                :key="preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Grok OAuth client-tool prompt cache opt-in -->
@@ -4057,6 +4129,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     // selectKiroPlatform() 同一模式。
     upstreamBillingAutoProbeEnabled.value = false
     upstreamBillingRateSyncEnabled.value = false
+
+    // Load model restriction（可选，见 KiroCredentialFields 之后的独立小节）——
+    // 与其它平台复用同一套 loadModelRestrictionFromMapping/allowedModels/
+    // modelMappings 状态，只是不走下面通用 apikey 分支的初始化逻辑。
+    loadModelRestrictionFromMapping(kiroCreds.model_mapping as Record<string, unknown> | undefined)
   }
 
   // Initialize API Key fields for apikey type
@@ -4814,6 +4891,14 @@ const handleSubmit = async () => {
       }
       if (kiroForm.value.authMethod === 'api_key' && !kiroForm.value.apiKey.trim()) {
         delete newCredentials.api_key
+      }
+      // Model restriction（可选）：与其它平台复用同一套 allowedModels/
+      // modelMappings 状态构建，留空表示不限制，与新建时的行为一致。
+      const kiroModelMapping = buildModelRestrictionMapping()
+      if (kiroModelMapping) {
+        newCredentials.model_mapping = kiroModelMapping
+      } else {
+        delete newCredentials.model_mapping
       }
       updatePayload.credentials = newCredentials
     }
