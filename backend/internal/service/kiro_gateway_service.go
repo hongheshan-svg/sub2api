@@ -67,11 +67,11 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 	}
 
 	// 真实账号测试发现：MapModel 之前对任何未识别的模型名（含明显不属于
-	// Kiro 的名字，如 claude-fable-5-1）都静默兜底成 claude-sonnet-4.6 并
-	// 正常转发——客户端会看到请求"成功"，却从未意识到自己请求的模型从未
-	// 被真正服务过（管理端"测试连接"点任何模型都显示完成，就是这个问题的
-	// 直接症状）。现在 ok=false 时必须直接拒绝，不能静默换模型再假装成功
-	// ——与 Antigravity 的 getMappedModel==""→writeClaudeError 是同一约定。
+	// Kiro 的名字）都静默兜底成 claude-sonnet-4.6 并正常转发——客户端会
+	// 看到请求"成功"，却从未意识到自己请求的模型从未被真正服务过。现在
+	// ok=false 时必须直接拒绝，不能静默换模型再假装成功——与 Antigravity
+	// 的 getMappedModel==""→writeClaudeError 是同一约定（见 MapModel 文档：
+	// 维护一份准确的白名单，命中就映射、未命中就干净拒绝）。
 	upstreamModel, modelOK := kiro.MapModel(inbound.Model)
 	if !modelOK {
 		return nil, s.writeKiroModelUnsupportedError(c, inbound.Model)
@@ -359,10 +359,13 @@ func (s *KiroGatewayService) feedTranslatorChunk(
 // 形状的错误响应给客户端，并标记响应已提交（MarkResponseCommitted）—— 与
 // AntigravityGatewayService.writeClaudeError 对 getMappedModel=="" 的处理
 // 是同一约定：403 permission_error，调用方 gateway_handler.go 看到
-// IsResponseCommitted 为真就不会再尝试写第二份响应。
+// IsResponseCommitted 为真就不会再尝试写第二份响应。空模型名与不在白名单
+// 里的模型名共用这一条路径，用同一种"权限/支持范围"语义描述都合适——
+// 前者是"没有指定要哪个模型"，后者是"指定的模型不在这个账号能服务的
+// 范围内"，客户端视角下都是"这次请求要不到你想要的模型"。
 func (s *KiroGatewayService) writeKiroModelUnsupportedError(c *gin.Context, requestedModel string) error {
 	MarkResponseCommitted(c)
-	message := fmt.Sprintf("model %s is not supported by this account's platform", requestedModel)
+	message := fmt.Sprintf("model %q is not supported by this account's platform", requestedModel)
 	c.JSON(http.StatusForbidden, map[string]any{
 		"type":  "error",
 		"error": map[string]any{"type": "permission_error", "message": message},

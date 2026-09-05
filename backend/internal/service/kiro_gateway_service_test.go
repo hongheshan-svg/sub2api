@@ -545,11 +545,10 @@ func TestKiroTestConnectionSurfacesUpstreamFailure(t *testing.T) {
 }
 
 // TestKiroTestConnectionRejectsUnsupportedModel 是用户真实账号测试报告的
-// 回归："不管选什么模型都显示完成，比如选了 fable5，实际上 Kiro 不支持"。
-// 根因：MapModel 之前对任何未识别模型名都静默兜底成 claude-sonnet-4.6 并
-// 正常转发。这里断言选择一个 Kiro 明确不支持的模型（claude-fable-5-1）时
-// TestConnection 必须报错，且完全不能碰上游（不能真的拿这个不支持的模型
-// 名去问 Kiro，因为我们已经知道它不支持，问了也是浪费一次上游调用）。
+// 症状在管理端"测试连接"入口的直接覆盖（ForwardUpstream 层面的覆盖见
+// TestKiroForwardUpstreamRejectsUnsupportedModel）：选择一个白名单确认不
+// 支持的模型时，测试连接必须报错，不能显示"完成"，也不该真的去问上游
+// （已知不支持，问了是浪费一次上游调用）。
 func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
 	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
 		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
@@ -559,21 +558,55 @@ func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
 	svc := &KiroGatewayService{}
 	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
 
-	account := kiroTestOAuthAccount(502)
+	account := kiroTestOAuthAccount(504)
 
-	_, err := svc.TestConnection(context.Background(), account, "claude-fable-5-1")
+	_, err := svc.TestConnection(context.Background(), account, "claude-fable-5-2")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not supported")
 	require.EqualValues(t, 0, atomic.LoadInt32(calls))
 }
 
-// TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream 是
-// 同一回归在 ForwardUpstream 层面的直接覆盖（TestConnection 只是它的一个
-// 调用方）：真实网关请求路径同样会静默换模型，不是只有管理端"测试连接"
-// 才会碰到——任何走 Kiro 分组的 API Key 请求一个不支持的模型都会触发。
-func TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream(t *testing.T) {
+// TestKiroForwardUpstreamRejectsUnsupportedModel 是用户真实账号测试报告的
+// 两轮回归收敛后的最终行为：
+//  1. 第一轮报告"不管选什么模型都显示完成"——根因是 MapModel 把任何未
+//     识别的模型名静默换成 claude-sonnet-4.6 再正常转发。
+//  2. 收窄成"不在本地白名单里就直接拒绝"之后，第二轮发现白名单本身漏收
+//     了 Kiro 实际支持的 claude-opus-5 一整个家族，被错误拒绝——已在
+//     kiroModelAliases 里补齐（见 models.go 与 models_test.go）。
+//
+// 设计参照 AntigravityGatewayService 的既有约定（一份尽量准确的白名单，
+// 命中就映射、未命中就干净拒绝，不转发不确定的请求去问上游）：这里断言
+// 一个白名单确认不支持的模型名（claude-fable-5-2，与已确认支持的
+// claude-fable-5/claude-fable-5-1 区分开）会在到达上游之前就被拒绝，
+// 不浪费一次上游调用。
+func TestKiroForwardUpstreamRejectsUnsupportedModel(t *testing.T) {
 	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
 		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
+		return 0, nil
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(502)
+	recorder, c := kiroTestContext()
+
+	body := []byte(`{"model":"claude-fable-5-2","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := svc.ForwardUpstream(context.Background(), c, account, body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.EqualValues(t, 0, atomic.LoadInt32(calls))
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "permission_error")
+	require.Contains(t, recorder.Body.String(), "claude-fable-5-2")
+}
+
+// TestKiroForwardUpstreamRejectsEmptyModel 覆盖同一路径的空模型名情况：
+// 连请求都构造不出来，同样不需要（也不应该）浪费一次上游调用。
+func TestKiroForwardUpstreamRejectsEmptyModel(t *testing.T) {
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		t.Fatal("空模型名必须在到达上游之前就被拒绝")
 		return 0, nil
 	})
 
@@ -583,7 +616,7 @@ func TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream(t *t
 	account := kiroTestOAuthAccount(503)
 	recorder, c := kiroTestContext()
 
-	body := []byte(`{"model":"claude-fable-5-1","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	body := []byte(`{"model":"","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	result, err := svc.ForwardUpstream(context.Background(), c, account, body)
 	require.Error(t, err)
 	require.Nil(t, result)
@@ -591,5 +624,4 @@ func TestKiroForwardUpstreamRejectsUnsupportedModelBeforeContactingUpstream(t *t
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "permission_error")
-	require.Contains(t, recorder.Body.String(), "claude-fable-5-1")
 }
