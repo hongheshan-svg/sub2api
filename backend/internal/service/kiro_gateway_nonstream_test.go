@@ -148,6 +148,64 @@ func TestKiroAccumulateAnthropicResponse_EmptyEventsIsDefensive(t *testing.T) {
 	require.Empty(t, resp.Content)
 }
 
+// TestKiroAccumulateAnthropicResponse_NoContentBlocksSerializesAsEmptyArray
+// 是复查（scoped re-review）发现的 Important 级回归：message_start 之后没有
+// 任何 content_block_* 事件时（上游空回复/静默截断——stream.go 的 Finalize
+// 注释明确关心的场景），累积器必须把 Content 重置成空切片而不是 nil。
+// AnthropicResponse.Content 的 json tag 没有 omitempty，nil 切片会序列化成
+// "content":null，违反 Anthropic 线协议（客户端/SDK 期待 content 恒为数组，
+// 即便是空数组）；流式路径的 message_start 发的就是 "content":[]
+// （stream.go:217），非流式路径的行为必须与之一致。
+func TestKiroAccumulateAnthropicResponse_NoContentBlocksSerializesAsEmptyArray(t *testing.T) {
+	events := []apicompat.AnthropicStreamEvent{
+		{Type: "message_start", Message: &apicompat.AnthropicResponse{ID: "msg_5", Type: "message", Role: "assistant"}},
+		{Type: "message_delta", Delta: &apicompat.AnthropicDelta{StopReason: "end_turn"}},
+		{Type: "message_stop"},
+	}
+
+	resp, err := kiroAccumulateAnthropicResponse(events)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Content, "Content 必须是非 nil 的空切片，不能是 nil——否则序列化成 \"content\":null")
+	require.Empty(t, resp.Content)
+
+	body, err := json.Marshal(resp)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"content":[]`,
+		"回归核心断言：线上协议必须是 \"content\":[]，不能是 \"content\":null")
+	require.NotContains(t, string(body), `"content":null`)
+}
+
+// TestKiroAccumulateAnthropicResponse_TruncatedToolInputFallsBackToEmptyObject
+// 是复查发现的 Minor 级回归：上游在 input_json_delta 中途断流时
+// （feedTranslatorChunk 的 sawContent-优雅截断路径，流式侧本就能正常截断
+// 返回），分片拼接结果是半截、无效的 JSON——之前的代码只在分片为空字符串时
+// 才兜底成 "{}"，非空但无效的分片会原样塞进 json.RawMessage，导致
+// nonStreamToClient 后续对整个响应做 json.Marshal 时失败，已经收到的正文/
+// usage 全部作废。累积器必须像"从未收到任何分片"一样，对无效 JSON 也兜底成
+// "{}"，保持与流式路径一致的"尽力截断"语义。
+func TestKiroAccumulateAnthropicResponse_TruncatedToolInputFallsBackToEmptyObject(t *testing.T) {
+	events := []apicompat.AnthropicStreamEvent{
+		{Type: "message_start", Message: &apicompat.AnthropicResponse{ID: "msg_6", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: intPtr(0), ContentBlock: &apicompat.AnthropicContentBlock{
+			Type: "tool_use", ID: "tu_1", Name: "Read", Input: json.RawMessage("{}"),
+		}},
+		// 断流：只收到半截 JSON，没有后续分片能补完它。
+		{Type: "content_block_delta", Index: intPtr(0), Delta: &apicompat.AnthropicDelta{Type: "input_json_delta", PartialJSON: `{"pa`}},
+		{Type: "content_block_stop", Index: intPtr(0)},
+		{Type: "message_stop"},
+	}
+
+	resp, err := kiroAccumulateAnthropicResponse(events)
+	require.NoError(t, err, "半截 JSON 必须被兜底吸收，不能让累积器本身报错")
+	require.Len(t, resp.Content, 1)
+	require.JSONEq(t, `{}`, string(resp.Content[0].Input))
+
+	// 核心断言：兜底之后，最终响应必须能被完整 marshal——这正是原 bug
+	// 丢失全部已收内容/用量的地方。
+	_, err = json.Marshal(resp)
+	require.NoError(t, err, "无效的 tool input 分片不应该拖垮整个响应的 marshal")
+}
+
 // --- I3：ForwardUpstream 端到端非流式集成测试 ---
 
 // TestKiroForwardUpstreamNonStreamingReturnsSingleJSONResponse 是 I3 的核心

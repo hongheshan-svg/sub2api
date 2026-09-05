@@ -151,11 +151,19 @@ func kiroAccumulateAnthropicResponse(events []apicompat.AnthropicStreamEvent) (*
 			// 浅拷贝足够——Message 内嵌的 Content 切片在正常构造下本就是
 			// 空的（ensureStarted 里 message_start 恒为
 			// Content: []apicompat.AnthropicContentBlock{}），这里再显式
-			// 清空一次纯粹是防御性的：不管上游/翻译器将来是否变化，累积器
+			// 重置一次纯粹是防御性的：不管上游/翻译器将来是否变化，累积器
 			// 自己的 Content 必须完全由后续的 content_block_* 事件重建，
 			// 不能信任 message_start 里可能带的任何内容。
+			//
+			// 必须重置成空切片而不是 nil（复查发现的 Important 级问题）：
+			// AnthropicResponse.Content 的 json tag 没有 omitempty，nil 切片
+			// 序列化成 "content":null。上游一个 content 帧都没产出时（空回复/
+			// 静默截断——stream.go 的 Finalize 注释明确关心的场景），后面的
+			// content_block_* 事件从不触发，Content 会一直是这里设置的初始
+			// 值，直接把 null 发给客户端，违反 Anthropic 线协议（严格客户端/
+			// SDK 校验 content 必须是数组）。
 			cp := *ev.Message
-			cp.Content = nil
+			cp.Content = []apicompat.AnthropicContentBlock{}
 			resp = &cp
 
 		case "content_block_start":
@@ -202,13 +210,23 @@ func kiroAccumulateAnthropicResponse(events []apicompat.AnthropicStreamEvent) (*
 				continue
 			}
 			s := b.String()
-			if s == "" {
+			if s == "" || !json.Valid([]byte(s)) {
 				// 与 stream.go 的 handleToolUse 一致：一个 tool_use 块从未
 				// 收到过任何 input_json_delta 分片（或分片拼接结果恰好是
 				// 空字符串）时，Input 落到 "{}"，而不是空字节串（无效 JSON）
 				// 或 nil（json.RawMessage 的 nil 在 omitempty 下会让
 				// "input" 字段整个消失，跟"有 input_json_delta 才关心分片"
 				// 的既有网关行为不一致）。
+				//
+				// !json.Valid 分支是复查发现的 Minor 级问题的修复：上游在
+				// input_json_delta 中途断流时（feedTranslatorChunk 的
+				// sawContent-优雅截断路径，流式侧本就能正常截断返回），分片
+				// 拼接结果是半截 JSON（如 `{"pa`），不做校验会让下面的
+				// json.Marshal(anthropicResp) 直接失败——已经收到的正文/
+				// usage 全部作废，nonStreamToClient 返回一个未分类的裸
+				// error，而同样的上游行为在流式路径下是成功返回截断内容。
+				// 校验失败时同样落到 "{}"，保持与流式路径一致的"尽力截断"
+				// 语义，而不是让整个响应因为一个字段无效而全盘皆输。
 				s = "{}"
 			}
 			resp.Content[idx].Input = json.RawMessage(s)
