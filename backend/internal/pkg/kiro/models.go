@@ -13,36 +13,34 @@ const defaultKiroModel = "claude-sonnet-4.6"
 
 // kiroModelAliases 把 Anthropic 风格的模型名映射到 Kiro 上游名。
 // Kiro 大多数型号用点号版本号（claude-sonnet-4.6），Anthropic 客户端用
-// 连字符；但 Kiro 2026-07-25 上线的几个新型号（opus-5/sonnet-5/fable-5）
-// 命名里根本没有次版本号，原样就是目标值，别名表里体现为恒等映射。
+// 连字符。
 //
 // I5 的原判断"Kiro 没有 Opus 型号"是错的——真实账号测试证实 claude-opus-5
 // 确实被 Kiro 支持（此前因为不在别名表、也不匹配 kiroNativeName 的点号
-// 形态，被本文件的兜底逻辑直接拒绝）。核实过一个活跃维护的第三方 Kiro
-// 代理实现（含 2026-07-25 添加 opus-5 支持时的真实上游抓包，
-// modelId/modelName 均为 "claude-opus-5"，rateMultiplier 2.2、
-// maxOutputTokens 128000，与 opus-4.7/4.8 同档）确认 Kiro 实际支持完整的
-// opus-4.5/4.6/4.7/4.8/5 家族，只是原来的别名表从未收录——I5 当初删掉的
-// 两条（opus-4-5/4-6 错误指向 sonnet-4.6）方向是对的，但没有补上正确的
-// 目标（opus-4.5/opus-4.6 本身），这次一并补齐整个 opus 家族 + sonnet-5 +
-// fable，而不是只改 I5 报告的那两条。
+// 形态，被本文件的兜底逻辑直接拒绝），Kiro 用不分次版本号的
+// "claude-opus-5" 原样服务它，已用真实账号直接测试确认（响应正常）。
 //
-// claude-fable-5-1 与 claude-fable-5 是本仓库 claude.DefaultModels 里并存
-// 的两个 Anthropic 侧模型 ID（分别对应正式版/预览版），但 Kiro 侧只有一个
-// 不分次版本号的 "claude-fable-5"，两者都映射到它。
+// 一次教训：曾经参考一个第三方 Kiro 代理实现的 map_model 表，一并加过
+// opus-4.5/4.6/4.7/4.8、sonnet-5、fable-5/fable-5-1，其中 fable 那两条
+// 被真实账号测试证伪——Kiro 对 "claude-fable-5" 回真实 400
+// INVALID_MODEL_ID（"Invalid model. Please select a different model to
+// continue."），说明该参考实现对这几个较新型号的命名并不完全可靠。既然
+// 同一个来源在 fable 上出过错，其余几条（opus-4.5/4.6/4.7/4.8、sonnet-5）
+// 同样只是未经证实的猜测，不能因为"格式看起来合理"就当真——已经跟
+// claude-opus-5 一样被同一来源"猜对过一次"不代表这个来源整体可信。已经
+// 移除，只保留真正经过验证的条目。
+//
+// 白名单机制本身没有问题（架构对齐 AntigravityGatewayService 的
+// DefaultAntigravityModelMapping，见 MapModel 文档）——出错的是内容来源
+// 不够可靠。以后新增条目前，先用真实账号测试连接直接验证候选模型名（点号
+// 原生形态可以不经别名表直接透传，见 MapModel 规则 2），拿到 200 或明确的
+// 非 INVALID_MODEL_ID 错误后再收录进别名表，不要只凭第三方参考实现下结论。
 var kiroModelAliases = map[string]string{
 	"claude-sonnet-4":   "claude-sonnet-4",
 	"claude-sonnet-4-5": "claude-sonnet-4.5",
 	"claude-sonnet-4-6": "claude-sonnet-4.6",
-	"claude-sonnet-5":   "claude-sonnet-5",
 	"claude-haiku-4-5":  "claude-haiku-4.5",
-	"claude-opus-4-5":   "claude-opus-4.5",
-	"claude-opus-4-6":   "claude-opus-4.6",
-	"claude-opus-4-7":   "claude-opus-4.7",
-	"claude-opus-4-8":   "claude-opus-4.8",
 	"claude-opus-5":     "claude-opus-5",
-	"claude-fable-5":    "claude-fable-5",
-	"claude-fable-5-1":  "claude-fable-5",
 }
 
 // dateSuffix 匹配 Anthropic 模型名尾部的日期版本，如 -20250929。
@@ -60,12 +58,12 @@ var kiroNativeName = regexp.MustCompile(`^claude-[a-z]+-\d+\.\d+$`)
 // 已经有稳定先例（Antigravity/Grok 都是这个模式），Kiro 没有理由另起一条
 // 不同的路。
 //
-// kiroModelAliases 白名单本身两次被证明不完整/错误过，但错误不在"要不要
-// 维护白名单"，而在白名单内容本身：第一次是把不认识的名字静默换成
-// sonnet-4.6 再假装成功；第二次是白名单确实漏收了 Kiro 实际支持的
-// claude-opus-5 一整个家族。这次已经用真实账号测试 + 第三方 Kiro 实现的
-// 真实上游抓包核实过，把 opus-4.5/4.6/4.7/4.8/5、sonnet-5、fable 全部补
-// 齐——修的是白名单的准确性，不是丢掉白名单这个机制本身。
+// kiroModelAliases 白名单内容出过错（第一次是把不认识的名字静默换成
+// sonnet-4.6 再假装成功；第二次是漏收了 Kiro 实际支持的 claude-opus-5；
+// 第三次是信了一个第三方参考实现里未经验证就加了几条、其中 fable 那两条
+// 被真实测试证伪——见上面的详细说明），但错误从未出在"要不要维护白
+// 名单"这个机制本身。每一条都只应该在真实验证（真实账号测试连接得到
+// 200，或已是长期批量验证过的既有条目）之后才收录。
 //
 // 规则按优先级：
 //  1. 空输入 → ok=false
@@ -105,13 +103,7 @@ func DefaultModels() []string {
 		"claude-sonnet-4.6",
 		"claude-sonnet-4.5",
 		"claude-sonnet-4",
-		"claude-sonnet-5",
 		"claude-haiku-4.5",
-		"claude-opus-4.5",
-		"claude-opus-4.6",
-		"claude-opus-4.7",
-		"claude-opus-4.8",
 		"claude-opus-5",
-		"claude-fable-5",
 	}
 }

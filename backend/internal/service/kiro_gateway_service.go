@@ -176,10 +176,14 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 			action := decideKiroAction(sig, translator.SawContent(), refreshed, hasMore)
 			lastErr = fmt.Errorf("kiro: %s returned %d (%s)", ep.Name, status, sig)
 
-			// 400 必须留下足以定位的请求摘要——它是我们自己的构造错误。
-			if sig == kiro.SignalBadRequest {
-				s.logBadRequest(account, upstreamModel, len(inbound.Tools), errBody)
-			}
+			// 留一条足以定位的请求摘要——UpstreamFailoverError.Error() 只吐
+			// "upstream error: %d (failover)" 这种不含 body 的固定文案（连
+			// "(failover)" 也是写死的，不反映 NextAccountAction 的真实值），
+			// 排障时只看日志会完全看不到 Kiro 真实返回了什么。之前只在
+			// SignalBadRequest 时才记，其它信号（尤其是被 classifyMarkers
+			// 命中、状态码本身对不上号的情况）排障时两眼一抹黑——真实账号
+			// 联调就踩过这个坑。所有非 2xx 响应都记一条，不只是 400。
+			s.logUpstreamError(account, upstreamModel, sig, status, len(inbound.Tools), errBody)
 
 			switch action {
 			case kiroActionRefreshAndRetry:
@@ -408,9 +412,11 @@ func (s *KiroGatewayService) writeEvents(cw *antigravityClientWriter, events []a
 	return true
 }
 
-// logBadRequest 记录一次因请求本身不合法被上游拒绝的调用，用于排障定位。
-// 只含账号 ID、模型、工具数与截断后的响应体片段——不含任何凭证。
-func (s *KiroGatewayService) logBadRequest(account *Account, model string, toolCount int, body []byte) {
+// logUpstreamError 记录一次被 Kiro 上游拒绝的调用（任意非 2xx 状态码），
+// 用于排障定位——UpstreamFailoverError.Error() 只吐不含 body 的固定文案，
+// 不看这条日志就完全不知道 Kiro 真实说了什么。只含账号 ID、模型、分类出的
+// signal、状态码、工具数与截断后的响应体片段——不含任何凭证。
+func (s *KiroGatewayService) logUpstreamError(account *Account, model string, sig kiro.Signal, status int, toolCount int, body []byte) {
 	var accountID int64
 	if account != nil {
 		accountID = account.ID
@@ -419,9 +425,11 @@ func (s *KiroGatewayService) logBadRequest(account *Account, model string, toolC
 	if len(snippet) > kiroBadRequestLogBodyLimit {
 		snippet = snippet[:kiroBadRequestLogBodyLimit]
 	}
-	slog.Warn("kiro_bad_request",
+	slog.Warn("kiro_upstream_error",
 		"account_id", accountID,
 		"model", model,
+		"signal", sig.String(),
+		"status", status,
 		"tool_count", toolCount,
 		"response_body", string(snippet),
 	)

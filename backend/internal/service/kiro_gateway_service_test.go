@@ -567,18 +567,16 @@ func TestKiroTestConnectionRejectsUnsupportedModel(t *testing.T) {
 }
 
 // TestKiroForwardUpstreamRejectsUnsupportedModel 是用户真实账号测试报告的
-// 两轮回归收敛后的最终行为：
-//  1. 第一轮报告"不管选什么模型都显示完成"——根因是 MapModel 把任何未
-//     识别的模型名静默换成 claude-sonnet-4.6 再正常转发。
-//  2. 收窄成"不在本地白名单里就直接拒绝"之后，第二轮发现白名单本身漏收
-//     了 Kiro 实际支持的 claude-opus-5 一整个家族，被错误拒绝——已在
-//     kiroModelAliases 里补齐（见 models.go 与 models_test.go）。
+// 一系列回归收敛后的最终行为（完整历史见 models_test.go 的
+// TestMapModelOpusFamilyRequiresRealVerification）：先是任何未识别模型名
+// 都被静默换成 sonnet-4.6，收窄成白名单拒绝后又先后漏收、错收过几个
+// 模型（opus-5 曾被误拒；fable-5 被基于第三方参考实现错误加入后又被真实
+// 测试证伪移除）。
 //
 // 设计参照 AntigravityGatewayService 的既有约定（一份尽量准确的白名单，
 // 命中就映射、未命中就干净拒绝，不转发不确定的请求去问上游）：这里断言
-// 一个白名单确认不支持的模型名（claude-fable-5-2，与已确认支持的
-// claude-fable-5/claude-fable-5-1 区分开）会在到达上游之前就被拒绝，
-// 不浪费一次上游调用。
+// 一个白名单确认不支持的模型名（claude-fable-5-2，一个假设的未来次版本
+// 号）会在到达上游之前就被拒绝，不浪费一次上游调用。
 func TestKiroForwardUpstreamRejectsUnsupportedModel(t *testing.T) {
 	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
 		t.Fatal("不支持的模型必须在到达上游之前就被拒绝")
