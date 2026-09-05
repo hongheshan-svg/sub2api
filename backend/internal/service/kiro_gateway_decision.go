@@ -84,8 +84,11 @@ func decideKiroAction(sig kiro.Signal, sawContent, alreadyRefreshed, hasMoreEndp
 		return kiroActionAbort
 
 	case kiro.SignalSuspended, kiro.SignalOverage:
-		// 账号状态问题，由调用方禁用账号并返回明确错误。
-		return kiroActionAbort
+		// 账号订阅/配置问题，换一个账号大概率能正常服务同一个请求
+		// （kiro.Signal.Failoverable() 对这两个信号恒为 true，见其注释里的
+		// Ruling I5）——之前这里直接 Abort，导致有问题的账号永远留在池子里
+		// 且从不自愈，每个路由过去的请求都必然失败（C3）。
+		return kiroActionFailoverAccount
 
 	default:
 		if hasMoreEndpoints {

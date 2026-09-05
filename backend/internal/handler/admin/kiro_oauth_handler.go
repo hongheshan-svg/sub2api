@@ -76,9 +76,17 @@ func (h *KiroOAuthHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	sessionID := c.Query("session_id")
 	code := c.Query("code")
 	state := c.Query("state")
+	// AWS SSO 的授权回调只会原样带上 code + state——它不知道、也不会带上
+	// sub2api 自己的 session_id 查询参数，真实回调里 session_id 永远是空的
+	// （C2）。GenerateAuthURL 已经把 session_id 编码进了 state，这里优先
+	// 兼容显式传入的 session_id（测试/未来可能的调用方），缺失时从 state
+	// 里还原。
+	sessionID := c.Query("session_id")
+	if sessionID == "" {
+		sessionID = h.svc.SessionIDFromState(state)
+	}
 	if sessionID == "" || code == "" {
 		h.renderCallbackError(c, http.StatusBadRequest, "invalid_request", "missing session_id or authorization code")
 		return

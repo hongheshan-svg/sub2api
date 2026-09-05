@@ -45,6 +45,12 @@ const kiroBadRequestLogBodyLimit = 2 * 1024
 // 选中导致账号池整体抖动。
 const kiroRateLimitedExhaustedCooldown = 5 * time.Minute
 
+// kiroSuspendedCooldown 是订阅停用/overage 问题触发失败转移后给账号加的调度
+// 冷却时长。跟 credits 耗尽不同，这类问题没有 getUsageLimits 能给出的真实
+// reset 时间，用一个保守的固定长窗口——账号需要管理员介入才能恢复（重开
+// 订阅/开启 overage），不是几分钟到几小时会自愈的瞬时状态。
+const kiroSuspendedCooldown = 4 * time.Hour
+
 // ForwardUpstream 把一次 Anthropic 请求转发到 Kiro 并把响应流式写回客户端。
 //
 // 失败决策全部委托给 decideKiroAction —— 本函数只负责执行决策。
@@ -427,12 +433,46 @@ func (s *KiroGatewayService) finishWithAction(ctx context.Context, account *Acco
 				}
 				s.updateKiroModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
 			}
+		case kiro.SignalSuspended, kiro.SignalOverage:
+			// 订阅停用/overage 没有 getUsageLimits 能给出的真实 reset 时间
+			// （不像 credits 耗尽），用保守的固定长冷却——这类账号需要管理员
+			// 介入才能恢复，不是几分钟到几小时会自愈的瞬时状态（C3）。
+			until := time.Now().Add(kiroSuspendedCooldown)
+			if s.runtimeBlocker != nil {
+				s.runtimeBlocker.BlockAccountScheduling(account, time.Time{}, "kiro_"+sig.String())
+				// AccountRuntimeBlocker 目前对 kiro 账号仍是 no-op（见上面
+				// kiroActionAbort 分支里 SignalSuspended 那段注释，已在
+				// SDD ledger 里登记、留给未来任务接线）——这里保留调用是为了
+				// 将来真正给 Kiro 接上 runtimeBlocker 实现之后直接生效，
+				// 不需要再补一处调用点。
+			}
+			if s.accountRepo != nil {
+				// 复用 kiroCreditsExhaustedKey 而不是新开一个 key：C4 让
+				// modelRateLimitKeysForRequest 对 Kiro 账号无条件检查这一个
+				// key，Suspended/Overage/CreditsExhausted 三种原因因此都靠
+				// 同一个机制正确排除账号，不需要调度器再多认一个 key。
+				if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
+					slog.Warn("kiro_subscription_issue_persist_failed", "account_id", account.ID, "signal", sig.String(), "error", err)
+				}
+				s.updateKiroModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
+			}
 		case kiro.SignalRateLimited:
 			// 只有端点耗尽（hasMoreEndpoints=false）才会走到这里；还有
 			// 端点可换时 decideKiroAction 返回的是 NextEndpoint，不经过
 			// finishWithAction。
+			until := time.Now().Add(kiroRateLimitedExhaustedCooldown)
 			if s.runtimeBlocker != nil {
-				s.runtimeBlocker.BlockAccountScheduling(account, time.Now().Add(kiroRateLimitedExhaustedCooldown), "kiro_rate_limited")
+				s.runtimeBlocker.BlockAccountScheduling(account, until, "kiro_rate_limited")
+			}
+			if s.accountRepo != nil {
+				// 修复前这里只调用了目前对 kiro 恒为 no-op 的 runtimeBlocker，
+				// 从未写 model_rate_limits——即便按接口"正确"调用，实际调度
+				// 效果是零。补齐与 CreditsExhausted/Suspended/Overage 一致的
+				// 落库路径，让端点耗尽也能真正排除账号（C3 顺带修复）。
+				if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, kiroCreditsExhaustedKey, until); err != nil {
+					slog.Warn("kiro_rate_limited_persist_failed", "account_id", account.ID, "error", err)
+				}
+				s.updateKiroModelRateLimitInCache(ctx, account, kiroCreditsExhaustedKey, until)
 			}
 		}
 	}

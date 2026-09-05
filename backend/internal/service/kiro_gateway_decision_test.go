@@ -28,8 +28,12 @@ func TestDecideKiroActionMatrix(t *testing.T) {
 
 		{"credits exhausted", kiro.SignalCreditsExhausted, false, false, true, kiroActionFailoverAccount},
 
-		{"overage", kiro.SignalOverage, false, false, true, kiroActionAbort},
-		{"suspended", kiro.SignalSuspended, false, false, true, kiroActionAbort},
+		// C3：Suspended/Overage 是账号订阅/配置问题，换账号大概率能正常
+		// 服务同一个请求（kiro.Signal.Failoverable() 对这两者恒为
+		// true——见其注释里的 Ruling I5），之前这里错误地返回 Abort，
+		// 导致有问题的账号永远留在池子里、从不自愈。
+		{"overage", kiro.SignalOverage, false, false, true, kiroActionFailoverAccount},
+		{"suspended", kiro.SignalSuspended, false, false, true, kiroActionFailoverAccount},
 
 		{"unknown with endpoints", kiro.SignalUnknown, false, false, true, kiroActionNextEndpoint},
 		{"unknown exhausted", kiro.SignalUnknown, false, false, false, kiroActionFailoverAccount},
@@ -72,11 +76,14 @@ func TestDecideKiroActionBadRequestNeverRetriesOrFailsOver(t *testing.T) {
 }
 
 // TestDecideKiroActionSawContentAlwaysAborts 覆盖「已出字节不可重试」：
-// 客户端已经收到部分内容，任何重试都会产生重复输出。
+// 客户端已经收到部分内容，任何重试都会产生重复输出。Suspended/Overage 在
+// C3 之后改成默认 Failoverable，这里显式覆盖它们——函数最上面的
+// sawContent 强制 Abort 检查必须仍然对这两个信号生效（不因为 C3 而失守）。
 func TestDecideKiroActionSawContentAlwaysAborts(t *testing.T) {
 	signals := []kiro.Signal{
 		kiro.SignalAuthExpired, kiro.SignalRateLimited, kiro.SignalUnknown,
 		kiro.SignalCreditsExhausted, kiro.SignalNetworkRegion,
+		kiro.SignalSuspended, kiro.SignalOverage,
 	}
 	for _, sig := range signals {
 		require.Equal(t, kiroActionAbort,

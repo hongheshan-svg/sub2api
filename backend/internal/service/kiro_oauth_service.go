@@ -16,6 +16,12 @@ import (
 // kiroOAuthHTTPTimeout 是授权/刷新请求的总超时。
 const kiroOAuthHTTPTimeout = 30 * time.Second
 
+// kiroOAuthStateSeparator 分隔 GenerateAuthURL 编码进 state 里的
+// session_id 与 CSRF 随机后缀（见 GenerateAuthURL / SessionIDFromState 上的
+// 注释，C2）。kiro.GenerateSessionID 用 base64.RawURLEncoding，字母表是
+// A-Za-z0-9-_，不含 "."，所以拿它切分永远不会切错。
+const kiroOAuthStateSeparator = "."
+
 // KiroOAuthService 负责 Kiro 账号的授权与令牌刷新。
 //
 // 两条初始授权路径：
@@ -165,14 +171,21 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthU
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_PKCE_FAILED", "failed to generate PKCE: %v", err)
 	}
-	state, err := kiro.GenerateSessionID()
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_STATE_FAILED", "failed to generate state: %v", err)
-	}
 	sessionID, err := kiro.GenerateSessionID()
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_SESSION_FAILED", "failed to generate session id: %v", err)
 	}
+	csrfSuffix, err := kiro.GenerateSessionID()
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_OAUTH_STATE_FAILED", "failed to generate state: %v", err)
+	}
+	// state 编码成 "<session_id>.<csrf 随机后缀>"：AWS SSO 的授权回调只会
+	// 原样回传 code + state，不知道、也不会带上 sub2api 自己的
+	// session_id 查询参数（C2 的根因）。把 session_id 嵌进 state 里，
+	// Callback 才能在 session_id 缺失时从 state 里还原出会话；CSRF 后缀
+	// 依旧是独立随机值，state 整体仍然靠 ExchangeCode 里既有的
+	// subtle.ConstantTimeCompare 校验，安全性不减弱。
+	state := sessionID + kiroOAuthStateSeparator + csrfSuffix
 
 	s.sessionStore.Set(ctx, sessionID, &kiro.OAuthSession{
 		Method:       kiro.AuthIdC,
@@ -191,6 +204,25 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, input *KiroAuthU
 		AuthorizeURL: kiro.BuildAuthorizeURL(base, reg.ClientID, input.RedirectURI, state, pkce.Challenge),
 		ExpiresIn:    int(kiro.SessionTTL / time.Second),
 	}, nil
+}
+
+// SessionIDFromState 从回调携带的 state 里还原 GenerateAuthURL 生成时嵌入
+// 的 session_id（见 GenerateAuthURL 里 state 的组装注释，C2）。AWS SSO 的
+// OIDC 回调只会原样带上 authorize 请求里发出的 code + state，浏览器整页
+// 跳转过去，前端 JS 全程插不上手，也没法额外挂一个 session_id 查询参数——
+// state 因此是回调这一侧唯一能找回会话的信息来源。
+//
+// 找不到分隔符时返回空字符串，调用方（Callback）据此按“缺少 session_id”
+// 处理，走已有的错误页分支，不会 panic。
+func (s *KiroOAuthService) SessionIDFromState(state string) string {
+	if s == nil {
+		return ""
+	}
+	id, _, ok := strings.Cut(state, kiroOAuthStateSeparator)
+	if !ok {
+		return ""
+	}
+	return id
 }
 
 // KiroExchangeCodeInput 是回调兑换所需的参数。

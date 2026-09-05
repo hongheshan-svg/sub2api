@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -65,6 +66,80 @@ func TestKiroCallbackMissingCodeRendersErrorPage(t *testing.T) {
 
 	require.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	require.GreaterOrEqual(t, w.Code, 400)
+}
+
+// TestKiroCallbackEndToEndRecoversSessionIDFromStateWhenMissing 是 C2 的
+// 回归：AuthorizeURL / Callback 各自的单测都是绿的，但从没有人把两者串起来
+// 按浏览器真实回调的样子走一遍——真实的 AWS SSO 回调只会原样带上
+// authorize 请求里发出的 code + state，不知道也不会带上 sub2api 自己的
+// session_id 查询参数，之前的实现因此永远拿不到 session_id，IdC 授权码
+// 流程 100% 失败。这里从 GenerateAuthURL 返回的 authorize_url 里取出真实
+// 注册的 redirect_uri，拼出一个「只有 code + state」的回调 URL（不带
+// session_id，就像浏览器重定向那样），验证 Callback 依然能兑换成功并把
+// credentials 暂存到（能通过 state 还原出的）正确 session_id 下。
+func TestKiroCallbackEndToEndRecoversSessionIDFromStateWhenMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/register":
+			_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+		case "/token":
+			_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600,"profileArn":"arn:x"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := service.NewKiroOAuthService(nil)
+	defer svc.Stop()
+	svc = svc.WithBaseURLs(
+		func(string) string { return srv.URL },
+		func(string) string { return srv.URL },
+	)
+	h := NewKiroOAuthHandler(svc)
+
+	urlW := httptest.NewRecorder()
+	urlC, _ := gin.CreateTestContext(urlW)
+	urlC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/authorize-url",
+		strings.NewReader(`{"redirect_uri":"https://gw.example.com/admin/kiro/oauth/callback",`+
+			`"issuer_url":"https://d-x.awsapps.com/start","region":"us-east-1"}`))
+	urlC.Request.Header.Set("Content-Type", "application/json")
+	h.AuthorizeURL(urlC)
+	require.Equal(t, http.StatusOK, urlW.Code)
+
+	var urlResp struct {
+		Data struct {
+			AuthorizeURL string `json:"authorize_url"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(urlW.Body.Bytes(), &urlResp))
+
+	parsed, err := url.Parse(urlResp.Data.AuthorizeURL)
+	require.NoError(t, err)
+	redirectURI := parsed.Query().Get("redirect_uri")
+	require.NotEmpty(t, redirectURI, "authorize_url 里必须带上真正注册的 redirect_uri")
+	state := parsed.Query().Get("state")
+	require.NotEmpty(t, state)
+
+	// 真实浏览器回调:只有 code + state，没有 session_id —— 这正是 C2 描述的场景。
+	callbackURL := redirectURI + "?code=authcode&state=" + url.QueryEscape(state)
+	require.NotContains(t, callbackURL, "session_id", "回调 URL 里不应该也不可能带 session_id")
+
+	cbW := httptest.NewRecorder()
+	cbC, _ := gin.CreateTestContext(cbW)
+	cbC.Request = httptest.NewRequest(http.MethodGet, callbackURL, nil)
+	h.Callback(cbC)
+
+	require.Equal(t, http.StatusOK, cbW.Code, "回调必须成功，不能因为 session_id 缺失而报错: %s", cbW.Body.String())
+
+	sessionID := svc.SessionIDFromState(state)
+	require.NotEmpty(t, sessionID)
+	creds, ok := svc.TakeStashedCredentials(context.Background(), sessionID)
+	require.True(t, ok, "Callback 必须把兑换结果暂存到能通过 state 还原出的 session_id 下")
+	require.Equal(t, "at", creds["access_token"])
+	require.Equal(t, "arn:x", creds["profile_arn"])
 }
 
 // TestKiroDevicePollPendingIsNotAnError 是「pending 不是错误」这条契约的
