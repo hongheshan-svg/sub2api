@@ -479,7 +479,9 @@ export default {
         grokLastProbe: '探测 {time}',
         grokLastHeadersSeen: '响应头 {time}',
         passiveSampled: '被动采样',
-        activeQuery: '查询'
+        activeQuery: '查询',
+        kiroCredits: '请求数',
+        kiroOverageDisabled: '额度用尽后不会自动超额，账号将直接不可调度'
       },
       openaiQuotaReset: {
         count: '次数',

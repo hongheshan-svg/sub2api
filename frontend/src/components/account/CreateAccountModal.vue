@@ -203,6 +203,66 @@
             DeepSeek
           </button>
         </div>
+        <!-- Kiro row: Amazon Q Developer / CodeWhisperer -->
+        <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+          <button
+            type="button"
+            @click="selectKiroPlatform()"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="key" size="sm" />
+            Kiro
+          </button>
+        </div>
+      </div>
+
+      <!-- Account Type Selection / 凭证 (Kiro) -->
+      <div v-if="form.platform === 'kiro'">
+        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
+        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-type">
+          <button
+            v-for="opt in KIRO_AUTH_METHOD_OPTIONS"
+            :key="opt.value"
+            type="button"
+            :data-testid="`kiro-auth-method-${opt.value}`"
+            @click="kiroForm.authMethod = opt.value"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroForm.authMethod === opt.value
+                ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
+                : 'border-gray-200 hover:border-amber-300 dark:border-dark-600 dark:hover:border-amber-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroForm.authMethod === opt.value
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="key" size="sm" />
+            </div>
+            <span class="text-sm font-medium text-gray-900 dark:text-white">{{ opt.label }}</span>
+          </button>
+        </div>
+
+        <KiroAuthWizard
+          v-if="kiroForm.authMethod === 'idc' || kiroForm.authMethod === 'builder_id'"
+          :mode="kiroForm.authMethod"
+          :issuer-url="kiroForm.issuerUrl"
+          :region="kiroForm.region"
+          :proxy-id="form.proxy_id"
+          class="mt-4"
+          @filled="(v) => Object.assign(kiroForm, v)"
+        />
+
+        <KiroCredentialFields v-model="kiroForm" class="mt-4" />
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -1278,8 +1338,8 @@
         </div>
       </div>
 
-      <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <!-- API Key input (only for apikey type, excluding Antigravity/Kiro which have their own fields) -->
+      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'kiro'" class="space-y-4">
         <div v-if="!isCNPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -3841,6 +3901,14 @@ import {
   type OpenAIWSMode
 } from '@/utils/openaiWsMode'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
+import KiroCredentialFields from './KiroCredentialFields.vue'
+import KiroAuthWizard from './KiroAuthWizard.vue'
+import {
+  KIRO_AUTH_METHOD_OPTIONS,
+  validateKiroCredentials,
+  buildKiroCredentials,
+  type KiroCredentialForm
+} from './kiroCredentials'
 
 // Type for exposed OAuthAuthorizationFlow component
 // Note: defineExpose automatically unwraps refs, so we use the unwrapped types
@@ -4293,6 +4361,33 @@ const vertexProjectId = ref('')
 const vertexClientEmail = ref('')
 const vertexLocation = ref('global')
 const vertexServiceAccountDragActive = ref(false)
+
+// Kiro credentials（独立分支，见 kiroCredentials.ts；不复用通用 apikey 的 base_url/api_key 字段）
+function createDefaultKiroForm(): KiroCredentialForm {
+  return {
+    authMethod: 'social',
+    refreshToken: '',
+    accessToken: '',
+    clientId: '',
+    clientSecret: '',
+    issuerUrl: '',
+    region: '',
+    profileArn: '',
+    apiKey: '',
+    fakeThinking: false
+  }
+}
+const kiroForm = ref<KiroCredentialForm>(createDefaultKiroForm())
+// 切换到 Kiro：走独立的凭证分支；kiro 不在上游倍率探测的平台白名单里
+// （backend/internal/service/upstream_billing_probe.go 的 IsUpstreamBillingProbeIdentity），
+// 必须强制关闭该开关，否则后端会以 ErrUpstreamBillingProbeAccountInvalid 拒绝创建
+// （该开关在 Create 里默认是 true，是专为已支持平台设的默认值）。
+function selectKiroPlatform() {
+  form.platform = 'kiro'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  upstreamBillingAutoProbeEnabled.value = false
+}
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-model-mapping')
@@ -4711,6 +4806,14 @@ watch(
     headerOverrideRows.value = []
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
+    // Kiro：切走时清空表单状态，避免残留到下次切回；切入时强制单步表单
+    // （非 OAuth 步骤）并关闭上游倍率探测（kiro 不在支持平台白名单里）
+    if (newPlatform === 'kiro') {
+      accountCategory.value = 'apikey'
+      upstreamBillingAutoProbeEnabled.value = false
+    } else {
+      kiroForm.value = createDefaultKiroForm()
+    }
     // Reset OAuth states
     oauth.resetState()
     openaiOAuth.resetState()
@@ -5180,6 +5283,7 @@ const resetForm = () => {
   vertexProjectId.value = ''
   vertexClientEmail.value = ''
   vertexLocation.value = 'global'
+  kiroForm.value = createDefaultKiroForm()
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -5538,6 +5642,25 @@ const handleSubmit = async () => {
       tier_id: 'vertex'
     }
     await createAccountAndFinish(form.platform, 'service_account' as AccountType, credentials)
+    return
+  }
+
+  // For Kiro, create directly — 独立分支（Task 22 kiroCredentials.ts）。
+  // Kiro 的凭证形状（auth_method/refresh_token/api_key/...）与下面的通用
+  // base_url+api_key 路径无关，不应落入那条路径（也不应被 model_mapping/
+  // pool_mode 等通用 apikey 后处理污染）。
+  if (form.platform === 'kiro') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    const kiroError = validateKiroCredentials(kiroForm.value)
+    if (kiroError) {
+      appStore.showError(kiroError)
+      return
+    }
+    const credentials = buildKiroCredentials(kiroForm.value)
+    await createAccountAndFinish('kiro', 'apikey' as AccountType, credentials)
     return
   }
 

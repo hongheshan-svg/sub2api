@@ -1519,7 +1519,9 @@ export default {
         grokLastProbe: 'Probe {time}',
         grokLastHeadersSeen: 'Headers {time}',
         passiveSampled: 'Passive',
-        activeQuery: 'Query'
+        activeQuery: 'Query',
+        kiroCredits: 'Reqs',
+        kiroOverageDisabled: 'No automatic overage — the account stops being schedulable once quota is exhausted'
       },
       openaiQuotaReset: {
         count: 'Credits',
