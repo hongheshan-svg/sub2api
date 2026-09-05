@@ -393,3 +393,110 @@ func TestKiroCreditsExhaustedCooldownConcurrentCallsCollapseViaSingleflight(t *t
 		require.WithinDuration(t, reset, until, 2*time.Second, "goroutine %d 应该拿到真实 nextDateReset，而不是 fallback 冷却", i)
 	}
 }
+
+// --- I1 + I2：streamToClient 流内 exception 帧处理的回归 ---
+//
+// kiroTestExceptionFrame 构造一个 AWS event-stream 异常帧，字段命名/取值风格
+// 与 internal/pkg/kiro/stream_test.go 里 TestStreamExceptionFrameReturnsError /
+// TestStreamFeedReturnsPartialOutputAlongsideException 用的 buildFrame 调用
+// 完全一致（那两个测试属于 package kiro，本文件在 package service，无法直接
+// 复用，只能照抄同一套 header 组合）。
+func kiroTestExceptionFrame(exceptionType, message string) []byte {
+	return kiroTestBuildFrame([][2]string{
+		{":message-type", "exception"},
+		{":exception-type", exceptionType},
+	}, []byte(`{"message":"`+message+`"}`))
+}
+
+// TestKiroForwardUpstreamPartialContentBeforeInStreamExceptionIsWrittenToClient
+// 是 I2 的回归：同一次 Feed 调用里，正文帧先于 exception 帧到达时，正文帧产出
+// 的合法事件（message_start/content_block_start/content_block_delta）必须先
+// 写给客户端，不能被"先检查 tErr 再决定要不要写"的旧顺序悄悄吞掉。
+//
+// 场景设计：文本帧让 translator.SawContent() 变为 true，之后紧跟的 exception
+// 帧因此走"已出内容只能截断"分支——优雅结束（Finalize 补发收尾事件），
+// ForwardUpstream 返回成功而不是错误。这正是 bug 最隐蔽的地方：即便调用方后
+// 续把 Finalize 的收尾事件正常写出，如果开头的事件在 tErr!=nil 分支里被跳过，
+// 客户端看到的就是一条缺开头、有结尾的畸形 SSE 流。
+func TestKiroForwardUpstreamPartialContentBeforeInStreamExceptionIsWrittenToClient(t *testing.T) {
+	combined := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"partial output"}`),
+		kiroTestExceptionFrame("ThrottlingException", "slow down"),
+	)
+
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, combined
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(300)
+	recorder, c := kiroTestContext()
+
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.NoError(t, err, "已经吐出内容后 exception 帧只能优雅截断，不能让 ForwardUpstream 整体报错")
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+
+	out := recorder.Body.String()
+	require.Contains(t, out, "event: message_start",
+		"I2 回归核心断言：正文帧产出的 message_start 必须先于 exception 处理被写出，"+
+			"旧实现会因为先检查 tErr 而把它连同 content_block_start/delta 一起吞掉")
+	require.Contains(t, out, "event: content_block_start")
+	require.Contains(t, out, "text_delta")
+	require.Contains(t, out, "partial output")
+	require.Contains(t, out, "event: content_block_stop")
+	require.Contains(t, out, "event: message_delta")
+	require.Contains(t, out, "event: message_stop")
+	require.NotContains(t, out, "slow down", "exception 帧本身的内容不应该被当成正文写给客户端")
+}
+
+// TestKiroForwardUpstreamInStreamExceptionWithoutPriorContentRoutesThroughDecideKiroAction
+// 是 I1 的回归：流内 exception 帧在还没有吐出任何内容时必须经过
+// decideKiroAction/finishWithAction 分类，而不是把裸错误直接原样返回给
+// ForwardUpstream 的调用方——修复前调用方拿到的只是一个普通 error，永远
+// 触发不了失败转移/账号冷却，鉴权失效/限流/额度耗尽这些信号全部失效。
+//
+// 帧序列：metadataEvent（"valid" 但不产出任何 SSE 事件、也不置位
+// SawContent 的帧）后紧跟一个 ThrottlingException 异常帧。ThrottlingException
+// 经 kiro.ClassifyUpstreamError 归类为 SignalRateLimited；decideKiroAction
+// 对 (SignalRateLimited, sawContent=false, alreadyRefreshed=false,
+// hasMoreEndpoints=false) 的判定是 kiroActionFailoverAccount（hasMoreEndpoints
+// 在流内阶段恒为 false——已经成功建立连接，没有"换端点"这个选项）。
+func TestKiroForwardUpstreamInStreamExceptionWithoutPriorContentRoutesThroughDecideKiroAction(t *testing.T) {
+	combined := kiroTestConcatFrames(
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+		kiroTestExceptionFrame("ThrottlingException", "slow down"),
+	)
+
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, combined
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+	blocker := newKiroBlockRecorder()
+	svc.runtimeBlocker = blocker
+
+	account := kiroTestOAuthAccount(301)
+	recorder, c := kiroTestContext()
+
+	result, err := svc.ForwardUpstream(context.Background(), c, account, []byte(kiroTestRequestBody))
+	require.Error(t, err, "还没吐出任何内容时，流内 exception 帧必须被当作一次可分类的失败处理")
+	require.Nil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr,
+		"I1 回归核心断言：必须是已分类的 *UpstreamFailoverError，不能是裸的 *kiro.UpstreamError 或其它包装错误")
+	require.Equal(t, GatewayFailureReason("kiro_rate_limited"), failoverErr.Reason)
+	require.Equal(t, NextAccountLegacyRetry, failoverErr.NextAccountAction,
+		"SignalRateLimited 走 FailoverAccount，必须允许换账号重试，不能被误判成 Abort")
+
+	require.True(t, blocker.called(), "分类后的 SignalRateLimited 必须触发账号调度冷却")
+	require.Equal(t, "kiro_rate_limited", blocker.blocks[0].reason)
+	require.Equal(t, account.ID, blocker.blocks[0].accountID)
+
+	require.Empty(t, recorder.Body.String(), "分类失败必须在写出任何 SSE 事件之前发生——metadataEvent 本身不产出事件")
+}

@@ -187,7 +187,7 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 
 		// 成功：流式写出。resp.Body 由 streamToClient 消费完毕后关闭。
 		defer func() { _ = resp.Body.Close() }()
-		return s.streamToClient(c, resp, translator, &inbound, upstreamModel, startTime)
+		return s.streamToClient(ctx, c, account, resp, translator, &inbound, upstreamModel, startTime)
 	}
 
 	if lastErr == nil {
@@ -197,8 +197,15 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 }
 
 // streamToClient 边解码上游 event-stream 边把 Anthropic SSE 写给客户端。
+//
+// ctx / account 是 I1 新增的参数：流内 exception 帧需要经过
+// decideKiroAction/finishWithAction 才能触发失败转移/token 刷新/credits
+// 冷却/账号禁用，这两者是它们的必需入参。ForwardUpstream 调用本函数时两者
+// 都已经在作用域里。
 func (s *KiroGatewayService) streamToClient(
+	ctx context.Context,
 	c *gin.Context,
+	account *Account,
 	resp *http.Response,
 	translator *kiro.StreamTranslator,
 	inbound *apicompat.AnthropicRequest,
@@ -220,15 +227,49 @@ func (s *KiroGatewayService) streamToClient(
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			events, tErr := translator.Feed(buf[:n])
+			// I2：Feed 出错时，out（这里的 events）仍然装着同一个 chunk 里
+			// 错误帧之前那些帧产生的合法事件——翻译器的内部状态
+			// （started/openKind/sawContent）已经因为产出它们而前进了一步，
+			// 之后的 Finalize 会照着这份状态发收尾事件。如果这里只在
+			// tErr == nil 时才写，这些已经"发生"的事件就会被悄悄吞掉，
+			// 但 Finalize 依然会为它们发 content_block_stop/message_stop，
+			// 造成客户端看到的 SSE 流缺开头但有结尾——协议损坏，且这段
+			// 输出文本已经计入计费但从未真正到达客户端。所以不管 tErr
+			// 是否非 nil，只要有合法事件就必须先写出去。
+			if len(events) > 0 {
+				if !s.writeEvents(cw, events) {
+					break // 客户端断开
+				}
+			}
 			if tErr != nil {
-				// 上游异常帧：已出内容时只能截断，未出内容时可返回错误。
+				// 上游异常帧：已出内容时只能截断，未出内容时把错误交给
+				// decideKiroAction/finishWithAction 分类处理（I1）——
+				// 之前这里直接把裸错误原样返回，跳过了失败决策矩阵，
+				// 流内的鉴权失效/限流/额度耗尽信号从未触发过失败转移、
+				// token 刷新或账号冷却。
 				if translator.SawContent() {
 					break
 				}
+				var upstreamErr *kiro.UpstreamError
+				if errors.As(tErr, &upstreamErr) {
+					sig := kiro.ClassifyUpstreamError(upstreamErr)
+					// hasMoreEndpoints 在这里没有意义——已经在某个端点上
+					// 建立连接成功、进入流式阶段了，按"没有更多端点可换"
+					// 处理，对应一次流内终态失败该有的处理方式。
+					action := decideKiroAction(sig, false, false, false)
+					if action == kiroActionRefreshAndRetry {
+						// streamToClient 没有自己的重试循环——它是
+						// ForwardUpstream 在成功建立一次连接之后调用的
+						// 单次流式消费函数，没法从这里发起"刷新 token
+						// 后重新发起同一个 HTTP 请求"这种结构性动作。
+						// 降级为 FailoverAccount：至少保证下一次请求换
+						// 一个账号，而不是把一个这里执行不了的动作直接
+						// 返回给上层。
+						action = kiroActionFailoverAccount
+					}
+					return nil, s.finishWithAction(ctx, account, action, sig, 0, nil)
+				}
 				return nil, tErr
-			}
-			if !s.writeEvents(cw, events) {
-				break // 客户端断开
 			}
 		}
 		if readErr != nil {
