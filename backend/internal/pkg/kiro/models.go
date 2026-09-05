@@ -10,13 +10,21 @@ const defaultKiroModel = "claude-sonnet-4.6"
 
 // kiroModelAliases 把 Anthropic 风格的模型名映射到 Kiro 上游名。
 // Kiro 用点号版本号（claude-sonnet-4.6），Anthropic 客户端用连字符。
+//
+// 故意不含 opus 别名（I5）：Kiro 没有 Opus 型号，之前这里把
+// claude-opus-4-5/claude-opus-4-6 静默映射到 claude-sonnet-4.6，客户端请求
+// Opus 却拿到 Sonnet 的输出，而计费（usage_log_helpers.go 的
+// forwardResultBillingModel）按*请求的*模型名计价，等于按 Opus 价格结算
+// Sonnet 的产出——这是一个计费正确性 bug，不是有意的降级策略；SDD ledger
+// （.superpowers/sdd/2026-09-03-kiro-platform-phase1/progress.md）里也没有
+// 记录任何要求这么做的设计依据。移除后 opus 请求走下面 MapModel 的
+// defaultKiroModel 兜底，和其它任何未识别模型名的处理方式一致——不再假装
+// 网关知道该用哪个型号代替 Opus。
 var kiroModelAliases = map[string]string{
 	"claude-sonnet-4":   "claude-sonnet-4",
 	"claude-sonnet-4-5": "claude-sonnet-4.5",
 	"claude-sonnet-4-6": "claude-sonnet-4.6",
 	"claude-haiku-4-5":  "claude-haiku-4.5",
-	"claude-opus-4-5":   "claude-sonnet-4.6",
-	"claude-opus-4-6":   "claude-sonnet-4.6",
 }
 
 // dateSuffix 匹配 Anthropic 模型名尾部的日期版本，如 -20250929。
