@@ -1633,7 +1633,7 @@
             }}
           </p>
           <div
-            v-if="account?.type === 'apikey'"
+            v-if="account?.type === 'apikey' && account?.platform !== 'kiro'"
             class="mt-3 flex items-center justify-between gap-3"
           >
             <div class="min-w-0">
@@ -1861,7 +1861,7 @@
       </div>
 
       <div
-        v-if="account?.type === 'apikey'"
+        v-if="account?.type === 'apikey' && account?.platform !== 'kiro'"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
@@ -4049,6 +4049,14 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       apiKey: '',
       fakeThinking: kiroCreds.fake_thinking === true
     }
+    // Kiro 不在后端 IsUpstreamBillingProbeIdentity 白名单里（见
+    // backend/internal/service/upstream_billing_probe.go）——显式设为 true 的探测/
+    // 倍率同步开关会让整个更新请求被 ErrUpstreamBillingProbeAccountInvalid 拒绝。
+    // 上面已从 UI 隐藏这两个开关（v-if 排除 kiro），这里再强制归零做纵深防御，
+    // 防止后续代码改动绕过 UI 隐藏后仍提交 true。与 CreateAccountModal.vue 的
+    // selectKiroPlatform() 同一模式。
+    upstreamBillingAutoProbeEnabled.value = false
+    upstreamBillingRateSyncEnabled.value = false
   }
 
   // Initialize API Key fields for apikey type
