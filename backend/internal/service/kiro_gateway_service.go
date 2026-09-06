@@ -44,6 +44,19 @@ const kiroRateLimitedExhaustedCooldown = 5 * time.Minute
 // 订阅/开启 overage），不是几分钟到几小时会自愈的瞬时状态。
 const kiroSuspendedCooldown = 4 * time.Hour
 
+// kiroOutputProtocol 选择 forwardUpstream 把结果写给客户端时用哪种协议
+// 形状——真实客户端本来就是按模型厂商分协议连接的：Claude Code 只会打
+// /v1/messages（Anthropic 协议），Codex 只会打 /backend-api/codex/responses
+// （OpenAI Responses 协议），两者从不混用同一个端点。kiroOutputAnthropic 是
+// 默认值、也是唯一一个在这次改动前就存在过的行为，保证不传这个参数的既有
+// 调用方（ForwardUpstream/TestConnection）行为完全不变。
+type kiroOutputProtocol int
+
+const (
+	kiroOutputAnthropic kiroOutputProtocol = iota
+	kiroOutputResponses
+)
+
 // ForwardUpstream 把一次 Anthropic 请求转发到 Kiro 并把响应流式写回客户端。
 //
 // 失败决策全部委托给 decideKiroAction —— 本函数只负责执行决策。
@@ -55,7 +68,7 @@ const kiroSuspendedCooldown = 4 * time.Hour
 // 消耗真实 Kiro 配额去确认"这个模型到底存不存在"——那是管理员主动发起的
 // 测试连接（见 TestConnection）该做的事，不是生产流量该承担的代价。
 func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
-	return s.forwardUpstream(ctx, c, account, body, false)
+	return s.forwardUpstream(ctx, c, account, body, false, kiroOutputAnthropic)
 }
 
 // forwardUpstream 是 ForwardUpstream/TestConnection 共用的核心转发逻辑。
@@ -72,7 +85,7 @@ func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context
 // false 时（真实网关流量）：走 MapModel 的白名单闸门，未收录直接拒绝，
 // 不浪费一次真实用户的 Kiro 配额去确认一个大概率是错的模型名——见
 // ForwardUpstream 的文档。
-func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte, bypassModelWhitelist bool) (*ForwardResult, error) {
+func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte, bypassModelWhitelist bool, outputProtocol kiroOutputProtocol) (*ForwardResult, error) {
 	startTime := time.Now()
 
 	var inbound apicompat.AnthropicRequest
@@ -134,6 +147,21 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 				return nil, s.writeKiroModelUnsupportedError(c, resolvedModel)
 			}
 			upstreamModel = revalidated
+		}
+
+		// 协议归属强制隔离：Claude 系模型只能走 Anthropic 协议
+		// （ForwardUpstream/`/v1/messages`），非 Claude 系（目前只有
+		// gpt-5.6-sol/terra/luna）只能走 Responses 协议
+		// （ForwardAsResponses/`/backend-api/codex/responses`）。用户明确
+		// 要求"claude走Anthropic协议，gpt走openai协议"——真实客户端本来就是
+		// 按这条边界连接的：Claude Code 只会打 /v1/messages，Codex 只会打
+		// /backend-api/codex/responses，模型和协议一旦不匹配，大概率是客户端
+		// 配错了端点，及早用清晰的错误提示拒绝比在错误协议下勉强转发更安全。
+		// bypassModelWhitelist（TestConnection）不受这条约束——管理员的一次性
+		// 诊断调用固定走 Anthropic 协议探测任意候选模型名，不应该被这条按
+		// 协议分流的规则挡住。
+		if enforceErr := s.enforceKiroModelProtocol(c, upstreamModel, outputProtocol); enforceErr != nil {
+			return nil, enforceErr
 		}
 	}
 
@@ -268,9 +296,9 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 		// handleClaudeStreamToNonStreaming 解决同一个问题的方式。
 		defer func() { _ = resp.Body.Close() }()
 		if inbound.Stream {
-			return s.streamToClient(ctx, c, account, resp, translator, &inbound, upstreamModel, startTime)
+			return s.streamToClient(ctx, c, account, resp, translator, &inbound, upstreamModel, startTime, outputProtocol)
 		}
-		return s.nonStreamToClient(ctx, c, account, resp, translator, &inbound, upstreamModel, startTime)
+		return s.nonStreamToClient(ctx, c, account, resp, translator, &inbound, upstreamModel, startTime, outputProtocol)
 	}
 
 	if lastErr == nil {
@@ -294,6 +322,7 @@ func (s *KiroGatewayService) streamToClient(
 	inbound *apicompat.AnthropicRequest,
 	upstreamModel string,
 	startTime time.Time,
+	outputProtocol kiroOutputProtocol,
 ) (*ForwardResult, error) {
 	cw := s.newClientWriter(c)
 
@@ -301,6 +330,21 @@ func (s *KiroGatewayService) streamToClient(
 	cw.beforeFirstWrite = func() {
 		ms := int(time.Since(startTime).Milliseconds())
 		firstTokenMs = &ms
+	}
+
+	// responsesState 只在 Responses 协议下才需要——它是
+	// apicompat.AnthropicEventToResponsesEvents 的必需入参，跨整个流保持
+	// output_index/content_index 等状态，与 translator 的生命周期一致
+	// （每次转发新建一个，不跨请求复用）。
+	var responsesState *apicompat.AnthropicEventToResponsesState
+	if outputProtocol == kiroOutputResponses {
+		responsesState = apicompat.NewAnthropicEventToResponsesState()
+	}
+	writeOut := func(events []apicompat.AnthropicStreamEvent) bool {
+		if outputProtocol == kiroOutputResponses {
+			return s.writeResponsesEventsFromAnthropic(cw, responsesState, events)
+		}
+		return s.writeEvents(cw, events)
 	}
 
 	var streamDisconnect bool
@@ -314,7 +358,7 @@ func (s *KiroGatewayService) streamToClient(
 			// 是什么，这个 chunk 里已经产出的合法事件必须先写给客户端——
 			// 见 feedTranslatorChunk 文档，这里不再重复。
 			if len(events) > 0 {
-				if !s.writeEvents(cw, events) {
+				if !writeOut(events) {
 					break // 客户端断开
 				}
 			}
@@ -339,7 +383,14 @@ func (s *KiroGatewayService) streamToClient(
 		}
 	}
 
-	s.writeEvents(cw, translator.Finalize())
+	writeOut(translator.Finalize())
+	if outputProtocol == kiroOutputResponses {
+		// FinalizeAnthropicResponsesStream 补发 response.completed（正常
+		// message_stop 路径下 anthToResHandleMessageStop 已经发过，
+		// CompletedSent 会挡掉重复；只有异常截断、从未走到 message_stop 时
+		// 才会真的补一次），保证 Codex 客户端不会卡在等待终止事件。
+		s.writeResponsesEvents(cw, apicompat.FinalizeAnthropicResponsesStream(responsesState))
+	}
 
 	usage := translator.Usage()
 	return &ForwardResult{
@@ -437,6 +488,48 @@ func (s *KiroGatewayService) writeKiroModelUnsupportedError(c *gin.Context, requ
 	return fmt.Errorf("kiro: %s", message)
 }
 
+// enforceKiroModelProtocol 强制模型归属和客户端协议一一对应：Claude 系
+// （kiro.MapModel 映射后的目标名以 "claude-" 开头，或原样透传的 "auto"）
+// 只能走 Anthropic 协议，其余（目前只有 gpt-5.6-sol/terra/luna）只能走
+// Responses 协议——理由见 forwardUpstream 调用处的注释。
+func (s *KiroGatewayService) enforceKiroModelProtocol(c *gin.Context, upstreamModel string, protocol kiroOutputProtocol) error {
+	isClaudeFamily := upstreamModel == "auto" || strings.HasPrefix(upstreamModel, "claude-")
+	switch {
+	case protocol == kiroOutputAnthropic && !isClaudeFamily:
+		return s.writeKiroProtocolMismatchError(c, protocol, upstreamModel,
+			"this model is only available through the OpenAI Responses API (Codex), not the Anthropic Messages API")
+	case protocol == kiroOutputResponses && isClaudeFamily:
+		return s.writeKiroProtocolMismatchError(c, protocol, upstreamModel,
+			"this model is only available through the Anthropic Messages API (Claude Code), not the OpenAI Responses API")
+	default:
+		return nil
+	}
+}
+
+// writeKiroProtocolMismatchError 用当前请求实际使用的协议形状写错误响应——
+// enforceKiroModelProtocol 拒绝的请求本身就是发错了端点，用另一种协议的
+// 错误形状回复只会让客户端更难看懂问题所在。
+func (s *KiroGatewayService) writeKiroProtocolMismatchError(c *gin.Context, protocol kiroOutputProtocol, requestedModel, message string) error {
+	MarkResponseCommitted(c)
+	fullMessage := fmt.Sprintf("model %q: %s", requestedModel, message)
+	if protocol == kiroOutputResponses {
+		c.JSON(http.StatusForbidden, map[string]any{
+			"error": map[string]any{
+				"message": fullMessage,
+				"type":    "invalid_request_error",
+				"param":   nil,
+				"code":    nil,
+			},
+		})
+	} else {
+		c.JSON(http.StatusForbidden, map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "permission_error", "message": fullMessage},
+		})
+	}
+	return fmt.Errorf("kiro: %s", fullMessage)
+}
+
 // newClientWriter 设置 SSE 响应头，返回复用的客户端写出器。
 //
 // antigravityClientWriter 尽管带 antigravity 前缀，实际上是一个不含任何
@@ -466,6 +559,42 @@ func (s *KiroGatewayService) writeEvents(cw *antigravityClientWriter, events []a
 			continue
 		}
 		if !cw.Fprintf("event: %s\ndata: %s\n\n", ev.Type, data) {
+			return false
+		}
+	}
+	return true
+}
+
+// writeResponsesEventsFromAnthropic 把一批 Anthropic 流事件逐个喂进
+// apicompat.AnthropicEventToResponsesEvents（与 Antigravity 的
+// ForwardAsResponses 用的是同一套纯转换函数），再把结果写成 Responses SSE
+// 帧——用于 Codex 客户端消费的 /backend-api/codex/responses 端点。
+// state 必须是同一个流全程复用的同一个实例（跨调用维护 output_index 等
+// 累积状态），由 streamToClient 在流开始时创建一次。
+func (s *KiroGatewayService) writeResponsesEventsFromAnthropic(
+	cw *antigravityClientWriter,
+	state *apicompat.AnthropicEventToResponsesState,
+	events []apicompat.AnthropicStreamEvent,
+) bool {
+	for i := range events {
+		if !s.writeResponsesEvents(cw, apicompat.AnthropicEventToResponsesEvents(&events[i], state)) {
+			return false
+		}
+	}
+	return true
+}
+
+// writeResponsesEvents 把已经是 Responses 形态的流事件序列化成 SSE 帧写给
+// 客户端。写入约定与 writeEvents 一致：false 表示客户端已断开。
+func (s *KiroGatewayService) writeResponsesEvents(cw *antigravityClientWriter, events []apicompat.ResponsesStreamEvent) bool {
+	for _, ev := range events {
+		sse, err := apicompat.ResponsesEventToSSE(ev)
+		if err != nil {
+			// 不应发生，理由与 writeEvents 的同名注释一致。
+			slog.Error("kiro_responses_event_marshal_failed", "event_type", ev.Type, "error", err)
+			continue
+		}
+		if !cw.Write([]byte(sse)) {
 			return false
 		}
 	}
@@ -829,7 +958,7 @@ func (s *KiroGatewayService) TestConnection(ctx context.Context, account *Accoun
 	// bypassModelWhitelist=true：管理员主动发起的一次性诊断调用，不查本地
 	// 白名单——直接问 Kiro 真实上游这个模型到底支不支持（见 forwardUpstream
 	// 的文档：真实账号测试连续两次证明本地白名单会猜错，方向还不一样）。
-	if _, err := s.forwardUpstream(ctx, ginCtx, account, body, true); err != nil {
+	if _, err := s.forwardUpstream(ctx, ginCtx, account, body, true, kiroOutputAnthropic); err != nil {
 		return nil, err
 	}
 

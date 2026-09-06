@@ -36,11 +36,19 @@ const defaultKiroModel = "claude-sonnet-4.6"
 // 真实清单里确实不存在，维持拒绝，与之前真实账号测试的结论一致。
 //
 // ListAvailableModels 返回的清单里还有一批非 Claude 系模型（gpt-5.6-sol/
-// terra/luna、deepseek-3.2、minimax-m2.5/m2.1、glm-5、qwen3-coder-next）
-// ——这些不在本文件的收录范围内：kiroNativeName 的透传规则只认
-// "claude-<family>-N.M" 形态，接入非 Claude 系模型是一个更大的设计决策
-// （计费/前端模型列表/是否要做成多厂商网关），不是"往白名单表里加几行"
-// 就能顺带做的事，留给后续任务单独评估，这里不擅自扩大范围。
+// terra/luna、deepseek-3.2、minimax-m2.5/m2.1、glm-5、qwen3-coder-next）。
+// 2026-09-06 第二次更新：其中 gpt-5.6-sol/terra/luna 这三个已经收录（见下方
+// 别名表），理由：(1) 账号权威清单 ListAvailableModels 确认存在；
+// (2) 计费天然免费——PricingService.GetModelPricing 是全局按模型名查表，
+// 不分平台，"gpt-" 前缀已有现成的兜底匹配（matchOpenAIModel），不需要为
+// Kiro 单独建价；(3) 参考开源实现 kiro2cc-proxy（真实可用、有 CI 和针对
+// 这几个模型的回归测试）交叉印证过这三个模型名，且它们走的是跟 Claude
+// 系模型同一条 Anthropic 协议管线，没有发现需要我们这边跟着改的协议层
+// 差异——我们自己没有发送 additionalModelRequestFields 这类字段（"假
+// 思考"是纯 prompt 注入），kiro2cc-proxy 因为发了这个字段被 gpt-5.6-*
+// 拒成 400 的坑，天然不适用于我们。deepseek-3.2、minimax-m2.5/m2.1、
+// glm-5、qwen3-coder-next 这 5 个依然不在收录范围：没有现成计价条目，
+// 接入前先得决定计费怎么算，留给后续单独评估。
 //
 // 白名单机制本身没有问题（架构对齐 AntigravityGatewayService 的
 // DefaultAntigravityModelMapping，见 MapModel 文档）——第一次出错是内容
@@ -61,6 +69,13 @@ var kiroModelAliases = map[string]string{
 	"claude-opus-4-6":   "claude-opus-4.6",
 	"claude-opus-4-7":   "claude-opus-4.7",
 	"claude-opus-4-8":   "claude-opus-4.8",
+	// 非 Claude 系，点号原生形态本身就等于请求形态——kiroNativeName 的
+	// 透传正则只认 "claude-" 前缀，这三个必须显式收录才能透传，跟
+	// claude-opus-5/claude-sonnet-5（同样无小数点、regex 也不认）是同一
+	// 个道理。
+	"gpt-5.6-sol":   "gpt-5.6-sol",
+	"gpt-5.6-terra": "gpt-5.6-terra",
+	"gpt-5.6-luna":  "gpt-5.6-luna",
 }
 
 // dateSuffix 匹配 Anthropic 模型名尾部的日期版本，如 -20250929。
@@ -131,5 +146,8 @@ func DefaultModels() []string {
 		"claude-opus-4.7",
 		"claude-opus-4.6",
 		"claude-opus-4.5",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
 	}
 }

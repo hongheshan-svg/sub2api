@@ -37,6 +37,7 @@ func (s *KiroGatewayService) nonStreamToClient(
 	inbound *apicompat.AnthropicRequest,
 	upstreamModel string,
 	startTime time.Time,
+	outputProtocol kiroOutputProtocol,
 ) (*ForwardResult, error) {
 	var firstTokenMs *int
 	var disconnect bool
@@ -101,7 +102,14 @@ func (s *KiroGatewayService) nonStreamToClient(
 	usage := translator.Usage()
 	anthropicResp.Usage = usage
 
-	body, err := json.Marshal(anthropicResp)
+	var body []byte
+	if outputProtocol == kiroOutputResponses {
+		// Codex 客户端期待 Responses 形态——复用与 Antigravity
+		// ForwardAsResponses 相同的纯转换函数，不新写协议逻辑。
+		body, err = json.Marshal(apicompat.AnthropicToResponsesResponse(anthropicResp))
+	} else {
+		body, err = json.Marshal(anthropicResp)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("kiro: marshal non-stream response: %w", err)
 	}
