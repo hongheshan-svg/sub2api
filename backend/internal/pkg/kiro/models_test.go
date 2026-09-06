@@ -68,24 +68,15 @@ func TestMapModelUnknownIsRejected(t *testing.T) {
 	_, ok = MapModel("")
 	require.False(t, ok)
 
-	// claude-opus-4-5（连字符形态）目前不在别名表里，也不是 Kiro 原生
-	// 点号形态，必须被拒绝——见 TestMapModelOpusFamilyRequiresRealVerification
-	// 的说明：这几个 opus 变体此前基于一个后来被证伪的第三方参考实现加过
-	// 别名，已经移除，只留下真正验证过的 claude-opus-5。
-	_, ok = MapModel("claude-opus-4-5")
-	require.False(t, ok)
-
-	// claude-fable-5 与 claude-fable-5-1 同理：真实账号测试证实 Kiro 对
-	// "claude-fable-5" 直接返回 400 INVALID_MODEL_ID，之前基于第三方参考
-	// 实现加的这两条别名是错的，已经移除。
+	// claude-fable-5/claude-fable-5-1：真实账号测试证实 Kiro 对
+	// "claude-fable-5" 直接返回 400 INVALID_MODEL_ID
+	// （"Invalid model. Please select a different model to continue."），
+	// 2026-09-06 用账号自己的权威接口 ListAvailableModels 复核过，这两个
+	// 型号确实不在账号的真实模型清单里，维持拒绝——见
+	// TestMapModelOpusFamilyRequiresRealVerification 的完整历史说明。
 	_, ok = MapModel("claude-fable-5")
 	require.False(t, ok)
 	_, ok = MapModel("claude-fable-5-1")
-	require.False(t, ok)
-
-	// claude-sonnet-5 与上面同一批、同一来源加入，同样未经真实验证，
-	// 已经移除。
-	_, ok = MapModel("claude-sonnet-5")
 	require.False(t, ok)
 }
 
@@ -114,26 +105,34 @@ func TestMapModelIsCaseInsensitive(t *testing.T) {
 //     恰好是对的——"这个来源猜对过一次"不构成"这个来源整体可靠"的证据。
 //     全部移除，只保留 claude-opus-5 这一条（有独立的真实账号测试证据，
 //     不依赖那个参考实现）。
+//  4. 2026-09-06：拿到了真实账号的 profileArn 后，直接调用 Kiro 自己的权威
+//     接口 ListAvailableModels（不是第三方参考实现，也不是"测试连接猜一
+//     个模型名"），拉到了账号完整的真实模型清单，逐条核实后发现
+//     opus-4.5/4.6/4.7/4.8、sonnet-5 这次真的在清单里——跟第 3 步移除的
+//     不是同一份证据，不能因为上次那份第三方参考实现整体不可靠就继续
+//     怀疑这批新证据。fable-5/fable-5-1 复核后依然不在清单里，与第 3 步
+//     的真实测试结论一致，继续保持拒绝。
 //
 // 结论：白名单机制本身没问题，问题是内容来源的可靠性。新增条目前必须用
-// 真实账号测试连接单独验证每一条（点号原生形态可以不经别名表直接透传，
-// 见 MapModel 规则 2，天然适合拿来试探候选模型名），不能整批照抄第三方
-// 参考实现。
+// 账号自己的权威接口（ListAvailableModels）或真实账号测试连接单独验证
+// 每一条（点号原生形态可以不经别名表直接透传，见 MapModel 规则 2，天然
+// 适合拿来试探候选模型名），不能整批照抄第三方参考实现。
 func TestMapModelOpusFamilyRequiresRealVerification(t *testing.T) {
 	t.Parallel()
 
-	// 唯一有真实账号测试证据的一条：claude-opus-5 直接透传（无次版本号）。
-	mapped, ok := MapModel("claude-opus-5")
-	require.True(t, ok)
-	require.Equal(t, "claude-opus-5", mapped)
-
-	// 其余 opus 变体（未经独立验证）必须保持拒绝，不能因为"格式和
-	// opus-5/sonnet-4.x 类似"就顺手加回来。
-	for _, unverified := range []string{
-		"claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+	// 2026-09-06 更新：以下条目均已用真实账号的权威接口 ListAvailableModels
+	// 核实在案，不再是"未经验证需要拒绝"的状态。
+	for requested, want := range map[string]string{
+		"claude-opus-5":   "claude-opus-5",
+		"claude-sonnet-5": "claude-sonnet-5",
+		"claude-opus-4-5": "claude-opus-4.5",
+		"claude-opus-4-6": "claude-opus-4.6",
+		"claude-opus-4-7": "claude-opus-4.7",
+		"claude-opus-4-8": "claude-opus-4.8",
 	} {
-		_, ok := MapModel(unverified)
-		require.False(t, ok, "%s 未经真实账号验证，不应该出现在白名单里", unverified)
+		mapped, ok := MapModel(requested)
+		require.True(t, ok, "%s 已经过 ListAvailableModels 核实，应该被接受", requested)
+		require.Equal(t, want, mapped)
 	}
 }
 

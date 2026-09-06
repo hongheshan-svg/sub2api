@@ -156,12 +156,19 @@ describe('useModelWhitelist', () => {
   it('kiro 模型列表与后端 DefaultModels() 保持一致', () => {
     const models = getModelsByPlatform('kiro')
 
+    // 2026-09-06：opus-4.5/4.6/4.7/4.8、sonnet-5 经真实账号权威接口
+    // ListAvailableModels 核实后加入，与后端 kiro.DefaultModels() 同步更新。
     expect(models).toEqual([
       'claude-sonnet-4.6',
       'claude-sonnet-4.5',
       'claude-sonnet-4',
       'claude-haiku-4.5',
-      'claude-opus-5'
+      'claude-opus-5',
+      'claude-sonnet-5',
+      'claude-opus-4.8',
+      'claude-opus-4.7',
+      'claude-opus-4.6',
+      'claude-opus-4.5'
     ])
   })
 

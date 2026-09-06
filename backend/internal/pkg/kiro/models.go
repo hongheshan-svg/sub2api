@@ -16,31 +16,51 @@ const defaultKiroModel = "claude-sonnet-4.6"
 // 连字符。
 //
 // I5 的原判断"Kiro 没有 Opus 型号"是错的——真实账号测试证实 claude-opus-5
-// 确实被 Kiro 支持（此前因为不在别名表、也不匹配 kiroNativeName 的点号
-// 形态，被本文件的兜底逻辑直接拒绝），Kiro 用不分次版本号的
-// "claude-opus-5" 原样服务它，已用真实账号直接测试确认（响应正常）。
+// 确实被 Kiro 支持，Kiro 用不分次版本号的 "claude-opus-5" 原样服务它。
 //
-// 一次教训：曾经参考一个第三方 Kiro 代理实现的 map_model 表，一并加过
+// 历史教训：曾经参考一个第三方 Kiro 代理实现的 map_model 表，一并加过
 // opus-4.5/4.6/4.7/4.8、sonnet-5、fable-5/fable-5-1，其中 fable 那两条
 // 被真实账号测试证伪——Kiro 对 "claude-fable-5" 回真实 400
-// INVALID_MODEL_ID（"Invalid model. Please select a different model to
-// continue."），说明该参考实现对这几个较新型号的命名并不完全可靠。既然
-// 同一个来源在 fable 上出过错，其余几条（opus-4.5/4.6/4.7/4.8、sonnet-5）
-// 同样只是未经证实的猜测，不能因为"格式看起来合理"就当真——已经跟
-// claude-opus-5 一样被同一来源"猜对过一次"不代表这个来源整体可信。已经
-// 移除，只保留真正经过验证的条目。
+// INVALID_MODEL_ID，说明当时那个第三方参考实现不可靠，遂把同一来源加入
+// 的其余条目（opus-4.5/4.6/4.7/4.8、sonnet-5）一并移除，只留下真正验证
+// 过的 claude-opus-5。
+//
+// 2026-09-06 更新：opus-4.5/4.6/4.7/4.8、sonnet-5 这次是被真正证实支持
+// 的——不是靠猜或第三方参考实现，而是用真实账号的 access_token 直接调用
+// Kiro 自己的权威接口 ListAvailableModels（POST
+// https://management.<region>.kiro.dev/，X-Amz-Target:
+// AmazonCodeWhispererService.ListAvailableModels，需要 profileArn，见
+// KiroOAuthService.DiscoverProfileArn）拿到的账号真实模型清单，逐条比对
+// 后加回来的，跟上一次"参考第三方实现"的性质完全不同——这是 Kiro 自己
+// 权威声明的"这个账号能用哪些模型"，不是猜测。fable-5/fable-5-1 在这份
+// 真实清单里确实不存在，维持拒绝，与之前真实账号测试的结论一致。
+//
+// ListAvailableModels 返回的清单里还有一批非 Claude 系模型（gpt-5.6-sol/
+// terra/luna、deepseek-3.2、minimax-m2.5/m2.1、glm-5、qwen3-coder-next）
+// ——这些不在本文件的收录范围内：kiroNativeName 的透传规则只认
+// "claude-<family>-N.M" 形态，接入非 Claude 系模型是一个更大的设计决策
+// （计费/前端模型列表/是否要做成多厂商网关），不是"往白名单表里加几行"
+// 就能顺带做的事，留给后续任务单独评估，这里不擅自扩大范围。
 //
 // 白名单机制本身没有问题（架构对齐 AntigravityGatewayService 的
-// DefaultAntigravityModelMapping，见 MapModel 文档）——出错的是内容来源
-// 不够可靠。以后新增条目前，先用真实账号测试连接直接验证候选模型名（点号
-// 原生形态可以不经别名表直接透传，见 MapModel 规则 2），拿到 200 或明确的
-// 非 INVALID_MODEL_ID 错误后再收录进别名表，不要只凭第三方参考实现下结论。
+// DefaultAntigravityModelMapping，见 MapModel 文档）——第一次出错是内容
+// 来源不够可靠（未经验证的第三方参考实现），不是机制设计的问题。以后
+// 新增条目：优先用 ListAvailableModels 这类账号自己的权威接口验证（比
+// "测试连接"更直接，不需要真的发一次聊天请求去猜），退而求其次可以用
+// 真实账号测试连接直接验证候选模型名（点号原生形态可以不经别名表直接
+// 透传，见 MapModel 规则 2），拿到确认后再收录进别名表，不要只凭第三方
+// 参考实现下结论。
 var kiroModelAliases = map[string]string{
 	"claude-sonnet-4":   "claude-sonnet-4",
 	"claude-sonnet-4-5": "claude-sonnet-4.5",
 	"claude-sonnet-4-6": "claude-sonnet-4.6",
 	"claude-haiku-4-5":  "claude-haiku-4.5",
 	"claude-opus-5":     "claude-opus-5",
+	"claude-sonnet-5":   "claude-sonnet-5",
+	"claude-opus-4-5":   "claude-opus-4.5",
+	"claude-opus-4-6":   "claude-opus-4.6",
+	"claude-opus-4-7":   "claude-opus-4.7",
+	"claude-opus-4-8":   "claude-opus-4.8",
 }
 
 // dateSuffix 匹配 Anthropic 模型名尾部的日期版本，如 -20250929。
@@ -62,8 +82,9 @@ var kiroNativeName = regexp.MustCompile(`^claude-[a-z]+-\d+\.\d+$`)
 // sonnet-4.6 再假装成功；第二次是漏收了 Kiro 实际支持的 claude-opus-5；
 // 第三次是信了一个第三方参考实现里未经验证就加了几条、其中 fable 那两条
 // 被真实测试证伪——见上面的详细说明），但错误从未出在"要不要维护白
-// 名单"这个机制本身。每一条都只应该在真实验证（真实账号测试连接得到
-// 200，或已是长期批量验证过的既有条目）之后才收录。
+// 名单"这个机制本身。每一条都只应该在真实验证（账号自己的权威接口
+// ListAvailableModels 确认在清单里、真实账号测试连接得到 200，或已是
+// 长期批量验证过的既有条目）之后才收录。
 //
 // 规则按优先级：
 //  1. 空输入 → ok=false
@@ -105,5 +126,10 @@ func DefaultModels() []string {
 		"claude-sonnet-4",
 		"claude-haiku-4.5",
 		"claude-opus-5",
+		"claude-sonnet-5",
+		"claude-opus-4.8",
+		"claude-opus-4.7",
+		"claude-opus-4.6",
+		"claude-opus-4.5",
 	}
 }
