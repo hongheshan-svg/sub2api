@@ -2182,6 +2182,39 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	}
 }
 
+// KiroCountTokens handles Anthropic-compatible POST /v1/messages/count_tokens
+// for Kiro groups locally. Kiro has no real count_tokens endpoint upstream,
+// and falling through to CountTokens above would try to forward to it as if
+// it were a real Anthropic account (wrong credentials/endpoint shape) — this
+// handler intentionally does not select an account or check billing, mirroring
+// OpenAIGatewayHandler.GrokCountTokens which solves the same problem for Grok.
+func (h *GatewayHandler) KiroCountTokens(c *gin.Context) {
+	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	if len(body) == 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+
+	estimated, err := service.EstimateKiroCountTokens(body)
+	if err != nil {
+		requestLogger(c, "handler.gateway.kiro_count_tokens").Warn("kiro_count_tokens.local_estimate_failed", zap.Error(err))
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+
+	setOpsRequestContext(c, "", false)
+	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
+	c.JSON(http.StatusOK, gin.H{"input_tokens": estimated})
+}
+
 // InterceptType 表示请求拦截类型
 type InterceptType int
 
