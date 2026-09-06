@@ -97,12 +97,6 @@ Please read the following carefully before using this project:
 </tr>
 
 <tr>
-<td width="180"><a href="https://sui-xiang.com/"><img src="assets/partners/logos/sui-xiang.jpg" alt="sui-xiang" width="150"></a></td>
-<td>Thanks to Suixiang AI Gateway for sponsoring this project! <a href="https://sui-xiang.com/">Suixiang AI Gateway</a> is a reliable and efficient API relay service provider offering relay services for Claude, Codex, Gemini, and more. A privacy-focused relay — no data reselling, no model dilution; privacy, transparency, and lightning-fast after-sales support. New accounts get ¥0.5 in trial credit daily by signing in; top-ups are 1:1, no subscription required, pay-as-you-go. Multi-line redundancy, cross-region disaster recovery, automatic failover, and uninterrupted long-link SSE. 99.9% availability — critical calls never fall behind.
-</td>
-</tr>
-
-<tr>
 <td width="180"><a href="https://www.proxy4free.com/?keyword=4yjqecpc"><img src="assets/partners/logos/proxy4free.png" alt="proxy4free" width="150"></a></td>
 <td>Thanks to Proxy4Free for sponsoring this project! Proxy4Free is a data proxy service provider for developers and AI applications, offering residential proxies, static residential proxies, ISP proxies, and datacenter proxies for scenarios such as Web Scraping, Browser Automation, and AI Agents. With global IP resources, stable connections, and flexible switching, it helps developers improve data collection success rates and reduce the risk of IP bans. Register via <a href="https://www.proxy4free.com/?keyword=4yjqecpc">this link</a> to get started and easily build more stable and efficient automation workflows.
 </td>
@@ -125,11 +119,6 @@ Please read the following carefully before using this project:
 <tr>
 <td width="180"><a href="https://nagora.ai/"><img src="assets/partners/logos/nagora.png" alt="Nagora" width="150"></a></td>
 <td><a href="https://nagora.ai/">Nagora</a> is a multi-model AI API gateway built for developers and teams. With a single account and API key, you can access more than 26 leading text and image models through one unified interface. It is compatible with OpenAI, Anthropic, and Gemini protocols and integrates seamlessly with development tools such as Claude Code, Codex, and Gemini CLI. The platform provides intelligent routing, automatic failover, transparent pricing, and consolidated billing, along with budget management, rate limiting, and concurrency controls. This makes AI usage more reliable and manageable across individual development, team collaboration, and production environments. No changes to your existing application are required. Simply replace the Base URL and API key to complete the integration in as little as one minute.</td>
-</tr>
-
-<tr>
-<td width="180"><a href="https://www.novada.com/?sub2api/"><img src="assets/partners/logos/novada.png" alt="Novada" width="150"></a></td>
-<td>Thanks to <a href="https://www.novada.com/?sub2api/">Novada</a> for sponsoring this project! Novada provides residential, ISP, datacenter, and mobile proxies, along with Web Unlocker and Scraper APIs for developers building AI applications and automation workflows. With global IP coverage, flexible rotating and sticky sessions, and precise geo-targeting, Novada helps teams access web data reliably for AI agent workflows, cross-region testing, web research, and browser automation. Explore Novada to build more stable and scalable AI workflows.</td>
 </tr>
 
 <tr>
@@ -191,7 +180,7 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 - **Smart Scheduling** - Intelligent account selection with sticky sessions
 - **Concurrency Control** - Per-user and per-account concurrency limits
 - **Rate Limiting** - Configurable request and token rate limits
-- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, and Stripe for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
+- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, Stripe, and Airwallex for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
 - **Admin Dashboard** - Web interface for monitoring and management
 - **Composite Groups** - Admin routing layer that resolves requested models to concrete providers for multi-provider groups ([Operator Guide](docs/COMPOSITE_GROUPS.md))
 - **External System Integration** - Embed external systems (e.g. ticketing) via iframe to extend the admin dashboard
@@ -244,7 +233,7 @@ One-click installation script that downloads pre-built binaries from GitHub Rele
 #### Installation Steps
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 The script will:
@@ -294,7 +283,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # Uninstall
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -317,7 +306,7 @@ Use the automated deployment script for easy setup:
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # Download and run deployment preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/hongheshan-svg/sub2api/main/deploy/docker-deploy.sh | bash
 
 # Start services
 docker compose up -d
@@ -339,7 +328,7 @@ If you prefer manual setup:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api/deploy
 
 # 2. Copy environment configuration
@@ -469,7 +458,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple-silicon Macs running macOS 26 can run the full Sub2API, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -486,7 +475,7 @@ Build and run from source code for development or customization.
 
 #### Prerequisites
 
-- Go 1.21+
+- Go 1.27.0
 - Node.js 18+
 - PostgreSQL 15+
 - Redis 7+
@@ -495,7 +484,7 @@ Build and run from source code for development or customization.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/hongheshan-svg/sub2api.git
 cd sub2api
 
 # 2. Install pnpm (if not already installed)
@@ -833,6 +822,43 @@ Administrators can override automatic media eligibility through the account crea
 
 ---
 
+## Kimi / Zhipu / DeepSeek Support
+
+Sub2API supports three domestic (China) OpenAI-compatible providers — Kimi (Moonshot), Zhipu GLM, and DeepSeek — as API-key accounts forwarded through the same OpenAI-compatible gateway as Grok.
+
+### Supported Scope
+
+- Platform names: `kimi`, `zhipu`, `deepseek`
+- Account type: API Key only (no OAuth)
+- Public targets: `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses` (+ subpaths), `/v1/chat/completions`, and the bare aliases (`/responses`, `/chat/completions`, `/backend-api/codex/responses`) that omit the `/v1` prefix
+- Not supported: `/v1/embeddings` and the image/video endpoints (OpenAI- and Grok-only) — these three platforms are text/chat only
+- Example models: Kimi `kimi-k2`, `kimi-k2.5`, `kimi-k2.6`, `kimi-k2-thinking`; Zhipu `glm-4.5`, `glm-4.6`, `glm-4.7`, `glm-5`, `glm-5-turbo`, `glm-5.1`, `glm-5.2`; DeepSeek `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`
+
+### Account Configuration
+
+Each account has two independent settings:
+
+- **Account mode** (`payg` billed pay-as-you-go vs `coding` a provider Coding Plan subscription) — determines which quota/balance signal Sub2API monitors. Kimi and Zhipu both offer a Coding Plan; DeepSeek is pay-as-you-go only.
+- **API protocol** (`chat_completions` default, `anthropic`, `responses`, or `adaptive`) — determines which upstream endpoint shape the account forwards to, independent of account mode. `anthropic` lets the account serve Claude Code-style `/v1/messages` clients natively; `responses` serves Codex-style clients natively and is only available for Kimi and DeepSeek (Zhipu has no native Responses endpoint); `adaptive` picks the native endpoint that matches the inbound request protocol. Same-protocol requests forward untouched; cross-protocol combinations go through Sub2API's conversion layer.
+
+Default base URLs by platform / mode / protocol:
+
+| Platform | Mode | Chat Completions | Anthropic | Responses |
+|----------|------|-------------------|-----------|-----------|
+| Kimi | PayG | `https://api.moonshot.cn/v1` | `https://api.moonshot.cn/anthropic` | `https://api.moonshot.cn/v1` |
+| Kimi | Coding | `https://api.kimi.com/coding/v1` | `https://api.kimi.com/coding` | `https://api.kimi.com/coding/v1` |
+| Zhipu | PayG | `https://open.bigmodel.cn/api/paas/v4` | `https://open.bigmodel.cn/api/anthropic` | — |
+| Zhipu | Coding | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/anthropic` | — |
+| DeepSeek | PayG | `https://api.deepseek.com` | `https://api.deepseek.com/anthropic` | `https://api.deepseek.com` |
+
+These are pre-filled presets in the create-account dialog; the base URL field accepts any custom forwarding endpoint.
+
+### Usage And Quota Display
+
+`payg` Kimi and DeepSeek accounts show a balance signal from the provider's account API (Zhipu does not expose one in PayG mode). `coding` Kimi and Zhipu accounts show a rolling usage-window signal instead (5-hour and weekly windows), matching how each provider's Coding Plan actually resets quota — DeepSeek has no Coding Plan, so this doesn't apply to it. A per-platform scheduling threshold can pause a Kimi or Zhipu account once its window usage crosses a configured percentage, so traffic fails over to other accounts before the provider starts throttling.
+
+---
+
 ## Antigravity Support
 
 Sub2API supports [Antigravity](https://antigravity.so/) accounts. After authorization, dedicated endpoints are available for Claude and Gemini models.
@@ -868,9 +894,8 @@ sub2api/
 │   ├── internal/             # Internal modules
 │   │   ├── config/           # Configuration
 │   │   ├── model/            # Data models
-│   │   ├── service/          # Business logic
-│   │   ├── handler/          # HTTP handlers
-│   │   └── gateway/          # API gateway core
+│   │   ├── service/          # Business logic (includes gateway/relay core)
+│   │   └── handler/          # HTTP handlers
 │   └── resources/            # Static resources
 │
 ├── frontend/                 # Vue 3 frontend
