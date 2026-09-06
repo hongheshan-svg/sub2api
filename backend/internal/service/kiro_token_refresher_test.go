@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -102,6 +103,84 @@ func TestKiroRefresherPreservesExistingCredentials(t *testing.T) {
 	require.Equal(t, "fixed-machine-id", got["machine_id"], "设备指纹不得因刷新而改变")
 	require.Equal(t, true, got["fake_thinking"], "账号级开关不得丢失")
 	require.Equal(t, "us-east-1", got["region"])
+}
+
+// TestKiroRefresherBackfillsMissingProfileArnForIdCAccount 覆盖新增的
+// profileArn 自动发现回填：idc 账号的 OIDC 刷新响应本身不带 profileArn
+// （真实行为，见 tokenResponse.ProfileArn 只在 social 场景填充），但
+// ListAvailableProfiles 探测能找到一个 profile 时，Refresh 的返回值必须
+// 把它补上，而不是让 profile_arn 一直空着等管理员手填。
+func TestKiroRefresherBackfillsMissingProfileArnForIdCAccount(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		// OIDC 刷新响应里没有 profileArn 字段——与真实 IdC 行为一致。
+		_, _ = w.Write([]byte(`{"accessToken":"at_new","refreshToken":"rt_new","expiresIn":3600}`))
+	})
+	mux.HandleFunc("/ListAvailableProfiles", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer at_new", r.Header.Get("Authorization"), "发现请求必须用刷新后的新 access token，不能用旧的")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"profiles": []map[string]string{{"arn": kiroTestValidProfileArn, "profileName": "default"}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	oauthSvc := newTestKiroOAuthService(t, srv)
+	oauthSvc.listProfilesHost = func(string) string { return srv.URL }
+	r := NewKiroTokenRefresher(oauthSvc)
+
+	account := &Account{ID: 8, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":   "idc",
+		"refresh_token": "rt_old",
+		"access_token":  "at_old",
+		"client_id":     "client-1",
+		"client_secret": "secret-1",
+		"issuer_url":    "https://d-example.awsapps.com/start",
+		"region":        "us-east-1",
+		"machine_id":    "fixed-machine-id",
+	}}
+
+	got, err := r.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "at_new", got["access_token"])
+	require.Equal(t, kiroTestValidProfileArn, got["profile_arn"], "刷新后仍然缺 profile_arn 时必须尝试自动发现并回填")
+}
+
+// TestKiroRefresherKeepsExistingProfileArnWithoutRediscovering 覆盖已经有
+// profile_arn 时不应该再去发现——不需要浪费一次额外的 HTTP 调用，也不能
+// 让发现失败/换了一个不同的 profile 意外覆盖已经生效的值。
+func TestKiroRefresherKeepsExistingProfileArnWithoutRediscovering(t *testing.T) {
+	discoveryCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accessToken":"at_new","refreshToken":"rt_new","expiresIn":3600}`))
+	})
+	mux.HandleFunc("/ListAvailableProfiles", func(w http.ResponseWriter, r *http.Request) {
+		discoveryCalled = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"profiles": []map[string]string{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	oauthSvc := newTestKiroOAuthService(t, srv)
+	oauthSvc.listProfilesHost = func(string) string { return srv.URL }
+	r := NewKiroTokenRefresher(oauthSvc)
+
+	account := &Account{ID: 8, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":   "idc",
+		"refresh_token": "rt_old",
+		"access_token":  "at_old",
+		"client_id":     "client-1",
+		"client_secret": "secret-1",
+		"issuer_url":    "https://d-example.awsapps.com/start",
+		"region":        "us-east-1",
+		"profile_arn":   kiroTestValidProfileArn,
+	}}
+
+	got, err := r.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, kiroTestValidProfileArn, got["profile_arn"])
+	require.False(t, discoveryCalled, "已经有 profile_arn 时不应该再发起发现请求")
 }
 
 func TestKiroRefresherCacheKey(t *testing.T) {

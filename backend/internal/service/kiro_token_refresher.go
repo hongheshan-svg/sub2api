@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
+	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 )
 
 // kiroTokenRefreshSkew 是基础预热窗口：剩余寿命低于此值就刷新。
@@ -125,6 +128,24 @@ func (r *KiroTokenRefresher) Refresh(ctx context.Context, account *Account) (map
 	// 账号原有的 machine_id 覆盖回去，而不是依赖 MergeCredentials 的空位填充。
 	if old := strings.TrimSpace(account.KiroMachineID()); old != "" {
 		merged["machine_id"] = old
+	}
+
+	// 可选的 profileArn 自动发现（锦上添花，见 DiscoverProfileArn 的文档）：
+	// 只在这次刷新之后仍然没有 profile_arn、且是 idc/builder_id 账号时才
+	// 尝试一次——social 已经从 token 响应里自动带回，api_key 账号不使用
+	// profileArn（BuildAccountCredentials/KiroProfileArn 的既有约定）。
+	// 发现失败/账号在已知区域没有可用 profile 都不应该让 token 刷新本身
+	// 失败，只记一条 debug 日志，管理端手填入口仍然保留作为兜底。
+	if method := account.KiroAuthMethod(); method == kiro.AuthIdC || method == kiro.AuthBuilderID {
+		if existing, _ := merged["profile_arn"].(string); strings.TrimSpace(existing) == "" {
+			accessToken, _ := merged["access_token"].(string)
+			discovered, discErr := r.oauthService.DiscoverProfileArn(ctx, accessToken, account.KiroMachineID(), account.ProxyID)
+			if discErr != nil {
+				slog.Debug("kiro_profile_arn_discovery_failed", "account_id", account.ID, "auth_method", string(method), "error", discErr)
+			} else if discovered != "" {
+				merged["profile_arn"] = discovered
+			}
+		}
 	}
 
 	return merged, nil

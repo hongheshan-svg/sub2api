@@ -126,6 +126,158 @@ func TestKiroAuthorizeURLIdCEndToEndCompletesViaPastedCallbackURL(t *testing.T) 
 	require.Equal(t, "arn:x", completeResp.Data.Credentials["profile_arn"])
 }
 
+// TestKiroCompleteIdCDiscoversProfileArnWhenTokenResponseOmitsIt 覆盖真实
+// IdC 行为（与上面端到端测试里 mock 的 "profileArn":"arn:x" 不同——那是
+// 为了同一个测试文件不必再起一个 mock server 而顺手带上的简化，真实 IdC
+// 的 /token 响应里没有这个字段）：CompleteIdC 在 BuildAccountCredentials
+// 拿到的 creds 里没有 profile_arn 时，必须尝试一次 ListAvailableProfiles
+// 自动发现（DiscoverProfileArn），发现成功就直接把新账号的 credentials
+// 补上，不需要用户再跑一次 KiroCredentialFields.vue 的手填流程。
+func TestKiroCompleteIdCDiscoversProfileArnWhenTokenResponseOmitsIt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/register":
+			_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+		case "/token":
+			// 真实 IdC /token 响应形态：没有 profileArn 字段。
+			_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`))
+		case "/ListAvailableProfiles":
+			require.Equal(t, "Bearer at", r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"profiles": []map[string]string{
+					{"arn": "arn:aws:codewhisperer:us-east-1:123456789012:profile/abcdef123456", "profileName": "default"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := service.NewKiroOAuthService(nil)
+	defer svc.Stop()
+	svc = svc.WithBaseURLs(
+		func(string) string { return srv.URL },
+		func(string) string { return srv.URL },
+	)
+	svc = svc.WithListProfilesHost(func(string) string { return srv.URL })
+	h := NewKiroOAuthHandler(svc)
+
+	urlW := httptest.NewRecorder()
+	urlC, _ := gin.CreateTestContext(urlW)
+	urlC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/authorize-url",
+		strings.NewReader(`{"issuer_url":"https://d-x.awsapps.com/start","region":"us-east-1"}`))
+	urlC.Request.Header.Set("Content-Type", "application/json")
+	h.AuthorizeURL(urlC)
+	require.Equal(t, http.StatusOK, urlW.Code)
+
+	var urlResp struct {
+		Data struct {
+			SessionID    string `json:"session_id"`
+			AuthorizeURL string `json:"authorize_url"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(urlW.Body.Bytes(), &urlResp))
+	parsed, err := url.Parse(urlResp.Data.AuthorizeURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	pastedURL := parsed.Query().Get("redirect_uri") + "?code=authcode&state=" + url.QueryEscape(state)
+
+	completeBody, err := json.Marshal(map[string]string{
+		"session_id":   urlResp.Data.SessionID,
+		"callback_url": pastedURL,
+	})
+	require.NoError(t, err)
+	completeW := httptest.NewRecorder()
+	completeC, _ := gin.CreateTestContext(completeW)
+	completeC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/idc/complete", bytes.NewReader(completeBody))
+	completeC.Request.Header.Set("Content-Type", "application/json")
+	h.CompleteIdC(completeC)
+
+	require.Equal(t, http.StatusOK, completeW.Code, "完成授权必须成功: %s", completeW.Body.String())
+	var completeResp struct {
+		Data struct {
+			Credentials map[string]any `json:"credentials"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(completeW.Body.Bytes(), &completeResp))
+	require.Equal(t, "arn:aws:codewhisperer:us-east-1:123456789012:profile/abcdef123456",
+		completeResp.Data.Credentials["profile_arn"],
+		"token 响应没带 profile_arn 时必须靠自动发现补上")
+}
+
+// TestKiroCompleteIdCDiscoveryFailureDoesNotBlockAccountCreation 覆盖发现
+// 失败（这里模拟 Builder ID 会撞到的真实 403）时账号创建本身不能被阻断——
+// 这只是一次锦上添花的尝试，account creation 的成败不应该依赖它。
+func TestKiroCompleteIdCDiscoveryFailureDoesNotBlockAccountCreation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/register":
+			_, _ = w.Write([]byte(`{"clientId":"cid","clientSecret":"csec"}`))
+		case "/token":
+			_, _ = w.Write([]byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`))
+		case "/ListAvailableProfiles":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"AWS Builder ID is not supported for this operation"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := service.NewKiroOAuthService(nil)
+	defer svc.Stop()
+	svc = svc.WithBaseURLs(
+		func(string) string { return srv.URL },
+		func(string) string { return srv.URL },
+	)
+	svc = svc.WithListProfilesHost(func(string) string { return srv.URL })
+	h := NewKiroOAuthHandler(svc)
+
+	urlW := httptest.NewRecorder()
+	urlC, _ := gin.CreateTestContext(urlW)
+	urlC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/authorize-url",
+		strings.NewReader(`{"issuer_url":"https://d-x.awsapps.com/start","region":"us-east-1"}`))
+	urlC.Request.Header.Set("Content-Type", "application/json")
+	h.AuthorizeURL(urlC)
+
+	var urlResp struct {
+		Data struct {
+			SessionID    string `json:"session_id"`
+			AuthorizeURL string `json:"authorize_url"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(urlW.Body.Bytes(), &urlResp))
+	parsed, err := url.Parse(urlResp.Data.AuthorizeURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	pastedURL := parsed.Query().Get("redirect_uri") + "?code=authcode&state=" + url.QueryEscape(state)
+
+	completeBody, err := json.Marshal(map[string]string{
+		"session_id":   urlResp.Data.SessionID,
+		"callback_url": pastedURL,
+	})
+	require.NoError(t, err)
+	completeW := httptest.NewRecorder()
+	completeC, _ := gin.CreateTestContext(completeW)
+	completeC.Request = httptest.NewRequest(http.MethodPost, "/admin/kiro/oauth/idc/complete", bytes.NewReader(completeBody))
+	completeC.Request.Header.Set("Content-Type", "application/json")
+	h.CompleteIdC(completeC)
+
+	require.Equal(t, http.StatusOK, completeW.Code, "发现失败不应该阻断账号创建本身: %s", completeW.Body.String())
+	var completeResp struct {
+		Data struct {
+			Credentials map[string]any `json:"credentials"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(completeW.Body.Bytes(), &completeResp))
+	require.NotContains(t, completeResp.Data.Credentials, "profile_arn", "发现失败时不应该写入任何 profile_arn")
+}
+
 // TestKiroCompleteIdCSurfacesAuthorizeError 覆盖管理员在 AWS 门户拒绝/取消
 // 授权时的路径：粘贴回来的 URL 带的是 ?error=... 而不是 ?code=...，
 // CompleteIdC 必须报错，不能把 error 参数当 code 传下去。

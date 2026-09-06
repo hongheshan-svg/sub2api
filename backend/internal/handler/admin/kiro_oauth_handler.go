@@ -1,7 +1,10 @@
 package admin
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -93,6 +96,7 @@ func (h *KiroOAuthHandler) CompleteIdC(c *gin.Context) {
 		ClientID:     sess.ClientID,
 		ClientSecret: sess.ClientSecret,
 	})
+	discoverKiroProfileArnIfMissing(c.Request.Context(), h.svc, creds, req.ProxyID)
 	response.Success(c, gin.H{"status": "ok", "credentials": creds})
 }
 
@@ -147,5 +151,36 @@ func (h *KiroOAuthHandler) DevicePoll(c *gin.Context) {
 		ClientID:     sess.ClientID,
 		ClientSecret: sess.ClientSecret,
 	})
+	discoverKiroProfileArnIfMissing(c.Request.Context(), h.svc, creds, req.ProxyID)
 	response.Success(c, gin.H{"status": "ok", "credentials": creds})
+}
+
+// discoverKiroProfileArnIfMissing 在新建 IdC/Builder ID 账号时顺手尝试一次
+// profileArn 自动发现（可选，见 KiroOAuthService.DiscoverProfileArn 的
+// 文档）——两处授权完成的回调（CompleteIdC/DevicePoll）在把 creds 返回给
+// 前端之前调用，创建的账号从一开始就带上 profileArn，不用等到第一次
+// token 刷新才补上。发现失败/没有可用 profile 都不阻断账号创建，
+// 管理端手填入口（KiroCredentialFields.vue 的 Profile ARN 字段）仍然
+// 保留作为兜底。
+func discoverKiroProfileArnIfMissing(ctx context.Context, svc *service.KiroOAuthService, creds map[string]any, proxyID *int64) {
+	if creds == nil {
+		return
+	}
+	authMethod, _ := creds["auth_method"].(string)
+	if authMethod != string(kiro.AuthIdC) && authMethod != string(kiro.AuthBuilderID) {
+		return
+	}
+	if existing, _ := creds["profile_arn"].(string); strings.TrimSpace(existing) != "" {
+		return
+	}
+	accessToken, _ := creds["access_token"].(string)
+	machineID, _ := creds["machine_id"].(string)
+	discovered, err := svc.DiscoverProfileArn(ctx, accessToken, machineID, proxyID)
+	if err != nil {
+		slog.Debug("kiro_profile_arn_discovery_failed", "auth_method", authMethod, "error", err)
+		return
+	}
+	if discovered != "" {
+		creds["profile_arn"] = discovered
+	}
 }

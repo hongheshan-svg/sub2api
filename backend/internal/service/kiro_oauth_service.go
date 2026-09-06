@@ -48,18 +48,20 @@ type KiroOAuthService struct {
 	proxyRepo    ProxyRepository
 
 	// base URL 做成字段以便测试注入 httptest.Server。
-	oidcBase   func(region string) string
-	socialBase func(region string) string
+	oidcBase         func(region string) string
+	socialBase       func(region string) string
+	listProfilesHost func(region string) string
 }
 
 // NewKiroOAuthService 创建服务，默认使用进程内存会话存储。
 // 生产环境由 wire 注入 Redis 版本（见 WithSessionStore）。
 func NewKiroOAuthService(proxyRepo ProxyRepository) *KiroOAuthService {
 	return &KiroOAuthService{
-		sessionStore: kiro.NewSessionStore(),
-		proxyRepo:    proxyRepo,
-		oidcBase:     kiro.OIDCBase,
-		socialBase:   kiro.SocialBase,
+		sessionStore:     kiro.NewSessionStore(),
+		proxyRepo:        proxyRepo,
+		oidcBase:         kiro.OIDCBase,
+		socialBase:       kiro.SocialBase,
+		listProfilesHost: kiro.ListProfilesHostFor,
 	}
 }
 
@@ -93,6 +95,19 @@ func (s *KiroOAuthService) WithBaseURLs(oidcBase, socialBase func(region string)
 	}
 	if socialBase != nil {
 		s.socialBase = socialBase
+	}
+	return s
+}
+
+// WithListProfilesHost 替换 ListAvailableProfiles 发现请求打去的 host——
+// 与 WithBaseURLs 同样的用途（测试注入 httptest.Server），单独一个方法
+// 而不是塞进 WithBaseURLs 的参数列表，避免改动那个已有公开签名的调用点。
+func (s *KiroOAuthService) WithListProfilesHost(listProfilesHost func(region string) string) *KiroOAuthService {
+	if s == nil {
+		return s
+	}
+	if listProfilesHost != nil {
+		s.listProfilesHost = listProfilesHost
 	}
 	return s
 }
