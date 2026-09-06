@@ -6,13 +6,20 @@
  * 命名漂移会让账号建得出来但转发时取不到凭证，症状是 401 而非表单错误。
  */
 
+import { i18n } from '@/i18n'
+
+const { t } = i18n.global
+
 export type KiroAuthMethod = 'social' | 'builder_id' | 'idc' | 'api_key'
 
-export const KIRO_AUTH_METHOD_OPTIONS: readonly { value: KiroAuthMethod; label: string }[] = [
-  { value: 'social', label: 'Social（粘贴 refreshToken）' },
-  { value: 'builder_id', label: 'AWS Builder ID（设备码授权）' },
-  { value: 'idc', label: 'IAM Identity Center（组织 SSO）' },
-  { value: 'api_key', label: 'Kiro API Key' }
+// labelKey 而不是直接存 label 文本——组件里用 t(opt.labelKey) 渲染，
+// 这样切换语言时模板重新渲染就能拿到当前语言的文本，不需要把这个数组
+// 本身做成响应式的 computed。
+export const KIRO_AUTH_METHOD_OPTIONS: readonly { value: KiroAuthMethod; labelKey: string }[] = [
+  { value: 'social', labelKey: 'admin.accounts.oauth.kiro.authMethodSocial' },
+  { value: 'builder_id', labelKey: 'admin.accounts.oauth.kiro.authMethodBuilderId' },
+  { value: 'idc', labelKey: 'admin.accounts.oauth.kiro.authMethodIdc' },
+  { value: 'api_key', labelKey: 'admin.accounts.oauth.kiro.authMethodApiKey' }
 ] as const
 
 export interface KiroCredentialForm {
@@ -46,17 +53,18 @@ export function kiroRequiredFields(method: KiroAuthMethod): string[] {
 
 /** 校验表单，返回错误提示；通过时返回 null。 */
 export function validateKiroCredentials(form: KiroCredentialForm): string | null {
-  const labels: Record<string, string> = {
-    refreshToken: 'Refresh Token',
-    clientId: 'Client ID',
-    clientSecret: 'Client Secret',
-    issuerUrl: 'SSO 门户地址',
-    apiKey: 'API Key'
+  const labelKeys: Record<string, string> = {
+    refreshToken: 'admin.accounts.oauth.kiro.fieldRefreshToken',
+    clientId: 'admin.accounts.oauth.kiro.fieldClientId',
+    clientSecret: 'admin.accounts.oauth.kiro.fieldClientSecret',
+    issuerUrl: 'admin.accounts.oauth.kiro.fieldIssuerUrl',
+    apiKey: 'admin.accounts.oauth.kiro.fieldApiKey'
   }
 
   for (const field of kiroRequiredFields(form.authMethod)) {
     if (!trim((form as unknown as Record<string, string>)[field])) {
-      return `请填写 ${labels[field] ?? field}`
+      const fieldLabel = labelKeys[field] ? t(labelKeys[field]) : field
+      return t('admin.accounts.oauth.kiro.fieldRequired', { field: fieldLabel })
     }
   }
   return null

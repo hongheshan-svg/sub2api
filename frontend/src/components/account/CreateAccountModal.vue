@@ -248,7 +248,7 @@
             >
               <Icon name="key" size="sm" />
             </div>
-            <span class="text-sm font-medium text-gray-900 dark:text-white">{{ opt.label }}</span>
+            <span class="text-sm font-medium text-gray-900 dark:text-white">{{ t(opt.labelKey) }}</span>
           </button>
         </div>
 

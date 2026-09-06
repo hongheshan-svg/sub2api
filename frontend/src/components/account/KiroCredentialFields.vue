@@ -3,19 +3,19 @@
     <!-- social: 只需要粘贴 refreshToken + region -->
     <template v-if="modelValue.authMethod === 'social'">
       <div>
-        <label class="input-label">Refresh Token</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.refreshTokenLabel') }}</label>
         <textarea
           data-test="kiro-refresh-token"
           :value="modelValue.refreshToken"
           rows="4"
           class="input font-mono text-xs"
-          placeholder="粘贴 Kiro 客户端本地保存的 refreshToken"
+          :placeholder="t('admin.accounts.oauth.kiro.refreshTokenPlaceholderSocial')"
           @input="update('refreshToken', ($event.target as HTMLTextAreaElement).value)"
         ></textarea>
-        <p v-if="hasExistingSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p v-if="hasExistingSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Region</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.regionLabel') }}</label>
         <input
           data-test="kiro-region"
           type="text"
@@ -30,20 +30,20 @@
     <!-- builder_id: Refresh Token / Client ID / Client Secret / Region -->
     <template v-else-if="modelValue.authMethod === 'builder_id'">
       <div>
-        <label class="input-label">Refresh Token</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.refreshTokenLabel') }}</label>
         <textarea
           data-test="kiro-refresh-token"
           :value="modelValue.refreshToken"
           rows="4"
           class="input font-mono text-xs"
-          placeholder="粘贴 refreshToken，或使用上方的设备码授权自动获取"
+          :placeholder="t('admin.accounts.oauth.kiro.refreshTokenPlaceholderBuilderId')"
           @input="update('refreshToken', ($event.target as HTMLTextAreaElement).value)"
         ></textarea>
-        <p class="input-hint">可用上方的设备码授权自动获取</p>
-        <p v-if="hasExistingSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p class="input-hint">{{ t('admin.accounts.oauth.kiro.refreshTokenAutoHint') }}</p>
+        <p v-if="hasExistingSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Client ID</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.clientIdLabel') }}</label>
         <input
           data-test="kiro-client-id"
           type="text"
@@ -53,7 +53,7 @@
         />
       </div>
       <div>
-        <label class="input-label">Client Secret</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.clientSecretLabel') }}</label>
         <input
           data-test="kiro-client-secret"
           type="password"
@@ -62,10 +62,10 @@
           autocomplete="off"
           @input="update('clientSecret', ($event.target as HTMLInputElement).value)"
         />
-        <p v-if="hasExistingClientSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p v-if="hasExistingClientSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Region</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.regionLabel') }}</label>
         <input
           data-test="kiro-region"
           type="text"
@@ -76,7 +76,7 @@
         />
       </div>
       <div>
-        <label class="input-label">Profile ARN（可选）</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.profileArnLabel') }}</label>
         <input
           data-test="kiro-profile-arn"
           type="text"
@@ -86,9 +86,7 @@
           @input="update('profileArn', ($event.target as HTMLInputElement).value)"
         />
         <p class="input-hint">
-          Builder ID/IdC 登录拿到的令牌不带 profileArn，只有 Social 登录会自动带。
-          不填时账号级额度查询/模型列表等依赖 profileArn 的接口可能受限；可从本机
-          Kiro CLI 运行一次 <code>kiro-cli profile</code> 后在其本地状态里找到，或找组织管理员要。
+          {{ t('admin.accounts.oauth.kiro.profileArnHintBuilderId') }}
         </p>
       </div>
     </template>
@@ -96,7 +94,7 @@
     <!-- idc: 在 builder_id 基础上加 SSO 门户地址 -->
     <template v-else-if="modelValue.authMethod === 'idc'">
       <div>
-        <label class="input-label">SSO 门户地址</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.issuerUrlLabel') }}</label>
         <input
           data-test="kiro-issuer-url"
           type="text"
@@ -105,23 +103,23 @@
           placeholder="https://d-xxxxxxxxx.awsapps.com/start"
           @input="update('issuerUrl', ($event.target as HTMLInputElement).value)"
         />
-        <p class="input-hint">组织的 IAM Identity Center（AWS SSO）门户地址</p>
+        <p class="input-hint">{{ t('admin.accounts.oauth.kiro.issuerUrlHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Refresh Token</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.refreshTokenLabel') }}</label>
         <textarea
           data-test="kiro-refresh-token"
           :value="modelValue.refreshToken"
           rows="4"
           class="input font-mono text-xs"
-          placeholder="粘贴 refreshToken，或使用上方的授权码授权自动获取"
+          :placeholder="t('admin.accounts.oauth.kiro.refreshTokenPlaceholderIdc')"
           @input="update('refreshToken', ($event.target as HTMLTextAreaElement).value)"
         ></textarea>
-        <p class="input-hint">可用上方的设备码授权自动获取</p>
-        <p v-if="hasExistingSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p class="input-hint">{{ t('admin.accounts.oauth.kiro.refreshTokenAutoHint') }}</p>
+        <p v-if="hasExistingSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Client ID</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.clientIdLabel') }}</label>
         <input
           data-test="kiro-client-id"
           type="text"
@@ -131,7 +129,7 @@
         />
       </div>
       <div>
-        <label class="input-label">Client Secret</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.clientSecretLabel') }}</label>
         <input
           data-test="kiro-client-secret"
           type="password"
@@ -140,10 +138,10 @@
           autocomplete="off"
           @input="update('clientSecret', ($event.target as HTMLInputElement).value)"
         />
-        <p v-if="hasExistingClientSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p v-if="hasExistingClientSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Region</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.regionLabel') }}</label>
         <input
           data-test="kiro-region"
           type="text"
@@ -154,7 +152,7 @@
         />
       </div>
       <div>
-        <label class="input-label">Profile ARN（可选）</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.profileArnLabel') }}</label>
         <input
           data-test="kiro-profile-arn"
           type="text"
@@ -164,10 +162,7 @@
           @input="update('profileArn', ($event.target as HTMLInputElement).value)"
         />
         <p class="input-hint">
-          IAM Identity Center 登录拿到的令牌不带 profileArn，需要组织管理员在
-          AWS 控制台配置好 Q Developer Profile 后提供这个 ARN；不填时账号级额度
-          查询/模型列表等依赖 profileArn 的接口可能受限。可从本机 Kiro CLI 运行
-          一次 <code>kiro-cli profile</code> 后在其本地状态里找到。
+          {{ t('admin.accounts.oauth.kiro.profileArnHintIdc') }}
         </p>
       </div>
     </template>
@@ -175,7 +170,7 @@
     <!-- api_key: 只需要密钥 + region -->
     <template v-else-if="modelValue.authMethod === 'api_key'">
       <div>
-        <label class="input-label">API Key</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.apiKeyLabel') }}</label>
         <input
           data-test="kiro-api-key"
           type="password"
@@ -184,10 +179,10 @@
           autocomplete="off"
           @input="update('apiKey', ($event.target as HTMLInputElement).value)"
         />
-        <p v-if="hasExistingSecret" class="input-hint">留空则不修改，账号已配置该字段</p>
+        <p v-if="hasExistingSecret" class="input-hint">{{ t('admin.accounts.oauth.kiro.leaveEmptyHint') }}</p>
       </div>
       <div>
-        <label class="input-label">Region</label>
+        <label class="input-label">{{ t('admin.accounts.oauth.kiro.regionLabel') }}</label>
         <input
           data-test="kiro-region"
           type="text"
@@ -202,10 +197,9 @@
     <!-- 假思考开关：底部统一放置，覆盖全部接入方式 -->
     <div class="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
       <div>
-        <p class="text-sm font-medium text-gray-900 dark:text-white">假思考（模拟 thinking）</p>
+        <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.oauth.kiro.fakeThinkingTitle') }}</p>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Kiro 无原生 thinking。开启后会向每个请求注入约数百 token 的思考指令，产出的是模型自写文本而非真实
-          reasoning。默认关闭。
+          {{ t('admin.accounts.oauth.kiro.fakeThinkingDesc') }}
         </p>
       </div>
       <button
@@ -232,6 +226,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { KiroCredentialForm } from './kiroCredentials'
 
 interface Props {
@@ -242,6 +237,7 @@ interface Props {
   hasExistingClientSecret?: boolean
 }
 
+const { t } = useI18n()
 const props = defineProps<Props>()
 const emit = defineEmits<{
   'update:modelValue': [value: Partial<KiroCredentialForm>]

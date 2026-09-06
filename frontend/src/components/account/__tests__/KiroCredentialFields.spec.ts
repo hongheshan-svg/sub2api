@@ -1,6 +1,14 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import KiroCredentialFields from '../KiroCredentialFields.vue'
+
+vi.mock('vue-i18n', async () => {
+  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  return {
+    ...actual,
+    useI18n: () => ({ t: (key: string) => key }),
+  }
+})
 
 describe('KiroCredentialFields', () => {
   it('social 只显示 refreshToken，不显示客户端凭据与 API Key', () => {
@@ -82,6 +90,6 @@ describe('KiroCredentialFields', () => {
       }
     })
     const hints = wrapper.findAll('.input-hint').map(el => el.text())
-    expect(hints.some(text => text.includes('留空则不修改，账号已配置该字段'))).toBe(true)
+    expect(hints.some(text => text.includes('admin.accounts.oauth.kiro.leaveEmptyHint'))).toBe(true)
   })
 })

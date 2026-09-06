@@ -6,16 +6,16 @@
       </div>
       <div class="min-w-0 flex-1">
         <h4 class="mb-2 font-semibold text-blue-900 dark:text-blue-200">
-          {{ mode === 'idc' ? 'IAM Identity Center 授权码授权' : 'AWS Builder ID 设备码授权' }}
+          {{ mode === 'idc' ? t('admin.accounts.oauth.kiro.headingIdc') : t('admin.accounts.oauth.kiro.headingBuilderId') }}
         </h4>
 
         <!-- idle：尚未发起授权 -->
         <template v-if="phase === 'idle'">
           <p class="mb-3 text-xs text-blue-800 dark:text-blue-300">
             <template v-if="mode === 'idc'">
-              点击后会在新标签页打开 AWS SSO 登录页，请用组织账号登录并完成授权。
+              {{ t('admin.accounts.oauth.kiro.idleDescIdc') }}
             </template>
-            <template v-else> 点击后生成一次性设备码，需要在弹出的页面用 AWS Builder ID 账号登录并批准。 </template>
+            <template v-else>{{ t('admin.accounts.oauth.kiro.idleDescBuilderId') }}</template>
           </p>
           <button
             type="button"
@@ -24,26 +24,25 @@
             :disabled="loading || (mode === 'idc' && !issuerUrlTrimmed)"
             @click="handleStart"
           >
-            {{ loading ? '正在获取…' : mode === 'idc' ? '生成授权链接' : '获取设备码' }}
+            {{ loading ? t('admin.accounts.oauth.kiro.startButtonLoading') : mode === 'idc' ? t('admin.accounts.oauth.kiro.startButtonIdc') : t('admin.accounts.oauth.kiro.startButtonBuilderId') }}
           </button>
           <p v-if="mode === 'idc' && !issuerUrlTrimmed" class="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-            请先在下方填写 SSO 门户地址
+            {{ t('admin.accounts.oauth.kiro.issuerUrlRequiredHint') }}
           </p>
         </template>
 
         <!-- started: idc -->
         <template v-else-if="phase === 'started' && mode === 'idc'">
           <p class="mb-2 text-xs text-blue-800 dark:text-blue-300">
-            已在新标签页打开授权链接。若被浏览器拦截，
-            <button type="button" class="underline" @click="reopenIdcWindow">点此重新打开</button>。
+            {{ t('admin.accounts.oauth.kiro.startedIdcOpenedHint') }}
+            <button type="button" class="underline" @click="reopenIdcWindow">{{ t('admin.accounts.oauth.kiro.startedIdcReopenLink') }}</button>
           </p>
           <p class="mb-2 text-xs text-blue-800 dark:text-blue-300">
-            登录并同意授权后，浏览器会跳转到一个<strong>打不开</strong>的地址（显示"无法连接"，这是正常的——
-            该地址本来就没有服务监听）。请把<strong>地址栏里的完整 URL</strong>复制下来，粘贴到下方后点击提交。
+            {{ t('admin.accounts.oauth.kiro.startedIdcInstructions') }}
           </p>
           <p class="mb-2 text-[11px]" :class="isExpired ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'">
-            <template v-if="!isExpired">授权链接 {{ remainingSeconds }} 秒后失效</template>
-            <template v-else>授权会话已过期，请重新生成授权链接</template>
+            <template v-if="!isExpired">{{ t('admin.accounts.oauth.kiro.expiresInSeconds', { seconds: remainingSeconds }) }}</template>
+            <template v-else>{{ t('admin.accounts.oauth.kiro.sessionExpired') }}</template>
           </p>
           <textarea
             v-model="callbackUrlInput"
@@ -61,9 +60,9 @@
               :disabled="loading || isExpired || !callbackUrlInput.trim()"
               @click="confirmIdcDone"
             >
-              {{ loading ? '提交中…' : '提交回调地址' }}
+              {{ loading ? t('admin.accounts.oauth.kiro.submitButtonLoading') : t('admin.accounts.oauth.kiro.submitCallbackUrl') }}
             </button>
-            <button type="button" class="btn btn-secondary btn-sm" @click="resetIdc">重新开始</button>
+            <button type="button" class="btn btn-secondary btn-sm" @click="resetIdc">{{ t('admin.accounts.oauth.kiro.restartButton') }}</button>
           </div>
         </template>
 
@@ -77,27 +76,27 @@
               {{ userCode }}
             </span>
             <button type="button" class="text-xs text-blue-600 hover:underline dark:text-blue-400" @click="copyUserCode">
-              {{ copied ? '已复制' : '复制' }}
+              {{ copied ? t('admin.accounts.oauth.kiro.userCodeCopied') : t('admin.accounts.oauth.kiro.userCodeCopy') }}
             </button>
           </div>
           <p class="mb-2 text-xs text-blue-800 dark:text-blue-300">
-            已在新标签页打开验证页面并预填此码。若未自动打开，
-            <a :href="verificationUriComplete" target="_blank" rel="noopener noreferrer" class="underline">点此打开</a>。
+            {{ t('admin.accounts.oauth.kiro.builderIdOpenedHint') }}
+            <a :href="verificationUriComplete" target="_blank" rel="noopener noreferrer" class="underline">{{ t('admin.accounts.oauth.kiro.builderIdOpenLink') }}</a>.
           </p>
           <p class="mb-2 text-[11px]" :class="isExpired ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'">
-            <template v-if="!isExpired">设备码 {{ remainingSeconds }} 秒后失效，正在自动轮询授权结果…</template>
-            <template v-else>设备码已过期，请重新获取</template>
+            <template v-if="!isExpired">{{ t('admin.accounts.oauth.kiro.deviceCodeExpiresInSeconds', { seconds: remainingSeconds }) }}</template>
+            <template v-else>{{ t('admin.accounts.oauth.kiro.deviceCodeExpired') }}</template>
           </p>
-          <button type="button" class="btn btn-secondary btn-sm" @click="resetDevice">重新获取</button>
+          <button type="button" class="btn btn-secondary btn-sm" @click="resetDevice">{{ t('admin.accounts.oauth.kiro.reacquireButton') }}</button>
         </template>
 
         <!-- success -->
         <template v-else-if="phase === 'success'">
           <p data-test="kiro-wizard-success" class="text-xs font-medium text-green-700 dark:text-green-400">
-            已获取凭证，下方字段已自动填入。如需更换账号可重新授权。
+            {{ t('admin.accounts.oauth.kiro.successMessage') }}
           </p>
           <button type="button" class="btn btn-secondary btn-sm mt-2" @click="mode === 'idc' ? resetIdc() : resetDevice()">
-            重新授权
+            {{ t('admin.accounts.oauth.kiro.reauthorizeButton') }}
           </button>
         </template>
 
@@ -111,6 +110,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import Icon from '@/components/icons/Icon.vue'
@@ -124,6 +124,7 @@ interface Props {
   proxyId?: number | null
 }
 
+const { t } = useI18n()
 const props = defineProps<Props>()
 const emit = defineEmits<{
   /** 授权成功后把可回填的字段交给父组件合并进 KiroCredentialForm。 */
@@ -210,7 +211,7 @@ function handleStart() {
 async function startIdc() {
   const issuer = issuerUrlTrimmed.value
   if (!issuer) {
-    error.value = '请先填写 SSO 门户地址'
+    error.value = t('admin.accounts.oauth.kiro.errorMissingIssuerUrl')
     return
   }
   loading.value = true
@@ -228,7 +229,7 @@ async function startIdc() {
     startTicking()
     openWindow(res.authorize_url)
   } catch (err) {
-    error.value = extractApiErrorMessage(err, '生成授权链接失败')
+    error.value = extractApiErrorMessage(err, t('admin.accounts.oauth.kiro.errorGenerateAuthUrlFailed'))
   } finally {
     loading.value = false
   }
@@ -240,12 +241,12 @@ function reopenIdcWindow() {
 
 async function confirmIdcDone() {
   if (isExpired.value) {
-    error.value = '授权会话已过期，请重新生成授权链接'
+    error.value = t('admin.accounts.oauth.kiro.sessionExpired')
     return
   }
   const callbackUrl = callbackUrlInput.value.trim()
   if (!callbackUrl) {
-    error.value = '请粘贴授权后浏览器地址栏的完整 URL'
+    error.value = t('admin.accounts.oauth.kiro.errorMissingCallbackUrl')
     return
   }
   loading.value = true
@@ -259,10 +260,10 @@ async function confirmIdcDone() {
     if (res.status === 'ok' && res.credentials) {
       applyCredentials(res.credentials)
     } else {
-      error.value = '未能从粘贴的地址里解析出授权结果，请确认复制的是完整地址栏 URL'
+      error.value = t('admin.accounts.oauth.kiro.errorParseCallbackFailed')
     }
   } catch (err) {
-    error.value = extractApiErrorMessage(err, '完成授权失败')
+    error.value = extractApiErrorMessage(err, t('admin.accounts.oauth.kiro.errorCompleteAuthFailed'))
   } finally {
     loading.value = false
   }
@@ -297,7 +298,7 @@ async function startDeviceAuth() {
     openWindow(res.verification_uri_complete)
     schedulePoll(res.interval * 1000)
   } catch (err) {
-    error.value = extractApiErrorMessage(err, '获取设备码失败')
+    error.value = extractApiErrorMessage(err, t('admin.accounts.oauth.kiro.errorGetDeviceCodeFailed'))
   } finally {
     loading.value = false
   }
@@ -315,7 +316,7 @@ function schedulePoll(delayMs: number) {
 async function runPoll() {
   if (phase.value !== 'started') return
   if (isExpired.value) {
-    error.value = '设备码已过期，请重新获取'
+    error.value = t('admin.accounts.oauth.kiro.deviceCodeExpired')
     stopTicking()
     return
   }
@@ -332,7 +333,7 @@ async function runPoll() {
     const nextIntervalSeconds = res.interval && res.interval > 0 ? res.interval : 5
     schedulePoll(nextIntervalSeconds * 1000)
   } catch (err) {
-    error.value = extractApiErrorMessage(err, '设备码授权失败')
+    error.value = extractApiErrorMessage(err, t('admin.accounts.oauth.kiro.errorDeviceAuthFailed'))
     stopTicking()
   }
 }
