@@ -99,3 +99,32 @@ func TestKiroTokenCacheKey(t *testing.T) {
 	require.Equal(t, "kiro:account:42", KiroTokenCacheKey(kiroAccount(nil)))
 	require.Equal(t, "kiro:account:0", KiroTokenCacheKey(nil))
 }
+
+// TestNormalizeKiroAccountTypeMatchesAntigravityConvention 是"把 Kiro 鉴权
+// 方式改成跟 Antigravity 一样的 OAuth 和 API key"这个需求的核心断言：
+// social/builder_id/idc 都是真 OAuth，只有 api_key 不是——不能像此前
+// CreateAccountModal.vue 那样不管选哪种都恒填 'apikey'。
+func TestNormalizeKiroAccountTypeMatchesAntigravityConvention(t *testing.T) {
+	tests := []struct {
+		name       string
+		authMethod string
+		want       string
+	}{
+		{"social is oauth", "social", AccountTypeOAuth},
+		{"builder_id is oauth", "builder_id", AccountTypeOAuth},
+		{"idc is oauth", "idc", AccountTypeOAuth},
+		{"api_key is apikey", "api_key", AccountTypeAPIKey},
+		{"missing auth_method defaults to social, so oauth", "", AccountTypeOAuth},
+		{"unrecognized auth_method falls back to social, so oauth", "whatever", AccountTypeOAuth},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			creds := map[string]any{}
+			if tt.authMethod != "" {
+				creds["auth_method"] = tt.authMethod
+			}
+			require.Equal(t, tt.want, normalizeKiroAccountType(PlatformKiro, creds))
+		})
+	}
+}

@@ -624,4 +624,34 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(call.platform).toBe('kiro')
     expect(call.credentials.model_mapping).toEqual({ 'public-glm': 'public-glm' })
   })
+
+  // Kiro 的鉴权方式改成跟 Antigravity 一样准确区分 OAuth/APIKey：social/
+  // builder_id/idc 都是真 OAuth，只有 api_key 不是——不能像此前那样
+  // 不管选哪种都恒提交 'apikey'（见 kiro_credentials.go 的
+  // normalizeKiroAccountType，后端也会兜底改写一遍，但前端提交的值本身
+  // 就应该是对的）。
+  it('submits type=oauth for the default (social) Kiro auth method', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('kiro social account')
+    await wrapper.get('[data-test="kiro-refresh-token"]').setValue('rt-1')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.type).toBe('oauth')
+  })
+
+  it('submits type=apikey for the Kiro api_key auth method', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('kiro api key account')
+    await wrapper.get('[data-testid="kiro-auth-method-api_key"]').trigger('click')
+    await wrapper.get('[data-test="kiro-api-key"]').setValue('kiro-ak-1')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.type).toBe('apikey')
+  })
 })

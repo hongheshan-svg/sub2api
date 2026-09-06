@@ -4502,8 +4502,10 @@ const kiroForm = ref<KiroCredentialForm>(createDefaultKiroForm())
 // （backend/internal/service/upstream_billing_probe.go 的 IsUpstreamBillingProbeIdentity），
 // 必须强制关闭该开关，否则后端会以 ErrUpstreamBillingProbeAccountInvalid 拒绝创建
 // （该开关在 Create 里默认是 true，是专为已支持平台设的默认值）。
-// form.type 恒填 'apikey'，不反映 kiroForm.authMethod 的真实值——已知、
-// 刻意的口径不一致，理由见提交处 createAccountAndFinish 之前的注释。
+// 这里的 form.type/accountCategory 只是切到 Kiro 时的初始占位值（Kiro 自己
+// 的子表单渲染只认 kiroForm.authMethod，不读这两个字段）——真正提交时会
+// 按 kiroForm.authMethod 重新算一遍准确的 Type，见 createAccountAndFinish
+// 调用前的 kiroAccountType。
 function selectKiroPlatform() {
   form.platform = 'kiro'
   form.type = 'apikey'
@@ -5800,14 +5802,13 @@ const handleSubmit = async () => {
     if (kiroModelMapping) {
       credentials.model_mapping = kiroModelMapping
     }
-    // Account.Type 恒填 'apikey'，不管 kiroForm.authMethod 实际是
-    // idc/builder_id/social/api_key 中的哪一种——这是已知、刻意的口径
-    // 不一致，不是遗漏。后端 Kiro 侧逻辑（token 刷新、账号分派、测试连接）
-    // 全部按 Platform + credentials.auth_method 判断，从不读 Type，改动
-    // Type 反而会牵扯到 IsOAuth() 门控的一大片通用计费/调度/UI 逻辑，
-    // 得不偿失（详见 backend account_credentials_redact.go 与
-    // kiro_credentials.go 的 KiroAuthMethod/IsKiroAPIKeyAccount）。
-    await createAccountAndFinish('kiro', 'apikey' as AccountType, credentials)
+    // Account.Type 跟 Antigravity 一样准确区分 OAuth/APIKey：social/
+    // builder_id/idc 都是真 OAuth，只有 api_key 才是 apikey。后端
+    // CreateAccount 落库前也会按 credentials.auth_method 权威改写一遍
+    // （见 admin_account.go 的 normalizeKiroAccountType），这里只是让前端
+    // 提交的值本身就是对的，不依赖后端兜底。
+    const kiroAccountType: AccountType = kiroForm.value.authMethod === 'api_key' ? 'apikey' : 'oauth'
+    await createAccountAndFinish('kiro', kiroAccountType, credentials)
     return
   }
 
