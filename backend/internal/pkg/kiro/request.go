@@ -380,7 +380,9 @@ func injectThinking(content string, maxTokens int) string {
 	const instruction = `Think step by step. Make sure you fully understand what is being asked, ` +
 		`consider multiple approaches, think about edge cases, challenge your assumptions, ` +
 		`and verify your reasoning before concluding. ` +
-		`Wrap your reasoning in <thinking>...</thinking> tags before your final response.`
+		`Your response MUST begin with the literal text "<thinking>" as the very first characters ` +
+		`— do not write any words, greetings, or acknowledgements before it. ` +
+		`Write your reasoning inside <thinking>...</thinking> tags, close the tag, then give your final answer.`
 
 	return fmt.Sprintf(
 		"<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>%d</max_thinking_length>\n<thinking_instruction>%s</thinking_instruction>\n\n%s",

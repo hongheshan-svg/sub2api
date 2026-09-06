@@ -534,3 +534,82 @@ func quoteJSON(s string) string {
 	}
 	return string(b)
 }
+
+// TestStreamFakeThinkingCloseTagSplitAcrossFrames 覆盖真实账号测试发现的
+// 真实 bug：闭标签 </thinking> 被上游切成两个 chunk 分别到达时，旧实现
+// 只在单个 chunk 内用 strings.Index 找闭标签，两个 chunk 各自都找不到，
+// 导致闭标签本身连同它之后的真实回答整段被错误吞进思考块——同一道题分别
+// 测 Claude 与某个非 Claude 模型时，只有前者的闭标签恰好没被切断，后者
+// 被切断后触发了这个 bug。跟 TestStreamFakeThinkingOpenTagSplitAcrossFrames
+// 对称，那个测的是开标签被切断，这个测闭标签被切断。
+func TestStreamFakeThinkingCloseTagSplitAcrossFrames(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	var all []apicompat.AnthropicStreamEvent
+	for _, chunk := range []string{"<thinking>let me reason", "</thin", "king>", "final answer"} {
+		got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":`+quoteJSON(chunk)+`}`))
+		require.NoError(t, err)
+		all = append(all, got...)
+	}
+	all = append(all, tr.Finalize()...)
+
+	var thinking, text string
+	var sawThinkingBlock, sawTextBlock bool
+	for _, e := range all {
+		if e.Type == "content_block_start" && e.ContentBlock != nil {
+			switch e.ContentBlock.Type {
+			case "thinking":
+				sawThinkingBlock = true
+			case "text":
+				sawTextBlock = true
+			}
+		}
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			thinking += e.Delta.Thinking
+			text += e.Delta.Text
+		}
+	}
+
+	require.True(t, sawThinkingBlock)
+	require.True(t, sawTextBlock)
+	require.Equal(t, "let me reason", thinking, "闭标签被切断不应该把标签片段或之后的正文一起吞进思考块")
+	require.Equal(t, "final answer", text, "闭标签之后的真实回答必须完整落进正文块，不能丢失或混进思考块")
+	require.NotContains(t, thinking, "<", "不应该把闭标签的任何片段残留在思考内容里")
+}
+
+// TestStreamFakeThinkingCloseTagPrefixFlushedOnFinalize 覆盖流在思考块内部
+// 被截断（比如撞到 max_tokens）、且截断点恰好卡在疑似闭标签前缀上的情况：
+// 缓冲区里那段"看起来像 </thinking> 前缀但一直没等到后续字节确认"的内容
+// 必须在 Finalize 时当作思考内容冲刷出去，不能悄悄丢弃——跟 gateBuf 在
+// Finalize 时冲刷成正文是同一个"不丢内容"的约定，只是这里冲刷的目标是
+// 思考块而不是正文块。
+func TestStreamFakeThinkingCloseTagPrefixFlushedOnFinalize(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", true)
+
+	got, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"<thinking>partial reasoning</th"}`))
+	require.NoError(t, err)
+	var thinkingBeforeFinalize string
+	for _, e := range got {
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			thinkingBeforeFinalize += e.Delta.Thinking
+		}
+	}
+	require.Equal(t, "partial reasoning", thinkingBeforeFinalize,
+		"疑似闭标签前缀 </th 在确认完整闭标签之前不应该被当作思考内容提前发出")
+
+	final := tr.Finalize()
+
+	var thinkingAfterFinalize, textAfterFinalize string
+	for _, e := range final {
+		if e.Type == "content_block_delta" && e.Delta != nil {
+			thinkingAfterFinalize += e.Delta.Thinking
+			textAfterFinalize += e.Delta.Text
+		}
+	}
+	require.Equal(t, "</th", thinkingAfterFinalize, "流截断时挂起的疑似闭标签前缀必须当思考内容冲刷，不能丢弃")
+	require.Empty(t, textAfterFinalize, "这段内容属于思考块，不应该被冲刷成正文")
+}

@@ -67,6 +67,13 @@ type StreamTranslator struct {
 
 	phase   thinkingPhase
 	gateBuf string
+	// closeBuf 是 phaseInThinking 阶段末尾可能是 </thinking> 前缀的一段
+	// 尾巴——上游按任意字节边界切块，闭标签完全可能被切成两半分别落在
+	// 相邻两个 chunk 里（真实账号测试发现的真实场景，不是假设性边界情况：
+	// 同一道题对 Claude 和某个非 Claude 模型分别测，前者闭标签落在一个
+	// chunk 内、后者被切开——只有前者被正确识别）。跟 gateBuf 处理开标签
+	// 被截断是同一个思路，这里对称地处理闭标签。
+	closeBuf string
 
 	curToolID string
 	toolCount int
@@ -246,15 +253,36 @@ func (t *StreamTranslator) routeContent(s string) []apicompat.AnthropicStreamEve
 			}
 
 		case phaseInThinking:
-			idx := strings.Index(s, thinkingCloseTag)
-			if idx < 0 {
-				out = append(out, t.emitThinking(s)...)
-				s = ""
+			combined := t.closeBuf + s
+			t.closeBuf = ""
+			s = ""
+
+			idx := strings.Index(combined, thinkingCloseTag)
+			if idx >= 0 {
+				out = append(out, t.emitThinking(combined[:idx])...)
+				s = combined[idx+len(thinkingCloseTag):]
+				t.phase = phaseText
 				break
 			}
-			out = append(out, t.emitThinking(s[:idx])...)
-			s = s[idx+len(thinkingCloseTag):]
-			t.phase = phaseText
+
+			// 没找到完整闭标签：结尾可能恰好是闭标签的前缀（比如这个 chunk
+			// 以 "</thin" 结尾，下一个 chunk 才补上 "king>"）——扣下这条
+			// 可能的前缀，留到下次 Feed 时跟新字节拼起来再判断，不能现在
+			// 就当正文/思考内容发出去，否则闭标签一旦真被切断，标签本身
+			// 和标签之后的真实回答会整段被错误吞进思考块（真实账号复现过
+			// 的 bug，不是理论风险）。
+			safeLen := len(combined)
+			for i := len(thinkingCloseTag) - 1; i >= 1; i-- {
+				if i > len(combined) {
+					continue
+				}
+				if strings.HasSuffix(combined, thinkingCloseTag[:i]) {
+					safeLen = len(combined) - i
+					break
+				}
+			}
+			t.closeBuf = combined[safeLen:]
+			out = append(out, t.emitThinking(combined[:safeLen])...)
 
 		case phaseText:
 			out = append(out, t.emitText(s)...)
@@ -384,6 +412,16 @@ func (t *StreamTranslator) Finalize() []apicompat.AnthropicStreamEvent {
 		buffered := t.gateBuf
 		t.gateBuf = ""
 		out = append(out, t.emitText(buffered)...)
+	}
+
+	// closeBuf 里可能还压着一段一直没等到后续字节确认的疑似闭标签前缀
+	// （流在思考块内部被截断，比如撞到 max_tokens）——这段内容确实是
+	// 思考块的一部分（还没等到 </thinking> 就没了），必须当思考内容
+	// 吐出去，不能悄悄丢弃。
+	if t.closeBuf != "" {
+		buffered := t.closeBuf
+		t.closeBuf = ""
+		out = append(out, t.emitThinking(buffered)...)
 	}
 
 	out = append(out, t.closeBlock()...)

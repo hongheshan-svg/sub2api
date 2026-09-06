@@ -174,6 +174,13 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 	// ConversationID 的两条要求，见 conversationIDFor 的文档）。
 	conversationID := s.conversationIDFor(c, account)
 
+	// 假思考的开关与预算不再是账号级写死的固定值（旧行为：账号开了就总是
+	// 注入固定 4000 token 预算，完全无视这次请求实际要求的推理强度）——见
+	// kiroFakeThinkingPlan 的文档：账号开关仍是总闸，但预算现在按这次请求
+	// 携带的 thinking.budget_tokens / output_config.effort 换算，没有携带
+	// 任何诉求时才退回旧的默认值，行为不变。
+	fakeThinking, fakeThinkingMaxTokens := kiroFakeThinkingPlan(account, &inbound)
+
 	payload, err := kiro.BuildRequest(&inbound, kiro.Options{
 		ModelID:        upstreamModel,
 		ConversationID: conversationID,
@@ -184,8 +191,8 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 		// 所有端点共享同一个 Origin（按账号类型区分，不按具体端点区分），
 		// 所以在进入下面的重试循环之前，用 endpoints[0].Origin 就足够。
 		Origin:                endpoints[0].Origin,
-		FakeThinking:          account.KiroFakeThinking(),
-		FakeThinkingMaxTokens: 4000,
+		FakeThinking:          fakeThinking,
+		FakeThinkingMaxTokens: fakeThinkingMaxTokens,
 		ToolDescMaxLen:        10000,
 	})
 	if err != nil {
