@@ -3315,7 +3315,7 @@ function createDefaultKiroForm(): KiroCredentialForm {
     region: '',
     profileArn: '',
     apiKey: '',
-    fakeThinking: false
+    fakeThinking: true
   }
 }
 const kiroForm = ref<KiroCredentialForm>(createDefaultKiroForm())
@@ -4194,7 +4194,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       region: str('region'),
       profileArn: str('profile_arn'),
       apiKey: '',
-      fakeThinking: kiroCreds.fake_thinking === true
+      // 后端 KiroFakeThinking() 默认开启，只有显式 false 才关闭——这里必须
+      // 用 !== false 而不是 === true，否则老账号从没存过这个字段时，编辑框
+      // 会显示"关闭"，跟账号实际生效的行为（开启）对不上。
+      fakeThinking: kiroCreds.fake_thinking !== false
     }
     // Kiro 不在后端 IsUpstreamBillingProbeIdentity 白名单里（见
     // backend/internal/service/upstream_billing_probe.go）——显式设为 true 的探测/

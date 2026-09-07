@@ -21,11 +21,13 @@ var kiroReasoningEffortBudgets = reasoningEffortBudgetTokens
 
 // kiroFakeThinkingPlan 决定这次请求要不要注入假思考、注入多大的预算。
 //
-// 账号级 KiroFakeThinking() 仍然是总闸——管理员没开就完全不结算"假装
-// 思考"的质量/延迟代价（假思考产出的是模型自写文本而非真实 reasoning，
-// 见 KiroCredentialFields.vue 的说明），不管这次请求本身诉求是什么。
+// 账号级 KiroFakeThinking() 仍然是总闸，默认开启——客户端携带的推理强度
+// 诉求必须能在 Kiro 端真实生效，不能被这道闸默默挡住。管理员为不接受
+// "假装思考"的质量/延迟代价的账号（假思考产出的是模型自写文本而非真实
+// reasoning，见 KiroCredentialFields.vue 的说明）显式设置 fake_thinking:false
+// 才会关闭，不管这次请求本身诉求是什么。
 //
-// 账号开着的前提下，具体这次给多大预算由请求自己表达（此前 forwardUpstream
+// 账号没被显式关闭的前提下，具体这次给多大预算由请求自己表达（此前 forwardUpstream
 // 一直传固定的 4000，完全无视客户端诉求——真实网关请求携带的
 // thinking/output_config 从未被 kiro.BuildRequest 读取过，是这次修的缺口）：
 //  1. 客户端显式要求不要思考（Anthropic 原生 thinking.type == "disabled"）

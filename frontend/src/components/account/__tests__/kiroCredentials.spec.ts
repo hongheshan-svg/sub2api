@@ -73,9 +73,13 @@ describe('buildKiroCredentials', () => {
     }
   })
 
-  it('fake_thinking 默认不提交，开启时提交 true', () => {
-    expect(buildKiroCredentials({ ...base, refreshToken: 'rt' })).not.toHaveProperty('fake_thinking')
-    expect(buildKiroCredentials({ ...base, refreshToken: 'rt', fakeThinking: true }).fake_thinking).toBe(true)
+  it('fake_thinking 总是显式提交布尔值——后端默认开启，取消勾选必须能真正关闭', () => {
+    expect(buildKiroCredentials({ ...base, refreshToken: 'rt', fakeThinking: false }).fake_thinking).toBe(
+      false
+    )
+    expect(buildKiroCredentials({ ...base, refreshToken: 'rt', fakeThinking: true }).fake_thinking).toBe(
+      true
+    )
   })
 
   it('去除字段首尾空白', () => {

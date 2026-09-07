@@ -209,7 +209,20 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 	// message_delta.usage.input_tokens 会保持默认的 0——Kiro 不提供
 	// input token，这一项完全依赖调用方主动写入（StreamTranslator.
 	// SetInputTokens 的文档原话）。
-	translator.SetInputTokens(kiro.EstimateRequestInput(&inbound))
+	estimatedInputTokens := kiro.EstimateRequestInput(&inbound)
+	translator.SetInputTokens(estimatedInputTokens)
+
+	// 本地模拟 prompt cache（kiro.PromptCacheTracker 文档有完整背景）：Compute
+	// 必须同样在 Finalize 之前算好并喂给 translator——SetPromptCacheFallback
+	// 只在上游 meteringEvent 全程未给出任何非零缓存值时才会被 Usage() 采用，
+	// 真实值永远优先。cacheProfile 为 nil 时（请求里没有任何 cache_control
+	// 断点）Compute/Update 都安全地什么也不做。Update 推迟到下面确认 Kiro
+	// 返回 2xx 之后才调用——没有真的被上游接受的请求不该往指纹表里写。
+	cacheProfile := kiro.BuildPromptCacheProfile(&inbound, estimatedInputTokens)
+	if cacheProfile != nil {
+		sim := s.promptCache.Compute(account.ID, cacheProfile)
+		translator.SetPromptCacheFallback(sim.CacheCreationInputTokens, sim.CacheReadInputTokens, sim.CacheCreation5mInputTokens, sim.CacheCreation1hInputTokens)
+	}
 
 	// hadMachineID 用于只在"这次请求真的新生成了指纹"时落库一次，
 	// 避免同一次转发在端点间重试时反复写 DB。
@@ -293,6 +306,14 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 			default:
 				return nil, s.finishWithAction(ctx, account, action, sig, status, errBody)
 			}
+		}
+
+		// Kiro 已经接受了这次请求（2xx）：把这次请求的缓存断点记下来，供后面
+		// 同一账号的请求匹配——即便后面流式解析中途出异常，这次请求确实已经
+		// 被上游处理过，记录它不算撒谎；真正没发出去/被拒绝的请求（上面的
+		// callErr/非 2xx 分支）永远不会走到这里，不会污染指纹表。
+		if cacheProfile != nil {
+			s.promptCache.Update(account.ID, cacheProfile)
 		}
 
 		// 成功：把响应写给客户端。resp.Body 由 streamToClient/nonStreamToClient
@@ -400,6 +421,7 @@ func (s *KiroGatewayService) streamToClient(
 	}
 
 	usage := translator.Usage()
+	cache5m, cache1h := translator.PromptCacheCreationSplit()
 	return &ForwardResult{
 		Model:            inbound.Model,
 		UpstreamModel:    upstreamModel,
@@ -409,12 +431,16 @@ func (s *KiroGatewayService) streamToClient(
 		ClientDisconnect: cw.Disconnected() || streamDisconnect,
 		Usage: ClaudeUsage{
 			// input token 上游不提供，本地估算（设计文档 D4），已通过
-			// ForwardUpstream 里的 translator.SetInputTokens 写入。
+			// ForwardUpstream 里的 translator.SetInputTokens 写入，且已经按
+			// Usage() 的口径扣掉了 cache_read/cache_creation。
 			InputTokens: usage.InputTokens,
-			// output token 同样是估算；cache token 是 meteringEvent 的真实值。
+			// output token 同样是估算；cache token 优先用 meteringEvent 的
+			// 真实值，全程为 0 时改用本地模拟值兜底（见 Usage() 文档）。
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreation5mTokens:    cache5m,
+			CacheCreation1hTokens:    cache1h,
 		},
 	}, nil
 }

@@ -61,9 +61,11 @@ func TestKiroClientCredentials(t *testing.T) {
 	require.Empty(t, secret)
 }
 
-func TestKiroFakeThinkingDefaultsOff(t *testing.T) {
-	require.False(t, kiroAccount(nil).KiroFakeThinking(), "假思考默认关闭")
+func TestKiroFakeThinkingDefaultsOn(t *testing.T) {
+	require.True(t, kiroAccount(nil).KiroFakeThinking(), "假思考默认开启——客户端的推理强度诉求默认要在 Kiro 端生效")
+	require.True(t, kiroAccount(map[string]any{}).KiroFakeThinking())
 	require.True(t, kiroAccount(map[string]any{"fake_thinking": true}).KiroFakeThinking())
+	require.False(t, kiroAccount(map[string]any{"fake_thinking": false}).KiroFakeThinking(), "显式设为 false 必须能关闭")
 	// JSONB 往返后布尔可能变成字符串。
 	require.True(t, kiroAccount(map[string]any{"fake_thinking": "true"}).KiroFakeThinking())
 	require.False(t, kiroAccount(map[string]any{"fake_thinking": "false"}).KiroFakeThinking())

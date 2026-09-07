@@ -65,6 +65,14 @@ type KiroGatewayService struct {
 	// 真实的端点数量/顺序，让 hasMoreEndpoints 相关的决策分支照常被真实
 	// 触达。见 forwardCallEndpoint。
 	callEndpointOverride func(ctx context.Context, account *Account, ep kiro.Endpoint, payload []byte) (*http.Response, error)
+
+	// promptCache 是账号级、进程内的本地 prompt cache 模拟（kiro.PromptCacheTracker
+	// 的文档有完整的问题背景与设计取舍）。零值（nil）时 forwardUpstream 的
+	// Compute/Update 调用全部安全降级为 no-op——这就是为什么本文件其余全部
+	// 既有测试（都用 &KiroGatewayService{...} 结构体字面量构造，不走
+	// NewKiroGatewayService）在没有显式设置这个字段时行为完全不变：真实
+	// meteringEvent 优先级不变，没有 meteringEvent 时也不会凭空冒出模拟值。
+	promptCache *kiro.PromptCacheTracker
 }
 
 // creditsQuotaFetcher 返回 creditsExhaustedCooldownUntil 使用的额度获取器：
@@ -107,6 +115,7 @@ func NewKiroGatewayService(
 		kiroOAuthService:  kiroOAuthService,
 		schedulerSnapshot: schedulerSnapshot,
 		proxyRepo:         proxyRepo,
+		promptCache:       kiro.NewPromptCacheTracker(),
 	}
 }
 

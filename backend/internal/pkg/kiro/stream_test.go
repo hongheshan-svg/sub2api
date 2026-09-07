@@ -179,6 +179,58 @@ func TestStreamWithoutSetInputTokensDefaultsToZero(t *testing.T) {
 	require.Zero(t, tr.Usage().InputTokens)
 }
 
+// TestStreamPromptCacheFallbackUsedWhenMeteringAbsent 覆盖 Usage() 的兜底
+// 分支：上游全程没有给出任何非零 cache_read/cache_creation 时（真实调查证实
+// 的常态），SetPromptCacheFallback 提供的本地模拟值必须被采用，且
+// InputTokens 要相应扣减。
+func TestStreamPromptCacheFallbackUsedWhenMeteringAbsent(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"hello"}`))
+	require.NoError(t, err)
+
+	tr.SetInputTokens(1000)
+	tr.SetPromptCacheFallback(200, 300, 100, 200)
+
+	usage := tr.Usage()
+	require.Equal(t, 200, usage.CacheCreationInputTokens)
+	require.Equal(t, 300, usage.CacheReadInputTokens)
+	require.Equal(t, 500, usage.InputTokens, "input_tokens 必须扣掉 cache_read+cache_creation")
+
+	fiveMin, oneHour := tr.PromptCacheCreationSplit()
+	require.Equal(t, 100, fiveMin)
+	require.Equal(t, 200, oneHour)
+}
+
+// TestStreamPromptCacheFallbackIgnoredWhenMeteringPresent 覆盖分层优先级：
+// 上游 meteringEvent 一旦给出任何非零值，必须原样使用，本地模拟值即便被设置
+// 也不能覆盖——不能破坏 TestStreamMeteringFillsUsageAndCredits 已经锁定的行为。
+func TestStreamPromptCacheFallbackIgnoredWhenMeteringPresent(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "assistantResponseEvent", `{"content":"hello"}`))
+	require.NoError(t, err)
+
+	tr.SetInputTokens(1000)
+	_, err = tr.Feed(eventFrame(t, "meteringEvent",
+		`{"unit":"credit","usage":2.5,"cacheReadInputTokens":100,"cacheCreationInputTokens":20}`))
+	require.NoError(t, err)
+	// 即便之后（或之前）设置了本地兜底值，真实值也必须优先——调用顺序不该
+	// 影响这条优先级规则。
+	tr.SetPromptCacheFallback(999, 999, 999, 999)
+
+	usage := tr.Usage()
+	require.Equal(t, 20, usage.CacheCreationInputTokens, "上游真实值必须优先于本地模拟值")
+	require.Equal(t, 100, usage.CacheReadInputTokens)
+	require.Equal(t, 880, usage.InputTokens)
+
+	fiveMin, oneHour := tr.PromptCacheCreationSplit()
+	require.Zero(t, fiveMin, "采用真实值时不做 5m/1h 拆分")
+	require.Zero(t, oneHour)
+}
+
 func TestStreamFakeThinkingStripsBlock(t *testing.T) {
 	t.Parallel()
 

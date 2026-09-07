@@ -135,14 +135,22 @@ func (r *kiroRateLimitRecorder) called() bool {
 
 var _ AccountRepository = (*kiroRateLimitRecorder)(nil)
 
+// kiroTestOAuthAccount 构造一个通用测试账号，显式关闭假思考——本文件及
+// 其余全部通过它构造账号的测试文件关心的都是转发/重试/计费等与假思考无关
+// 的逻辑，假思考现在默认开启（KiroFakeThinking 的文档），继续显式关闭能让
+// 这些既有测试的既有断言（假流式响应不含 <thinking>、上游 payload 断言等）
+// 保持不变；需要测假思考本身行为的测试（如
+// TestKiroForwardUpstreamThreadsRequestedEffortIntoFakeThinkingBudget）已经
+// 在构造之后显式覆盖这个字段。
 func kiroTestOAuthAccount(id int64) *Account {
 	return &Account{
 		ID:       id,
 		Platform: PlatformKiro,
 		Credentials: map[string]any{
-			"auth_method":  "social",
-			"access_token": "at_1",
-			"machine_id":   "stable-machine",
+			"auth_method":   "social",
+			"access_token":  "at_1",
+			"machine_id":    "stable-machine",
+			"fake_thinking": false,
 		},
 	}
 }

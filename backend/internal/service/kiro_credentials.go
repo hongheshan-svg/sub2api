@@ -111,24 +111,31 @@ func (a *Account) KiroBearerToken() string {
 	return a.KiroAccessToken()
 }
 
-// KiroFakeThinking 返回是否为该账号启用假思考。默认关闭 ——
-// 开启会往每个请求注入数百 token 的指令，且产出的是模型自写文本而非真 reasoning。
+// KiroFakeThinking 返回是否为该账号启用假思考。默认开启 ——
+// 客户端携带的推理强度诉求（thinking.budget_tokens / output_config.effort）
+// 必须在 Kiro 端真实生效，不能因为没有显式配置就被这道总闸静默挡住、让
+// 客户端的请求诉求凭空消失。代价是会往每个请求注入数百 token 的指令，且
+// 产出的是模型自写文本而非真 reasoning（见 kiroFakeThinkingPlan 文档）——
+// 管理员需要为不接受这个代价的账号显式设置 fake_thinking:false 关闭。
 func (a *Account) KiroFakeThinking() bool {
 	if a == nil {
 		return false
 	}
 	raw, ok := a.Credentials["fake_thinking"]
 	if !ok {
-		return false
+		return true
 	}
 	switch v := raw.(type) {
 	case bool:
 		return v
 	case string:
 		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-		return err == nil && parsed
+		if err != nil {
+			return true
+		}
+		return parsed
 	default:
-		return false
+		return true
 	}
 }
 

@@ -4494,7 +4494,7 @@ function createDefaultKiroForm(): KiroCredentialForm {
     region: '',
     profileArn: '',
     apiKey: '',
-    fakeThinking: false
+    fakeThinking: true
   }
 }
 const kiroForm = ref<KiroCredentialForm>(createDefaultKiroForm())

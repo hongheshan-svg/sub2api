@@ -85,6 +85,17 @@ type StreamTranslator struct {
 	cacheWrite  int
 	inputTokens int
 	sawContent  bool
+
+	// fallbackCache* 是本地模拟出的 prompt cache 用量（见 prompt_cache.go 顶部
+	// 文档），只在上游 meteringEvent 全程从未给出任何非零 cache_read/
+	// cache_creation 时才会被 Usage() 采用——上游真实值永远优先，与
+	// TestKiroForwardUpstreamSuccessStreamingWithRealCacheReadTokens 已经锁定
+	// 的行为完全兼容。
+	fallbackCacheCreation int
+	fallbackCacheRead     int
+	fallbackCache5m       int
+	fallbackCache1h       int
+	hasFallbackCache      bool
 }
 
 // NewStreamTranslator 创建翻译器。messageID 由调用方生成，便于与请求日志关联。
@@ -116,6 +127,29 @@ func (t *StreamTranslator) Credits() float64 { return t.credits }
 // input token，这一项完全依赖调用方主动写入。
 func (t *StreamTranslator) SetInputTokens(n int) { t.inputTokens = n }
 
+// SetPromptCacheFallback 提供本地模拟的 prompt cache 用量（调用方通常用
+// PromptCacheTracker.Compute 算出），仅在上游 meteringEvent 全程一次都没有
+// 给出任何非零 cache_read/cache_creation 时才会被 Usage() 采用——见 Usage()
+// 的判定逻辑。必须在 Finalize 之前调用，通常紧跟在 SetInputTokens 之后
+// （调用方此时还没开始 Feed 上游字节，天然满足这个时序要求）。
+func (t *StreamTranslator) SetPromptCacheFallback(creation, read, creation5m, creation1h int) {
+	t.fallbackCacheCreation = creation
+	t.fallbackCacheRead = read
+	t.fallbackCache5m = creation5m
+	t.fallbackCache1h = creation1h
+	t.hasFallbackCache = true
+}
+
+// PromptCacheCreationSplit 返回 Usage() 里 cache_creation 的 5m/1h TTL 拆分——
+// 只有采用了本地模拟兜底时才非零；Kiro 协议本身不区分 TTL 档位，上游真实值
+// 走这里永远是 0/0（计费口径见 billing_service.go 对未拆分场景的默认处理）。
+func (t *StreamTranslator) PromptCacheCreationSplit() (fiveMin, oneHour int) {
+	if t.cacheRead == 0 && t.cacheWrite == 0 && t.hasFallbackCache {
+		return t.fallbackCache5m, t.fallbackCache1h
+	}
+	return 0, 0
+}
+
 // Usage 返回计费用量。cache token 是上游真实值；output token 是估算值 ——
 // Kiro 不提供 input/output token，这是既定计费口径。
 // output token 统计的是正文文本、假思考剥离出的 thinking 文本、以及工具调用的
@@ -125,13 +159,22 @@ func (t *StreamTranslator) SetInputTokens(n int) { t.inputTokens = n }
 // 给用户的隐藏消耗。
 // InputTokens 由调用方通过 SetInputTokens 填充（通常用 EstimateRequestInput
 // 算出），不在这里估算——StreamTranslator 只看到上游流式响应，看不到原始
-// 请求内容，没有能力自行估算 input token。
+// 请求内容，没有能力自行估算 input token。cache_read/cache_creation 优先用
+// 上游真实值；两者都是 0 时（真实调查证实的常态，见 prompt_cache.go 顶部
+// 文档）改用 SetPromptCacheFallback 提供的本地模拟值兜底。返回的
+// InputTokens 已经按 Anthropic 真实语义扣掉了 cache 部分——input_tokens 从不
+// 包含 cache_read/cache_creation。
 func (t *StreamTranslator) Usage() apicompat.AnthropicUsage {
+	cacheRead, cacheCreation := t.cacheRead, t.cacheWrite
+	if cacheRead == 0 && cacheCreation == 0 && t.hasFallbackCache {
+		cacheRead, cacheCreation = t.fallbackCacheRead, t.fallbackCacheCreation
+	}
+	inputTokens := max(t.inputTokens-cacheRead-cacheCreation, 0)
 	return apicompat.AnthropicUsage{
-		InputTokens:              t.inputTokens,
+		InputTokens:              inputTokens,
 		OutputTokens:             EstimateText(t.outputText.String()),
-		CacheReadInputTokens:     t.cacheRead,
-		CacheCreationInputTokens: t.cacheWrite,
+		CacheReadInputTokens:     cacheRead,
+		CacheCreationInputTokens: cacheCreation,
 	}
 }
 

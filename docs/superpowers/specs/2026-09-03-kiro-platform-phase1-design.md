@@ -240,7 +240,7 @@ API Key 为 `AccountTypeAPIKey`。判别字段是 `credentials["auth_method"]`
                    → NormalizeRoles → EnsureAlternating
 5. history 构造    除最后一条外 → [{userInputMessage}|{assistantResponseMessage}]
 6. currentMessage  最后一条；若为 assistant → 移入 history，content 顶替为 "Continue"
-7. 假思考注入      账号级开关，默认关闭
+7. 假思考注入      账号级开关，默认开启（2026-09-07 翻转，见 §10 假设 1）
 8. images / toolResults → userInputMessageContext
 9. 固定字段        origin:"AI_EDITOR"  chatTriggerType:"MANUAL"  conversationId  profileArn
 ```
@@ -273,8 +273,8 @@ API Key 为 `AccountTypeAPIKey`。判别字段是 `credentials["auth_method"]`
 | 丢失项 | 后果 | 对策 |
 |---|---|---|
 | `system` 拼进 user message | 上游看到的角色改变，指令遵从度可能下降 | 无解（四份实现一致），文档明示 |
-| `cache_control` 丢弃 | 无法控制缓存 | Kiro 自有缓存策略（`meteringEvent` 回传真实 cache token），计费用上游真实值 |
-| `thinking` 参数无对应 | Claude Code 开启 thinking 时上游不认 | 假思考（注入 XML 指令 + 出口剥离），账号级开关**默认关闭** |
+| `cache_control` 丢弃 | 无法控制缓存 | 假设已证伪（2026-09-07 真实账号调查）：`meteringEvent` 在实践中从未给出非零 cache token，Kiro 后端不可依赖任何真实缓存信号。改为账号级本地模拟——按客户端自带的 `cache_control` 断点做账号维度指纹匹配（`kiro.PromptCacheTracker`），只影响计费/展示数字，不会让上游真正处理得更快 |
+| `thinking` 参数无对应 | Claude Code 开启 thinking 时上游不认 | 假思考（注入 XML 指令 + 出口剥离），账号级开关**默认开启**（2026-09-07 翻转，见 §10 假设 1：客户端携带的推理强度诉求必须在 Kiro 端真实生效，不能被默认关闭的总闸静默挡住） |
 | 剥离出的 thinking block 无 `signature` | 多轮回传时严格客户端可能拒绝 | 只在流内产出，不写进 history 回传 |
 | `tool_choice` 丢弃 | 无法强制 / 禁止工具调用 | 无解，文档明示 |
 | `temperature` / `top_p` / `stop_sequences` / `max_tokens` 丢弃 | `userInputMessage` 无对应槽位 | 无解；`max_tokens` 影响预扣费，见 §7.4 |
@@ -389,8 +389,11 @@ token refresher），但更重：额外需要自定义线协议解码器。阶�
 
 ## 10. 开放假设（实现前需确认或可由 review 翻转）
 
-1. **假思考默认关闭** —— 账号级开关。默认开启会往每个请求塞数百 token 的
-   XML 指令，且产出的 thinking 是模型自写文本而非真 reasoning。
+1. ~~假思考默认关闭~~ —— **2026-09-07 翻转为默认开启**（用户明确要求：
+   客户端携带、转发给 Kiro 的推理强度诉求必须真实生效，不能被账号级总闸
+   默认挡住）。账号级开关仍在，管理员可显式设置 `fake_thinking:false`
+   为不接受"塞数百 token XML 指令、产出模型自写文本而非真 reasoning"这个
+   代价的账号关闭。
 2. **credits 不入 `usage_log`**（§7.4）—— 若需要逐请求对账，需加列 + 迁移。
 3. **预扣费对 `max_tokens` 的依赖**尚未核实（§7.4）。
 4. **阶段 1 硬编码端点顺序**，设置项留到阶段 2。

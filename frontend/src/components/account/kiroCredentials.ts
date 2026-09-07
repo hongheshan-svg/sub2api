@@ -103,8 +103,11 @@ export function buildKiroCredentials(form: KiroCredentialForm): Record<string, u
     }
   }
 
-  // 假思考默认关闭，只在显式开启时提交。
-  if (form.fakeThinking) creds.fake_thinking = true
+  // 假思考默认开启（后端 KiroFakeThinking() 未显式配置时按 true 处理）——
+  // 必须显式提交这个布尔值，不能只在 true 时才带上，否则勾选框被取消后
+  // 提交的 payload 里这个键直接消失，后端会按"未配置"退回默认开启，
+  // 关不掉。
+  creds.fake_thinking = form.fakeThinking
 
   return creds
 }

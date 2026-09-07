@@ -100,6 +100,7 @@ func (s *KiroGatewayService) nonStreamToClient(
 	// （下面）天然保持一致，不会出现客户端 JSON 里的 usage 和计费用量对
 	// 不上的情况。
 	usage := translator.Usage()
+	cache5m, cache1h := translator.PromptCacheCreationSplit()
 	anthropicResp.Usage = usage
 
 	var body []byte
@@ -128,6 +129,8 @@ func (s *KiroGatewayService) nonStreamToClient(
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreation5mTokens:    cache5m,
+			CacheCreation1hTokens:    cache1h,
 		},
 	}, nil
 }
