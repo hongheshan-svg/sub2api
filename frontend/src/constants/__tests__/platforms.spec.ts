@@ -10,6 +10,7 @@ const concretePlatforms = [
   'kimi',
   'zhipu',
   'deepseek',
+  'minimax',
   'kiro'
 ]
 

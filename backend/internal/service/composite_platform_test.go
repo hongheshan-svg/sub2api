@@ -176,6 +176,11 @@ func TestDetectModelPlatform(t *testing.T) {
 		{name: "moonshot prefix", model: "moonshot/moonshot-v1-32k", platform: PlatformKimi, ok: true},
 		{name: "zhipu", model: "glm-5.2", platform: PlatformZhipu, ok: true},
 		{name: "deepseek", model: "deepseek-v4-pro", platform: PlatformDeepseek, ok: true},
+		{name: "minimax", model: "MiniMax-M3", platform: PlatformMiniMax, ok: true},
+		{name: "minimax prefix", model: "minimax/MiniMax-M2.5", platform: PlatformMiniMax, ok: true},
+		{name: "abab legacy", model: "abab6.5-chat", platform: PlatformMiniMax, ok: true},
+		{name: "abab7 legacy", model: "abab7-chat-preview", platform: PlatformMiniMax, ok: true},
+		{name: "abab unrelated namespace", model: "abab-other", ok: false},
 		{name: "unknown k3 alias", model: "k3-preview", ok: false},
 		{name: "unknown", model: "llama-4-maverick", ok: false},
 	}
@@ -212,14 +217,15 @@ func TestCompositeGroupSchedulerHasAllCanonicalPlatformBuckets(t *testing.T) {
 	}
 	require.ElementsMatch(t,
 		// I6: schedulerSnapshotPlatforms（schedulerCanonicalBuckets 的数据源）
-		// 补上了 PlatformKiro，canonical bucket 集合因此也多了 kiro。
-		[]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformKiro},
+		// 补上了 PlatformKiro，upstream 补上了 PlatformMiniMax，canonical bucket
+		// 集合因此两者都多了。
+		[]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformKiro},
 		platforms,
 	)
 }
 
 func TestCompositeConcretePlatformsIncludeCNProviders(t *testing.T) {
-	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformDeepseek} {
+	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
 		require.True(t, isConcreteRequestPlatform(platform))
 		require.True(t, canCopyAccountsFromGroupPlatform(PlatformComposite, platform))
 	}
