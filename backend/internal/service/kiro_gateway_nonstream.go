@@ -104,11 +104,20 @@ func (s *KiroGatewayService) nonStreamToClient(
 	anthropicResp.Usage = usage
 
 	var body []byte
-	if outputProtocol == kiroOutputResponses {
+	switch outputProtocol {
+	case kiroOutputResponses:
 		// Codex 客户端期待 Responses 形态——复用与 Antigravity
 		// ForwardAsResponses 相同的纯转换函数，不新写协议逻辑。
 		body, err = json.Marshal(apicompat.AnthropicToResponsesResponse(anthropicResp))
-	} else {
+	case kiroOutputChatCompletions:
+		// 混合调度进 anthropic 分组、走 /v1/chat/completions 且
+		// stream:false 的客户端——链式复用同一套纯转换函数：
+		// Anthropic → Responses → Chat Completions，与
+		// gateway_forward_as_chat_completions.go 的非流式分支
+		// （handleCCBufferedFromAnthropic）思路一致。
+		responsesResp := apicompat.AnthropicToResponsesResponse(anthropicResp)
+		body, err = json.Marshal(apicompat.ResponsesToChatCompletions(responsesResp, inbound.Model))
+	default:
 		body, err = json.Marshal(anthropicResp)
 	}
 	if err != nil {

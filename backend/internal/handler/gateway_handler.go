@@ -2206,6 +2206,21 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	}
 	setOpsSelectedAccount(c, account.ID, account.Platform)
 
+	// 混合调度可能选中一个挂进 anthropic 分组的 kiro 账号——Kiro 上游没有
+	// 真正的 count_tokens 端点，不能像下面 ForwardCountTokens 那样当成
+	// 普通 Anthropic 账号转发（凭证/端点形状都不对），必须走和 KiroCountTokens
+	// 同一条本地估算路径。
+	if account.Platform == service.PlatformKiro {
+		estimated, estErr := service.EstimateKiroCountTokens(body)
+		if estErr != nil {
+			reqLog.Warn("gateway.kiro_count_tokens_local_estimate_failed", zap.Error(estErr))
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"input_tokens": estimated})
+		return
+	}
+
 	// 转发请求（不记录使用量）
 	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {
 		reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))

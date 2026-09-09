@@ -989,6 +989,8 @@ export default {
       mixedSchedulingHint: 'Enable to participate in Anthropic/Gemini group scheduling',
       mixedSchedulingTooltip:
         '!! WARNING !! Antigravity Claude and Anthropic Claude cannot be used in the same context. If you have both Anthropic and Antigravity accounts, enabling this option will cause frequent 400 errors. When enabled, please use the group feature to isolate Antigravity accounts from Anthropic accounts. Make sure you understand this before enabling!!',
+      kiroMixedSchedulingTooltip:
+        'When enabled, this Kiro account can participate in Anthropic group scheduling (Gemini groups are not supported). Kiro is backed by AWS CodeWhisperer, a different upstream than real Anthropic accounts — if the same session/context switches between a Kiro account and a real Anthropic account, response details may differ slightly. Use the group feature to isolate them if this matters, and leave this off if unsure.',
       aiCreditsBalance: 'AI Credits',
       allowOverages: 'Allow Overages (AI Credits)',
       allowOveragesTooltip:

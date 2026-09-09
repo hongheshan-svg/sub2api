@@ -1063,6 +1063,8 @@ export default {
       mixedSchedulingHint: '启用后可参与 Anthropic/Gemini 分组的调度',
       mixedSchedulingTooltip:
         '！！注意！！ Antigravity Claude 和 Anthropic Claude 无法在同个上下文中使用，如果你同时有 Anthropic 账号和 Antigravity 账号，开启此选项会导致经常 400 报错。开启后，请用分组功能做好 Antigravity 账号和 Anthropic 账号的隔离。一定要弄明白再开启！！',
+      kiroMixedSchedulingTooltip:
+        '启用后 Kiro 账号可参与 Anthropic 分组的调度（不支持 Gemini 分组）。Kiro 底层是 AWS CodeWhisperer，和真实 Anthropic 上游是不同后端，同一个会话/上下文如果在 Kiro 账号与真实 Anthropic 账号之间来回切换，可能出现响应细节不一致。建议按需用分组功能隔离，不确定影响时先不要开启。',
       aiCreditsBalance: 'AI Credits',
       allowOverages: '允许超量请求 (AI Credits)',
       allowOveragesTooltip:

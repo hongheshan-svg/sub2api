@@ -286,6 +286,10 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			setActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
 			result, err = h.antigravityGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
+		} else if account.Platform == service.PlatformKiro {
+			// 混合调度挂进 anthropic 分组的 kiro 账号——不能落进下面的
+			// default 分支当普通 Anthropic 账号转发（凭证/协议都不对）。
+			result, err = h.kiroGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody)
 		} else {
 			result, err = h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
 		}

@@ -41,3 +41,36 @@ describe('GroupSelector simple-mode binding policy', () => {
     expect(wrapper.emitted('update:modelValue')).toEqual([[[1]]])
   })
 })
+
+describe('GroupSelector kiro mixed scheduling', () => {
+  beforeEach(() => { authState.isSimpleMode = false })
+
+  const kiroGroups = [
+    { id: 1, name: 'Anthropic Default', platform: 'anthropic', status: 'active' },
+    { id: 2, name: 'Kiro Only', platform: 'kiro', status: 'active' },
+    { id: 3, name: 'Gemini Default', platform: 'gemini', status: 'active' },
+    { id: 4, name: 'Composite', platform: 'composite', status: 'active' }
+  ] as any
+
+  const mountKiroSelector = (mixedScheduling: boolean) =>
+    mount(GroupSelector, {
+      props: { modelValue: [], groups: kiroGroups, platform: 'kiro', mixedScheduling },
+      global: { stubs: { GroupBadge: { props: ['name'], template: '<span>{{ name }}</span>' }, Icon: true } }
+    })
+
+  it('only shows kiro groups when mixed scheduling is off', () => {
+    const wrapper = mountKiroSelector(false)
+    expect(wrapper.text()).toContain('Kiro Only')
+    expect(wrapper.text()).not.toContain('Anthropic Default')
+    expect(wrapper.text()).not.toContain('Gemini Default')
+    expect(wrapper.text()).not.toContain('Composite')
+  })
+
+  it('additionally shows anthropic groups (but not gemini or composite) once mixed scheduling is on', () => {
+    const wrapper = mountKiroSelector(true)
+    expect(wrapper.text()).toContain('Kiro Only')
+    expect(wrapper.text()).toContain('Anthropic Default')
+    expect(wrapper.text()).not.toContain('Gemini Default')
+    expect(wrapper.text()).not.toContain('Composite')
+  })
+})

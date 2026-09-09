@@ -55,6 +55,11 @@ type kiroOutputProtocol int
 const (
 	kiroOutputAnthropic kiroOutputProtocol = iota
 	kiroOutputResponses
+	// kiroOutputChatCompletions 供混合调度进 anthropic 分组的 kiro 账号服务
+	// /v1/chat/completions 用——只有 Claude 系模型会走到这里（和
+	// kiroOutputAnthropic 同一套模型协议归属规则），不是给 openai 分组用的
+	// （openai 分组挂载 kiro 账号是单独的后续工作，这次不做）。
+	kiroOutputChatCompletions
 )
 
 // ForwardUpstream 把一次 Anthropic 请求转发到 Kiro 并把响应流式写回客户端。
@@ -69,6 +74,43 @@ const (
 // 测试连接（见 TestConnection）该做的事，不是生产流量该承担的代价。
 func (s *KiroGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	return s.forwardUpstream(ctx, c, account, body, false, kiroOutputAnthropic)
+}
+
+// ForwardAsChatCompletions 接受一个 OpenAI Chat Completions 请求体，链式转成
+// Anthropic 形状（复用 GatewayService.ForwardAsChatCompletions 已经在用的同一条
+// apicompat 纯转换链：CC → Responses → Anthropic），再走 Kiro 已有的
+// forwardUpstream 转发——只服务混合调度挂进 anthropic 分组的 kiro 账号
+// （`/v1/chat/completions`，账号级 mixed_scheduling 开关打开时才会被调度器
+// 选中，见 gateway_scheduling.go 的 mixedSchedulingPlatforms）。
+func (s *KiroGatewayService) ForwardAsChatCompletions(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	var ccReq apicompat.ChatCompletionsRequest
+	if err := json.Unmarshal(body, &ccReq); err != nil {
+		return nil, fmt.Errorf("kiro: parse chat completions request: %w", err)
+	}
+
+	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: convert chat completions to responses: %w", err)
+	}
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: convert responses to anthropic: %w", err)
+	}
+	// apicompat.ChatCompletionsToResponses 会把链路中间产物的 Stream 字段强制
+	// 置 true（那是给"直接转发给真实 Anthropic 上游"的调用方用的约定，标记
+	// 的是上游请求要不要流式）。kiro.BuildRequest 构造真正发给 AWS 的请求时
+	// 根本不读 AnthropicRequest.Stream（Kiro 上游走事件流协议，不受它影响），
+	// 而 forwardUpstream 是用同一个字段判断"最终写给客户端"要不要走 SSE
+	// （streamToClient）还是缓冲成一次性 JSON（nonStreamToClient，见其文档
+	// I3）——这里必须换回真实客户端在 Chat Completions 请求里传的 stream，
+	// 否则客户端传 stream:false 也会一直收到 SSE。
+	anthropicReq.Stream = ccReq.Stream
+
+	anthropicBody, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: marshal converted anthropic request: %w", err)
+	}
+	return s.forwardUpstream(ctx, c, account, anthropicBody, false, kiroOutputChatCompletions)
 }
 
 // forwardUpstream 是 ForwardUpstream/TestConnection 共用的核心转发逻辑。
@@ -360,19 +402,29 @@ func (s *KiroGatewayService) streamToClient(
 		firstTokenMs = &ms
 	}
 
-	// responsesState 只在 Responses 协议下才需要——它是
+	// responsesState 在 Responses 协议和 ChatCompletions 协议下都需要——它是
 	// apicompat.AnthropicEventToResponsesEvents 的必需入参，跨整个流保持
 	// output_index/content_index 等状态，与 translator 的生命周期一致
-	// （每次转发新建一个，不跨请求复用）。
+	// （每次转发新建一个，不跨请求复用）。ChatCompletions 是在 Responses
+	// 事件的基础上再链式转一层（apicompat.ResponsesEventToChatChunks），
+	// 复用同一个中间态，见 ccState。
 	var responsesState *apicompat.AnthropicEventToResponsesState
-	if outputProtocol == kiroOutputResponses {
+	if outputProtocol == kiroOutputResponses || outputProtocol == kiroOutputChatCompletions {
 		responsesState = apicompat.NewAnthropicEventToResponsesState()
 	}
+	var ccState *apicompat.ResponsesEventToChatState
+	if outputProtocol == kiroOutputChatCompletions {
+		ccState = apicompat.NewResponsesEventToChatState()
+	}
 	writeOut := func(events []apicompat.AnthropicStreamEvent) bool {
-		if outputProtocol == kiroOutputResponses {
+		switch outputProtocol {
+		case kiroOutputResponses:
 			return s.writeResponsesEventsFromAnthropic(cw, responsesState, events)
+		case kiroOutputChatCompletions:
+			return s.writeChatCompletionsEventsFromAnthropic(cw, responsesState, ccState, events)
+		default:
+			return s.writeEvents(cw, events)
 		}
-		return s.writeEvents(cw, events)
 	}
 
 	var streamDisconnect bool
@@ -412,12 +464,24 @@ func (s *KiroGatewayService) streamToClient(
 	}
 
 	writeOut(translator.Finalize())
-	if outputProtocol == kiroOutputResponses {
+	switch outputProtocol {
+	case kiroOutputResponses:
 		// FinalizeAnthropicResponsesStream 补发 response.completed（正常
 		// message_stop 路径下 anthToResHandleMessageStop 已经发过，
 		// CompletedSent 会挡掉重复；只有异常截断、从未走到 message_stop 时
 		// 才会真的补一次），保证 Codex 客户端不会卡在等待终止事件。
 		s.writeResponsesEvents(cw, apicompat.FinalizeAnthropicResponsesStream(responsesState))
+	case kiroOutputChatCompletions:
+		// 同样先补发 Responses 侧的收尾事件，再链式转一层 CC chunk；
+		// FinalizeResponsesChatStream 补的是 CC 状态机自己的收尾 chunk，
+		// 两层收尾缺一不可，与 gateway_forward_as_chat_completions.go 的
+		// 收尾顺序一致。最后写 [DONE] 帧——Chat Completions 客户端靠它
+		// 判断流已结束，apicompat 的转换链本身不产出这一帧（同上）。
+		for _, resEvt := range apicompat.FinalizeAnthropicResponsesStream(responsesState) {
+			s.writeChatCompletionsChunks(cw, apicompat.ResponsesEventToChatChunks(&resEvt, ccState))
+		}
+		s.writeChatCompletionsChunks(cw, apicompat.FinalizeResponsesChatStream(ccState))
+		cw.Write([]byte("data: [DONE]\n\n"))
 	}
 
 	usage := translator.Usage()
@@ -528,7 +592,10 @@ func (s *KiroGatewayService) writeKiroModelUnsupportedError(c *gin.Context, requ
 func (s *KiroGatewayService) enforceKiroModelProtocol(c *gin.Context, upstreamModel string, protocol kiroOutputProtocol) error {
 	isClaudeFamily := upstreamModel == "auto" || strings.HasPrefix(upstreamModel, "claude-")
 	switch {
-	case protocol == kiroOutputAnthropic && !isClaudeFamily:
+	// kiroOutputChatCompletions 只服务混合调度进 anthropic 分组的请求，和
+	// kiroOutputAnthropic 共用同一条"只放行 Claude 系模型"规则——不是给
+	// openai 分组用的，gpt-5.6-* 系列走不到这里。
+	case (protocol == kiroOutputAnthropic || protocol == kiroOutputChatCompletions) && !isClaudeFamily:
 		return s.writeKiroProtocolMismatchError(c, protocol, upstreamModel,
 			"this model is only available through the OpenAI Responses API (Codex), not the Anthropic Messages API")
 	case protocol == kiroOutputResponses && isClaudeFamily:
@@ -545,7 +612,10 @@ func (s *KiroGatewayService) enforceKiroModelProtocol(c *gin.Context, upstreamMo
 func (s *KiroGatewayService) writeKiroProtocolMismatchError(c *gin.Context, protocol kiroOutputProtocol, requestedModel, message string) error {
 	MarkResponseCommitted(c)
 	fullMessage := fmt.Sprintf("model %q: %s", requestedModel, message)
-	if protocol == kiroOutputResponses {
+	// kiroOutputChatCompletions 和 kiroOutputResponses 都是 OpenAI 系错误
+	// 形状（Chat Completions 与 Responses 的 error 对象字段一致），只有
+	// kiroOutputAnthropic 用 Anthropic 形状。
+	if protocol != kiroOutputAnthropic {
 		c.JSON(http.StatusForbidden, map[string]any{
 			"error": map[string]any{
 				"message": fullMessage,
@@ -625,6 +695,48 @@ func (s *KiroGatewayService) writeResponsesEvents(cw *antigravityClientWriter, e
 		if err != nil {
 			// 不应发生，理由与 writeEvents 的同名注释一致。
 			slog.Error("kiro_responses_event_marshal_failed", "event_type", ev.Type, "error", err)
+			continue
+		}
+		if !cw.Write([]byte(sse)) {
+			return false
+		}
+	}
+	return true
+}
+
+// writeChatCompletionsEventsFromAnthropic 把一批 Anthropic 流事件链式转成
+// Chat Completions chunk 再写给客户端——先过
+// apicompat.AnthropicEventToResponsesEvents（与 Responses 分支复用同一步、
+// 同一个 state），再过 apicompat.ResponsesEventToChatChunks，与
+// gateway_forward_as_chat_completions.go 里 GatewayService.ForwardAsChatCompletions
+// 用的是同一条纯转换链，只是数据来源从真实 Anthropic 上游换成 Kiro 上游。
+// responsesState/ccState 都必须是同一个流全程复用的实例。
+func (s *KiroGatewayService) writeChatCompletionsEventsFromAnthropic(
+	cw *antigravityClientWriter,
+	responsesState *apicompat.AnthropicEventToResponsesState,
+	ccState *apicompat.ResponsesEventToChatState,
+	events []apicompat.AnthropicStreamEvent,
+) bool {
+	for i := range events {
+		responsesEvents := apicompat.AnthropicEventToResponsesEvents(&events[i], responsesState)
+		for j := range responsesEvents {
+			if !s.writeChatCompletionsChunks(cw, apicompat.ResponsesEventToChatChunks(&responsesEvents[j], ccState)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// writeChatCompletionsChunks 把已经是 Chat Completions 形态的 chunk 序列化成
+// SSE 帧写给客户端。写入约定与 writeEvents/writeResponsesEvents 一致：false
+// 表示客户端已断开。
+func (s *KiroGatewayService) writeChatCompletionsChunks(cw *antigravityClientWriter, chunks []apicompat.ChatCompletionsChunk) bool {
+	for _, chunk := range chunks {
+		sse, err := apicompat.ChatChunkToSSE(chunk)
+		if err != nil {
+			// 不应发生，理由与 writeEvents 的同名注释一致。
+			slog.Error("kiro_chat_completions_chunk_marshal_failed", "error", err)
 			continue
 		}
 		if !cw.Write([]byte(sse)) {

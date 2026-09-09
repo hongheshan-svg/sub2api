@@ -100,6 +100,14 @@ const filteredGroups = computed(() => {
       result = result.filter(
         (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini' || g.platform === 'composite'
       )
+    } else if (props.platform === 'kiro') {
+      // kiro 账户不能选择 composite 分组——composite 目前不吸收 kiro 账号
+      // （isConcreteRequestPlatform 明确排除，是阶段 2 才做的后续工作），
+      // 与其它平台的默认分支不同。启用混合调度后额外开放 anthropic 分组；
+      // kiro 协议层不认识 Gemini 协议，不开放 gemini。
+      result = result.filter(
+        (g) => g.platform === 'kiro' || (props.mixedScheduling && g.platform === 'anthropic')
+      )
     } else {
       // 默认：只能选择同 platform 的分组；composite 分组可接收任意具体平台账号
       result = result.filter((g) => g.platform === props.platform || g.platform === 'composite')

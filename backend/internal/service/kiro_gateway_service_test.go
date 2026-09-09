@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
@@ -262,6 +263,112 @@ func TestKiroForwardUpstreamSuccessStreamingWithRealCacheReadTokens(t *testing.T
 	require.Contains(t, out, "text_delta")
 	require.Contains(t, out, "Hello")
 	require.Contains(t, out, "event: message_stop")
+}
+
+const kiroTestChatCompletionsRequestBody = `{"model":"claude-sonnet-4-5-20250929","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`
+const kiroTestChatCompletionsNonStreamRequestBody = `{"model":"claude-sonnet-4-5-20250929","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":false}`
+
+func kiroTestChatCompletionsContext() (*httptest.ResponseRecorder, *gin.Context) {
+	return kiroTestChatCompletionsContextWithBody(kiroTestChatCompletionsRequestBody)
+}
+
+func kiroTestChatCompletionsContextWithBody(body string) (*httptest.ResponseRecorder, *gin.Context) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	return recorder, c
+}
+
+// TestKiroForwardAsChatCompletionsSuccessStreaming 覆盖混合调度进 anthropic
+// 分组的 kiro 账号服务 /v1/chat/completions 的成功路径：请求体先转
+// CC → Responses → Anthropic 喂给 Kiro 上游（同一套 kiroTestFakeUpstream
+// 假上游，看不出请求来自哪个协议入口），响应链式转回 Chat Completions
+// SSE chunk，并以 data: [DONE] 收尾。
+func TestKiroForwardAsChatCompletionsSuccessStreaming(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"Hello"}`),
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+		kiroTestEventFrame("meteringEvent", `{"unit":"credit","usage":1.5}`),
+	)
+
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(1)
+	recorder, c := kiroTestChatCompletionsContext()
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(kiroTestChatCompletionsRequestBody))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+
+	out := recorder.Body.String()
+	require.Contains(t, out, `"object":"chat.completion.chunk"`)
+	require.Contains(t, out, "Hello")
+	require.Contains(t, out, "data: [DONE]")
+}
+
+// TestKiroForwardAsChatCompletionsNonStreamingReturnsBufferedJSON 覆盖
+// stream:false 客户端：链路中间产物（ChatCompletionsToResponses 的输出）
+// 会把 Stream 强制置 true（那是"上游请求要不要流式"的约定，kiro.BuildRequest
+// 根本不读这个字段），必须显式换回 ccReq.Stream 才能让 forwardUpstream
+// 正确走 nonStreamToClient 缓冲路径，而不是无论客户端要什么都吐 SSE——
+// 这是实现过程中真实踩到的问题，不是假设性边界情况。
+func TestKiroForwardAsChatCompletionsNonStreamingReturnsBufferedJSON(t *testing.T) {
+	frames := kiroTestConcatFrames(
+		kiroTestEventFrame("assistantResponseEvent", `{"content":"Hello"}`),
+		kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+		kiroTestEventFrame("meteringEvent", `{"unit":"credit","usage":1.5}`),
+	)
+
+	srv, calls := kiroTestFakeUpstream(t, func(int) (int, []byte) {
+		return http.StatusOK, frames
+	})
+
+	svc := &KiroGatewayService{}
+	svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+	account := kiroTestOAuthAccount(1)
+	recorder, c := kiroTestChatCompletionsContextWithBody(kiroTestChatCompletionsNonStreamRequestBody)
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(kiroTestChatCompletionsNonStreamRequestBody))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, atomic.LoadInt32(calls))
+
+	out := recorder.Body.String()
+	require.NotContains(t, out, "data: ", "stream:false 客户端不应该收到任何 SSE 帧")
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &parsed), "响应必须是一次性的合法 JSON，不是 SSE 流")
+	require.Equal(t, "chat.completion", parsed["object"])
+	choices, ok := parsed["choices"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, choices)
+	choice0 := choices[0].(map[string]any)
+	message := choice0["message"].(map[string]any)
+	require.Contains(t, message["content"], "Hello")
+}
+
+// TestKiroForwardAsChatCompletionsRejectsNonClaudeModel 覆盖协议归属隔离：
+// kiroOutputChatCompletions 和 kiroOutputAnthropic 共用同一条"只放行 Claude
+// 系模型"规则——gpt-5.6-* 系列只能走 Responses 协议（/backend-api/codex/
+// responses），不能通过 anthropic 分组混合调度的 /v1/chat/completions 服务。
+func TestKiroForwardAsChatCompletionsRejectsNonClaudeModel(t *testing.T) {
+	svc := &KiroGatewayService{}
+	account := kiroTestOAuthAccount(1)
+	recorder, c := kiroTestChatCompletionsContext()
+
+	body := `{"model":"gpt-5.6-sol","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(body))
+	require.Error(t, err)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"invalid_request_error"`, "非 Claude 模型走 ChatCompletions 协议应返回 OpenAI 系错误形状，不是 Anthropic 形状")
 }
 
 // TestKiroForwardUpstreamFirstEndpoint429ThenSecondSucceeds 覆盖端点级重试：

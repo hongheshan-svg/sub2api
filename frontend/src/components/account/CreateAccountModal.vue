@@ -3526,8 +3526,8 @@
       </div>
 
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
-        <!-- Mixed Scheduling (only for antigravity accounts) -->
-        <div v-if="form.platform === 'antigravity'" class="flex items-center gap-2">
+        <!-- Mixed Scheduling (antigravity and kiro accounts) -->
+        <div v-if="form.platform === 'antigravity' || form.platform === 'kiro'" class="flex items-center gap-2">
           <label class="flex cursor-pointer items-center gap-2">
             <input
               type="checkbox"
@@ -3548,7 +3548,7 @@
             <div
               class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
             >
-              {{ t('admin.accounts.mixedSchedulingTooltip') }}
+              {{ form.platform === 'kiro' ? t('admin.accounts.kiroMixedSchedulingTooltip') : t('admin.accounts.mixedSchedulingTooltip') }}
               <div
                 class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
               ></div>
@@ -4957,6 +4957,10 @@ watch(
     openAIImagesUrlToB64JsonEnabled.value = false
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
+    // Mixed scheduling 复选框只在 antigravity/kiro 下显示，但状态本身不受
+    // v-if 保护——不重置的话，在 antigravity 上勾选后切到其它平台再切回
+    // kiro，会把没让用户看到、没让用户确认过的状态带过去。
+    mixedScheduling.value = false
     // Kiro：切走时清空表单状态，避免残留到下次切回；切入时强制单步表单
     // （非 OAuth 步骤）并关闭上游倍率探测（kiro 不在支持平台白名单里）
     if (newPlatform === 'kiro') {

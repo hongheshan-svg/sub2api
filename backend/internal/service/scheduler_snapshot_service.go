@@ -616,6 +616,10 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 			addPlatformGroups(PlatformAntigravity, accountGroupIDs)
 			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
 			addPlatformGroups(PlatformGemini, accountGroupIDs)
+		case PlatformKiro:
+			// kiro 只能混入 anthropic（协议层不认识 Gemini），不清理 gemini 快照。
+			addPlatformGroups(PlatformKiro, accountGroupIDs)
+			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
 		default:
 			return s.rebuildByGroupIDs(ctx, rebuildGroupIDs, "account_bulk_change", seen)
 		}
@@ -820,6 +824,10 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	if account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() {
 		buckets = append(buckets, s.bucketsForPlatform(PlatformAnthropic, groupIDs, seen)...)
 		buckets = append(buckets, s.bucketsForPlatform(PlatformGemini, groupIDs, seen)...)
+	}
+	if account.Platform == PlatformKiro && account.IsMixedSchedulingEnabled() {
+		// kiro 只能混入 anthropic，不认识 Gemini 协议。
+		buckets = append(buckets, s.bucketsForPlatform(PlatformAnthropic, groupIDs, seen)...)
 	}
 	return s.rebuildBuckets(ctx, buckets, reason)
 }
@@ -1481,7 +1489,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if useMixed {
-		platforms := []string{bucket.Platform, PlatformAntigravity}
+		platforms := mixedSchedulingPlatforms(bucket.Platform)
 		var accounts []Account
 		var err error
 		if groupID > 0 {
@@ -1496,7 +1504,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		}
 		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
-			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+			if acc.Platform != bucket.Platform && !isMixedScheduledAccount(&acc) {
 				continue
 			}
 			filtered = append(filtered, acc)

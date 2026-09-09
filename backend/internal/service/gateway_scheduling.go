@@ -1040,7 +1040,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	}
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
-		platforms := []string{platform, PlatformAntigravity}
+		platforms := mixedSchedulingPlatforms(platform)
 		var accounts []Account
 		var err error
 		if groupID != nil {
@@ -1059,7 +1059,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		}
 		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
-			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+			if acc.Platform != platform && !isMixedScheduledAccount(&acc) {
 				continue
 			}
 			filtered = append(filtered, acc)
@@ -1133,6 +1133,27 @@ func (s *GatewayService) IsSingleAntigravityAccountGroup(ctx context.Context, gr
 	return len(accounts) == 1
 }
 
+// mixedSchedulingPlatforms 返回原生平台 nativePlatform 混合调度时应当一并查询的
+// 平台集合。antigravity 账户可以混入 anthropic 和 gemini 两个原生平台；kiro 的
+// 协议层只认识 Anthropic 请求/响应形状，只能混入 anthropic，不能混入 gemini。
+func mixedSchedulingPlatforms(nativePlatform string) []string {
+	platforms := []string{nativePlatform, PlatformAntigravity}
+	if nativePlatform == PlatformAnthropic {
+		platforms = append(platforms, PlatformKiro)
+	}
+	return platforms
+}
+
+// isMixedScheduledAccount 判断账户是否是通过混合调度加入进来的非原生平台账户
+// （antigravity/kiro 都需要账户级 mixed_scheduling 开关打开）。调用方通常已经
+// 用 mixedSchedulingPlatforms 限定过查询范围，所以这里不用再区分目标平台。
+func isMixedScheduledAccount(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	return (acc.Platform == PlatformAntigravity || acc.Platform == PlatformKiro) && acc.IsMixedSchedulingEnabled()
+}
+
 func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform string, useMixed bool) bool {
 	if account == nil {
 		return false
@@ -1141,7 +1162,10 @@ func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform 
 		if account.Platform == platform {
 			return true
 		}
-		return account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()
+		if account.Platform == PlatformAntigravity {
+			return account.IsMixedSchedulingEnabled()
+		}
+		return platform == PlatformAnthropic && account.Platform == PlatformKiro && account.IsMixedSchedulingEnabled()
 	}
 	return account.Platform == platform
 }
@@ -2187,7 +2211,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
 						if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
-							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+							if account.Platform == nativePlatform || isMixedScheduledAccount(account) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 								}
@@ -2241,8 +2265,8 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 				continue
 			}
-			// 过滤：原生平台直接通过，antigravity 需要启用混合调度
-			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+			// 过滤：原生平台直接通过，antigravity/kiro 需要启用混合调度
+			if acc.Platform != nativePlatform && !isMixedScheduledAccount(acc) {
 				continue
 			}
 			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
@@ -2311,7 +2335,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
 					if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
-						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+						if account.Platform == nativePlatform || isMixedScheduledAccount(account) {
 							return account, nil
 						}
 					}
@@ -2356,8 +2380,8 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 			continue
 		}
-		// 过滤：原生平台直接通过，antigravity 需要启用混合调度
-		if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+		// 过滤：原生平台直接通过，antigravity/kiro 需要启用混合调度
+		if acc.Platform != nativePlatform && !isMixedScheduledAccount(acc) {
 			continue
 		}
 		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {

@@ -198,6 +198,23 @@ func TestSchedulerBulkAccountEventConservativelyExpandsAntigravityPlatforms(t *t
 	)
 }
 
+func TestSchedulerBulkAccountEventConservativelyExpandsKiroPlatforms(t *testing.T) {
+	cache := newBulkEventSnapshotCache()
+	// fresh 值可能已经关闭 mixed_scheduling，anthropic 桶仍要重建以清理旧快照；
+	// kiro 协议层不认识 Gemini，不应该扩散到 PlatformGemini（与 antigravity 的
+	// 三平台扩散不同，见 TestSchedulerBulkAccountEventConservativelyExpandsAntigravityPlatforms）。
+	repo := newBulkEventAccountRepo(&Account{ID: 2, Platform: PlatformKiro, GroupIDs: []int64{22}})
+	svc := newBulkEventTestService(cache, repo)
+
+	err := svc.handleBulkAccountEvent(context.Background(), bulkEventPayload([]int64{2}, []int64{21}), make(map[batchSeenKey]struct{}))
+
+	require.NoError(t, err)
+	require.ElementsMatch(t,
+		schedulerBucketsForTest([]int64{21, 22}, PlatformAnthropic, PlatformKiro),
+		cache.capturedBuckets(),
+	)
+}
+
 func TestSchedulerBulkAccountEventMissingAccountFallsBackToAllPlatforms(t *testing.T) {
 	cache := newBulkEventSnapshotCache()
 	repo := newBulkEventAccountRepo(&Account{ID: 3, Platform: PlatformOpenAI, GroupIDs: []int64{32}})

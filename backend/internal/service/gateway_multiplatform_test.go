@@ -1769,6 +1769,88 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		require.Equal(t, PlatformAnthropic, acc.Platform)
 	})
 
+	t.Run("混合调度-包含启用mixed_scheduling的kiro账户", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformKiro, Priority: 1, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cache := &mockGatewayCacheForPlatform{}
+
+		svc := &GatewayService{
+			accountRepo: repo,
+			cache:       cache,
+			cfg:         testConfig(),
+		}
+
+		acc, err := svc.selectAccountWithMixedScheduling(ctx, nil, "", "claude-sonnet-4-5", nil, PlatformAnthropic)
+		require.NoError(t, err)
+		require.NotNil(t, acc)
+		require.Equal(t, int64(2), acc.ID, "应选择优先级最高的账户（包含启用混合调度的kiro）")
+	})
+
+	t.Run("混合调度-过滤未启用mixed_scheduling的kiro账户", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+				{ID: 2, Platform: PlatformKiro, Priority: 1, Status: StatusActive, Schedulable: true}, // 未启用 mixed_scheduling
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cache := &mockGatewayCacheForPlatform{}
+
+		svc := &GatewayService{
+			accountRepo: repo,
+			cache:       cache,
+			cfg:         testConfig(),
+		}
+
+		acc, err := svc.selectAccountWithMixedScheduling(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, PlatformAnthropic)
+		require.NoError(t, err)
+		require.NotNil(t, acc)
+		require.Equal(t, int64(1), acc.ID, "未启用mixed_scheduling的kiro账户应被过滤")
+		require.Equal(t, PlatformAnthropic, acc.Platform)
+	})
+
+	t.Run("混合调度-kiro账户即便启用mixed_scheduling也不参与gemini分组调度", func(t *testing.T) {
+		// kiro 协议层不认识 Gemini 协议，混合调度只能开放给 anthropic，不能像
+		// antigravity 那样同时覆盖 anthropic 和 gemini——见 mixedSchedulingPlatforms。
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformGemini, Priority: 2, Status: StatusActive, Schedulable: true, Type: AccountTypeOAuth},
+				{ID: 2, Platform: PlatformKiro, Priority: 1, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cache := &mockGatewayCacheForPlatform{}
+
+		svc := &GatewayService{
+			accountRepo: repo,
+			cache:       cache,
+			cfg:         testConfig(),
+		}
+
+		acc, err := svc.selectAccountWithMixedScheduling(ctx, nil, "", "gemini-2.5-pro", nil, PlatformGemini)
+		require.NoError(t, err)
+		require.NotNil(t, acc)
+		require.Equal(t, int64(1), acc.ID, "kiro 账户不应混入 gemini 分组调度，即便启用了 mixed_scheduling")
+		require.Equal(t, PlatformGemini, acc.Platform)
+	})
+
 	t.Run("混合调度-粘性会话命中启用mixed_scheduling的antigravity账户", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
