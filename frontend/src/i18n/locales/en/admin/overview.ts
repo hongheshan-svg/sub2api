@@ -977,6 +977,7 @@ export default {
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
         composite: 'Composite',
+        kiro: 'Kiro',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
