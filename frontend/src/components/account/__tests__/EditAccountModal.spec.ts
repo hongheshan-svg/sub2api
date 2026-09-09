@@ -1684,6 +1684,35 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.client_secret).toBe('new-client-secret')
   })
+
+  // 回归测试：mixed scheduling 复选框此前对 kiro 账号硬编码 disabled，且
+  // submit handler 的 extra.mixed_scheduling 分支只认 platform === 'antigravity'
+  // ——即便复选框可勾，改动也会在保存时被静默丢弃。两个问题合起来就是
+  // "在编辑页勾不上/勾了也没用、看不到 anthropic 分组" 的用户报告。
+  it('toggling mixed scheduling on an existing kiro account is not disabled and persists on save', async () => {
+    const account = buildKiroAccount()
+    updateAccountMock.mockReset()
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const checkbox = wrapper.get('[data-test="mixed-scheduling-checkbox"]')
+    expect((checkbox.element as HTMLInputElement).disabled).toBe(false)
+
+    await checkbox.setValue(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.mixed_scheduling).toBe(true)
+    // kiro 没有 AI Credits 超量请求这个概念，不应该被这条共享路径顺带写入 extra。
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('allow_overages')
+  })
+
+  it('keeps the mixed scheduling checkbox disabled (read-only) for antigravity accounts', () => {
+    const account = buildAntigravityAccount()
+    const wrapper = mountModal(account)
+    const checkbox = wrapper.get('[data-test="mixed-scheduling-checkbox"]')
+    expect((checkbox.element as HTMLInputElement).disabled).toBe(true)
+  })
 })
 
 describe('EditAccountModal OpenAI 自动使用重置卡', () => {

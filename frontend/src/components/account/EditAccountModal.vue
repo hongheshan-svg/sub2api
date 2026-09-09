@@ -2961,14 +2961,21 @@
           <Select v-model="form.status" :options="statusOptions" />
         </div>
 
-        <!-- Mixed Scheduling (antigravity and kiro accounts, read-only in edit mode) -->
+        <!-- Mixed Scheduling (antigravity: read-only in edit mode; kiro: editable — see
+             EditAccountModal submit handler, which persists extra.mixed_scheduling for
+             both platforms) -->
         <div v-if="account?.platform === 'antigravity' || account?.platform === 'kiro'" class="flex items-center gap-2">
-          <label class="flex cursor-not-allowed items-center gap-2 opacity-60">
+          <label
+            class="flex items-center gap-2"
+            :class="account?.platform === 'antigravity' ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
+          >
             <input
               type="checkbox"
+              data-test="mixed-scheduling-checkbox"
               v-model="mixedScheduling"
-              disabled
-              class="h-4 w-4 cursor-not-allowed rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
+              :disabled="account?.platform === 'antigravity'"
+              class="h-4 w-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
+              :class="account?.platform === 'antigravity' ? 'cursor-not-allowed' : 'cursor-pointer'"
             />
             <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
               {{ t('admin.accounts.mixedScheduling') }}
@@ -5521,8 +5528,9 @@ const handleSubmit = async () => {
       updatePayload.credentials = newCredentials
     }
 
-    // For antigravity accounts, handle mixed_scheduling and allow_overages in extra
-    if (props.account.platform === 'antigravity') {
+    // mixed_scheduling applies to antigravity and kiro; allow_overages (AI Credits
+    // overage) is an antigravity-only concept and must not be touched for kiro.
+    if (props.account.platform === 'antigravity' || props.account.platform === 'kiro') {
       const currentExtra = (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
       if (mixedScheduling.value) {
@@ -5530,10 +5538,12 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.mixed_scheduling
       }
-      if (allowOverages.value) {
-        newExtra.allow_overages = true
-      } else {
-        delete newExtra.allow_overages
+      if (props.account.platform === 'antigravity') {
+        if (allowOverages.value) {
+          newExtra.allow_overages = true
+        } else {
+          delete newExtra.allow_overages
+        }
       }
       updatePayload.extra = newExtra
     }
