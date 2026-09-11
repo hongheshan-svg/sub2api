@@ -73,6 +73,22 @@ type KiroGatewayService struct {
 	// NewKiroGatewayService）在没有显式设置这个字段时行为完全不变：真实
 	// meteringEvent 优先级不变，没有 meteringEvent 时也不会凭空冒出模拟值。
 	promptCache *kiro.PromptCacheTracker
+
+	// listModelsURLOverride 仅供测试使用，生产路径必须为 nil。
+	//
+	// 同 callEndpointOverride 的理由：kiro.BuildListModelsURL 返回的是真实的
+	// management.<region>.kiro.dev 域名，单测需要把 ListAvailableModels 请求
+	// 路由到本地 httptest 假上游。见 listModelsURL。
+	listModelsURLOverride func(region string) string
+}
+
+// listModelsURL 返回 ListAvailableModels 该打去的地址：测试设置了
+// listModelsURLOverride 时用它，否则用真实的 kiro.BuildListModelsURL。
+func (s *KiroGatewayService) listModelsURL(region string) string {
+	if s.listModelsURLOverride != nil {
+		return s.listModelsURLOverride(region)
+	}
+	return kiro.BuildListModelsURL(region)
 }
 
 // creditsQuotaFetcher 返回 creditsExhaustedCooldownUntil 使用的额度获取器：

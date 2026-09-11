@@ -729,6 +729,11 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 		return models, nil, err
 	}
 
+	if account.Platform == PlatformKiro {
+		models, err := s.fetchKiroUpstreamModels(ctx, account)
+		return models, nil, err
+	}
+
 	if s.httpUpstream == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
@@ -1180,6 +1185,39 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 		models = append(models, strings.TrimSpace(modelID))
 	}
 	return dedupeAndSortModelIDs(models), nil
+}
+
+// fetchKiroUpstreamModels 用官方 ListAvailableModels 拉取账号真实可用的模型
+// 清单。与 fetchAntigravityOAuthUpstreamModels 一样，Kiro 的鉴权/寻址方式
+// （AWS JSON 1.0 + profileArn，见 pkg/kiro/list_models.go）与其余平台的
+// REST /v1/models 探测差异太大，不走 buildUpstreamModelsRequest 那条通用
+// GET 路径，而是委托给已经持有 token 刷新入口的 kiroGatewayService。
+func (s *AccountTestService) fetchKiroUpstreamModels(ctx context.Context, account *Account) ([]string, error) {
+	if account.IsKiroAPIKeyAccount() {
+		// 与 ListAvailableModels 自身的门禁重复判断一次：API Key 账号不使用
+		// profileArn（KiroGatewayService.profileArnFor 的既有约定），这个操作
+		// 在 API Key 形态下是否可用未经验证。在这里提前拦截、归类为
+		// Unsupported（400），而不是让它落进 ListAvailableModels 内部返回的
+		// 通用 error、被下面一律吞成 Upstream（502）——账号类型不支持是配置
+		// 问题，不是"这次调上游失败了"，两者对管理员的可操作性不同。
+		return nil, newUpstreamModelSyncUnsupportedError(
+			"Kiro API Key accounts do not support live model list sync", nil,
+		)
+	}
+	if s.kiroGatewayService == nil {
+		return nil, newUpstreamModelSyncConfigError("Kiro gateway service is not configured", nil)
+	}
+
+	models, err := s.kiroGatewayService.ListAvailableModels(ctx, account)
+	if err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Failed to fetch Kiro available models", err)
+	}
+
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	return dedupeAndSortModelIDs(ids), nil
 }
 
 func (s *AccountTestService) doUpstreamModelsRequest(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
