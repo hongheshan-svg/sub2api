@@ -264,7 +264,10 @@ var bedrockFrameBufPool = sync.Pool{
 }
 
 func getBedrockFrameBuf(n int) []byte {
-	ptr := bedrockFrameBufPool.Get().(*[]byte)
+	ptr, ok := bedrockFrameBufPool.Get().(*[]byte)
+	if !ok || ptr == nil {
+		return make([]byte, n)
+	}
 	buf := *ptr
 	if cap(buf) < n {
 		return make([]byte, n)
