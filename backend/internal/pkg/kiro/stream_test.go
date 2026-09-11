@@ -51,6 +51,42 @@ func TestStreamTextOnly(t *testing.T) {
 	require.True(t, tr.SawContent())
 }
 
+func TestStreamContextUsagePercentageNotSeenByDefault(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, ok := tr.ContextUsagePercentage()
+	require.False(t, ok)
+}
+
+func TestStreamContextUsagePercentageCapturedButNotEmittedToClient(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+
+	got, err := tr.Feed(eventFrame(t, "contextUsageEvent", `{"contextUsagePercentage":42.5}`))
+	require.NoError(t, err)
+	require.Empty(t, got, "contextUsageEvent 不应该产出任何下发给客户端的事件")
+
+	pct, ok := tr.ContextUsagePercentage()
+	require.True(t, ok)
+	require.InDelta(t, 42.5, pct, 1e-9)
+}
+
+func TestStreamContextUsagePercentageKeepsLatestValue(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	_, err := tr.Feed(eventFrame(t, "contextUsageEvent", `{"contextUsagePercentage":10}`))
+	require.NoError(t, err)
+	_, err = tr.Feed(eventFrame(t, "contextUsageEvent", `{"contextUsagePercentage":55}`))
+	require.NoError(t, err)
+
+	pct, ok := tr.ContextUsagePercentage()
+	require.True(t, ok)
+	require.InDelta(t, 55, pct, 1e-9)
+}
+
 func TestStreamNoContentSawContentFalse(t *testing.T) {
 	t.Parallel()
 
@@ -87,6 +123,38 @@ func TestStreamToolUseAccumulatesPartialJSON(t *testing.T) {
 	final := tr.Finalize()
 	require.Equal(t, []string{"message_delta", "message_stop"}, collectTypes(final))
 	require.Equal(t, "tool_use", final[0].Delta.StopReason, "有工具调用时 stop_reason 必须是 tool_use")
+}
+
+// TestStreamToolUseRestoresClientNameViaToolNameMap 覆盖 SetToolNameMap：
+// Kiro 回显的是转换后的安全名字，客户端必须看到自己原本声明的名字。
+func TestStreamToolUseRestoresClientNameViaToolNameMap(t *testing.T) {
+	t.Parallel()
+
+	names := NewToolNameMap()
+	kiroName := names.ToKiro("mcp__fs__read_file")
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	tr.SetToolNameMap(names)
+
+	got, err := tr.Feed(eventFrame(t, "toolUseEvent",
+		`{"name":"`+kiroName+`","toolUseId":"tu_1","input":"{}","stop":true}`))
+	require.NoError(t, err)
+	// got[0] 是首次产出前的 message_start（ensureStarted），content_block_start
+	// 才带 ContentBlock。
+	require.Equal(t, "content_block_start", got[1].Type)
+	require.Equal(t, "mcp__fs__read_file", got[1].ContentBlock.Name)
+}
+
+// TestStreamToolUseWithoutToolNameMapPassesNameThrough 确认未接线
+// SetToolNameMap 时行为不变（本机制引入前的既有行为）。
+func TestStreamToolUseWithoutToolNameMapPassesNameThrough(t *testing.T) {
+	t.Parallel()
+
+	tr := NewStreamTranslator("m", "msg_1", false)
+	got, err := tr.Feed(eventFrame(t, "toolUseEvent", `{"name":"Read","toolUseId":"tu_1","input":"{}","stop":true}`))
+	require.NoError(t, err)
+	require.Equal(t, "content_block_start", got[1].Type)
+	require.Equal(t, "Read", got[1].ContentBlock.Name)
 }
 
 func TestStreamTwoToolCallsGetDistinctIndices(t *testing.T) {

@@ -207,7 +207,7 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 		}
 	}
 
-	endpoints := kiro.EndpointsFor(account.IsKiroAPIKeyAccount(), account.KiroRegion())
+	endpoints := kiro.EndpointsFor(account.IsKiroAPIKeyAccount(), kiroDataPlaneRegion(account))
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("kiro: no endpoints available for account")
 	}
@@ -223,10 +223,15 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 	// 任何诉求时才退回旧的默认值，行为不变。
 	fakeThinking, fakeThinkingMaxTokens := kiroFakeThinkingPlan(account, &inbound)
 
+	// toolNames 贯穿请求构造（转换工具名）与下面的 translator（换回客户端
+	// 原名）——同一个实例，见 kiro.ToolNameMap 文档。
+	toolNames := kiro.NewToolNameMap()
+
 	payload, err := kiro.BuildRequest(&inbound, kiro.Options{
 		ModelID:        upstreamModel,
 		ConversationID: conversationID,
 		ProfileArn:     s.profileArnFor(account),
+		ToolNames:      toolNames,
 		// Origin 不能留空退化成 BuildRequest 的默认值（AI_EDITOR）——
 		// API Key 账号的唯一可用端点要求 origin=KIRO_CLI，用默认值会让每个
 		// API Key 账号的请求都带错误的 origin。EndpointsFor 返回的端点组内
@@ -247,6 +252,7 @@ func (s *KiroGatewayService) forwardUpstream(ctx context.Context, c *gin.Context
 	}
 
 	translator := kiro.NewStreamTranslator(inbound.Model, s.newMessageID(), account.KiroFakeThinking())
+	translator.SetToolNameMap(toolNames)
 	// 必须在 Finalize（streamToClient 内部）之前设置，否则客户端收到的
 	// message_delta.usage.input_tokens 会保持默认的 0——Kiro 不提供
 	// input token，这一项完全依赖调用方主动写入（StreamTranslator.
@@ -464,6 +470,7 @@ func (s *KiroGatewayService) streamToClient(
 	}
 
 	writeOut(translator.Finalize())
+	logKiroContextUsageSignal(account, upstreamModel, translator)
 	switch outputProtocol {
 	case kiroOutputResponses:
 		// FinalizeAnthropicResponsesStream 补发 response.completed（正常
@@ -1022,6 +1029,46 @@ func (s *KiroGatewayService) profileArnFor(account *Account) string {
 		return ""
 	}
 	return account.KiroProfileArn()
+}
+
+// logKiroContextUsageSignal 把上游 contextUsageEvent 报告的上下文占用比例
+// （translator.ContextUsagePercentage 的文档）记一条 debug 日志，与本次
+// 请求的本地估算 input token 数并列——纯观测性用途，不影响计费或响应内容。
+// 在没有一份我们自己验证过的「每个 Kiro 模型上下文窗口大小」权威表之前，
+// 这条日志是唯一能拿真实数据校准/交叉核对本地估算器准确度的地方。
+func logKiroContextUsageSignal(account *Account, upstreamModel string, translator *kiro.StreamTranslator) {
+	pct, ok := translator.ContextUsagePercentage()
+	if !ok {
+		return
+	}
+	var accountID int64
+	if account != nil {
+		accountID = account.ID
+	}
+	slog.Debug("kiro_context_usage_signal",
+		"account_id", accountID,
+		"upstream_model", upstreamModel,
+		"context_usage_percentage", pct,
+		"estimated_input_tokens", translator.Usage().InputTokens,
+	)
+}
+
+// kiroDataPlaneRegion 返回该账号数据面请求（generateAssistantResponse /
+// getUsageLimits 等）应该使用的区域。
+//
+// 优先从 profileArn 里解析区域，而不是直接用账号建号时存的 SSO 授权区域
+// （account.KiroRegion()）——见 kiro.RegionFromProfileArn 的文档：两者可能
+// 不是同一个区域，用授权区域会打到错误的数据面主机。profileArn 为空或格式
+// 不合法（API Key 账号、还没发现过 profile 的账号）时退回
+// account.KiroRegion()，与引入这个函数之前的行为一致。
+func kiroDataPlaneRegion(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if region, ok := kiro.RegionFromProfileArn(account.KiroProfileArn()); ok {
+		return region
+	}
+	return account.KiroRegion()
 }
 
 // newMessageID 生成一个 Anthropic 风格的消息 ID，便于把请求日志与响应关联。

@@ -183,6 +183,88 @@ func TestKiroRefresherKeepsExistingProfileArnWithoutRediscovering(t *testing.T) 
 	require.False(t, discoveryCalled, "已经有 profile_arn 时不应该再发起发现请求")
 }
 
+// TestKiroRefresherProfileDiscoveryCooldownAfterFailedAttempt 覆盖负缓存：
+// Builder ID 账号的 ListAvailableProfiles 探测在 AWS 侧结构性地恒不支持
+// （403 "AWS Builder ID is not supported for this operation"），若不加冷却，
+// 账号存活期内每个刷新周期都会重新对已知区域各打一次这个注定失败的探测
+// 请求（见 kiroProfileDiscoveryCooldown 的文档）。
+func TestKiroRefresherProfileDiscoveryCooldownAfterFailedAttempt(t *testing.T) {
+	discoveryCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accessToken":"at_new","refreshToken":"rt_new","expiresIn":3600}`))
+	})
+	mux.HandleFunc("/ListAvailableProfiles", func(w http.ResponseWriter, _ *http.Request) {
+		discoveryCalls++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"AWS Builder ID is not supported for this operation"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	oauthSvc := newTestKiroOAuthService(t, srv)
+	oauthSvc.listProfilesHost = func(string) string { return srv.URL }
+	r := NewKiroTokenRefresher(oauthSvc)
+
+	account := &Account{ID: 11, Platform: PlatformKiro, Credentials: map[string]any{
+		"auth_method":   "builder_id",
+		"refresh_token": "rt_old",
+		"access_token":  "at_old",
+		"client_id":     "client-1",
+		"client_secret": "secret-1",
+		"region":        "us-east-1",
+	}}
+
+	_, err := r.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	callsAfterFirst := discoveryCalls
+	require.Positive(t, callsAfterFirst, "第一次刷新应该真的尝试了发现")
+
+	_, err = r.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, callsAfterFirst, discoveryCalls, "冷却期内的第二次刷新不应该重新发起发现请求")
+}
+
+// TestKiroRefresherProfileDiscoveryCooldownIsPerAccount 确认冷却是按账号
+// ID 隔离的——不能因为账号 A 探测失败进入冷却，就连带让账号 B 的探测也被
+// 跳过。
+func TestKiroRefresherProfileDiscoveryCooldownIsPerAccount(t *testing.T) {
+	discoveryCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accessToken":"at_new","refreshToken":"rt_new","expiresIn":3600}`))
+	})
+	mux.HandleFunc("/ListAvailableProfiles", func(w http.ResponseWriter, _ *http.Request) {
+		discoveryCalls++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"AWS Builder ID is not supported for this operation"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	oauthSvc := newTestKiroOAuthService(t, srv)
+	oauthSvc.listProfilesHost = func(string) string { return srv.URL }
+	r := NewKiroTokenRefresher(oauthSvc)
+
+	baseCreds := map[string]any{
+		"auth_method":   "builder_id",
+		"refresh_token": "rt_old",
+		"access_token":  "at_old",
+		"client_id":     "client-1",
+		"client_secret": "secret-1",
+		"region":        "us-east-1",
+	}
+
+	_, err := r.Refresh(context.Background(), &Account{ID: 21, Platform: PlatformKiro, Credentials: baseCreds})
+	require.NoError(t, err)
+	callsAfterFirstAccount := discoveryCalls
+	require.Positive(t, callsAfterFirstAccount)
+
+	_, err = r.Refresh(context.Background(), &Account{ID: 22, Platform: PlatformKiro, Credentials: baseCreds})
+	require.NoError(t, err)
+	require.Greater(t, discoveryCalls, callsAfterFirstAccount, "另一个账号不应该被前一个账号的冷却连带跳过")
+}
+
 func TestKiroRefresherCacheKey(t *testing.T) {
 	r := NewKiroTokenRefresher(nil)
 	require.Equal(t, "kiro:account:9", r.CacheKey(&Account{ID: 9}))

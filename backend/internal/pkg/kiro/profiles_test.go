@@ -25,6 +25,27 @@ func TestIsValidProfileArn(t *testing.T) {
 	}
 }
 
+func TestRegionFromProfileArn(t *testing.T) {
+	t.Parallel()
+
+	region, ok := RegionFromProfileArn("arn:aws:codewhisperer:eu-central-1:123456789012:profile/abcdef123456")
+	require.True(t, ok)
+	require.Equal(t, "eu-central-1", region)
+
+	region, ok = RegionFromProfileArn("  arn:aws:codewhisperer:us-east-1:123456789012:profile/abcdef123456  ")
+	require.True(t, ok)
+	require.Equal(t, "us-east-1", region, "两端空白应该被忽略")
+
+	for _, bad := range []string{
+		"",
+		"not-an-arn",
+		"arn:aws:s3:us-east-1:123456789012:profile/abcdef123456",
+	} {
+		_, ok := RegionFromProfileArn(bad)
+		require.False(t, ok, "expected invalid: %s", bad)
+	}
+}
+
 func TestListProfilesHostFor(t *testing.T) {
 	t.Parallel()
 
