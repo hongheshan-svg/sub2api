@@ -351,7 +351,7 @@
                   v-model.number="generateForm.validity_days"
                   type="number"
                   min="1"
-                  max="365"
+                  max="36500"
                   required
                   class="input"
                 />

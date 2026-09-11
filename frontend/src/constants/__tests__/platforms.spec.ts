@@ -11,6 +11,7 @@ const concretePlatforms = [
   'zhipu',
   'deepseek',
   'minimax',
+  'opencode_go',
   'kiro'
 ]
 

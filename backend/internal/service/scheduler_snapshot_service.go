@@ -609,7 +609,7 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 		}
 		accountGroupIDs := s.normalizeGroupIDs(account.GroupIDs)
 		switch account.Platform {
-		case PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
+		case PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo:
 			addPlatformGroups(account.Platform, accountGroupIDs)
 		case PlatformAntigravity:
 			// 批量更新可能刚关闭 mixed_scheduling，仍需清理两个兼容平台的旧快照。
@@ -834,11 +834,12 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 
 // schedulerSnapshotPlatforms 之前漏掉了 PlatformKiro（I6）——Kiro 账号的
 // model_rate_limits/账号级冷却变更因此从未触发过这里驱动的调度快照失效，
-// 只能等下一次全量同步才会被调度器看到。所有调用点都是 range 遍历或
-// `platforms[:]...` 全切片展开（数组长度对两者都不敏感，改成 [10]string 不
-// 需要动任何调用点，go build 会在假设有误时立刻报错）。
-func schedulerSnapshotPlatforms() [10]string {
-	return [10]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformKiro}
+// 只能等下一次全量同步才会被调度器看到。上游同步新增了 PlatformOpenCodeGo，
+// 与本 fork 的 kiro 补丁一起并入，数组从 [10]string 扩到 [11]string。所有
+// 调用点都是 range 遍历或 `platforms[:]...` 全切片展开（数组长度对两者都不
+// 敏感，go build 会在假设有误时立刻报错）。
+func schedulerSnapshotPlatforms() [11]string {
+	return [11]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformKiro}
 }
 
 // 生命周期辅助函数有意排除 group0；full rebuild 构造 group0 canonical 集时必须显式调用 canonical helper。

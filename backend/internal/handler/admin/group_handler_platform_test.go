@@ -12,10 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 回归分组平台枚举:kimi/zhipu/deepseek/minimax/kiro 必须能通过 Create/Update 的 binding 校验
-// （历史 bug:调度/路由链路已支持 CN 平台分组,但 oneof 白名单漏加三平台,导致
-// 平台分组无法创建、CN 账号"无可用分组"；kiro 同理:C1 发现 oneof 白名单漏加
-// kiro,导致 Kiro 分组完全无法创建,整个 Kiro 平台不可达）;非法值仍须被拒。
+// 回归分组平台枚举:kimi/zhipu/deepseek/minimax/opencode_go/kiro 必须能通过
+// Create/Update 的 binding 校验（历史 bug:调度/路由链路已支持这些平台,但 oneof
+// 白名单漏加,导致平台分组无法创建、账号"无可用分组"；kiro 同理:C1 发现 oneof
+// 白名单漏加 kiro,导致 Kiro 分组完全无法创建,整个 Kiro 平台不可达）;非法值
+// 仍须被拒。
 func bindGroupPlatformJSON(t *testing.T, target any, body string) error {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -28,7 +29,7 @@ func bindGroupPlatformJSON(t *testing.T, target any, body string) error {
 func TestGroupPlatformBinding_AllowedPlatforms(t *testing.T) {
 	allowed := []string{
 		"anthropic", "openai", "gemini", "antigravity", "grok",
-		"kimi", "zhipu", "deepseek", "minimax", "composite", "kiro",
+		"kimi", "zhipu", "deepseek", "minimax", "opencode_go", "composite", "kiro",
 	}
 	for _, platform := range allowed {
 		t.Run("create_"+platform, func(t *testing.T) {
@@ -73,7 +74,7 @@ func TestGroupPlatformBinding_RejectsInvalidPlatforms(t *testing.T) {
 }
 
 func TestCompositeRouteTargetPlatform_AllowsCNProviders(t *testing.T) {
-	for _, platform := range []string{"kimi", "zhipu", "deepseek", "minimax"} {
+	for _, platform := range []string{"kimi", "zhipu", "deepseek", "minimax", "opencode_go"} {
 		var req CompositeRouteRequest
 		body := fmt.Sprintf(`{"public_model":"m","target_platform":%q}`, platform)
 		require.NoError(t, bindGroupPlatformJSON(t, &req, body))
@@ -90,4 +91,9 @@ func TestCompositeRouteTargetPlatform_RejectsKiro(t *testing.T) {
 	body := `{"public_model":"m","target_platform":"kiro"}`
 	require.Error(t, bindGroupPlatformJSON(t, &req, body),
 		"composite 路由到 kiro 是 phase-2 范围外功能，target_platform 不应接受 kiro")
+}
+
+func TestCompositeRouteTargetPlatform_RejectsComposite(t *testing.T) {
+	var req CompositeRouteRequest
+	require.Error(t, bindGroupPlatformJSON(t, &req, `{"public_model":"m","target_platform":"composite"}`))
 }
