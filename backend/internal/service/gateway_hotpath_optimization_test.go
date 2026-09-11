@@ -849,6 +849,64 @@ func TestInvalidateAvailableModelsCache_ByDimensions(t *testing.T) {
 	})
 }
 
+// schedulablePlatformsAccountRepoStub 只实现 GetSchedulablePlatforms 会用到的两个方法，
+// 并记录调用次数，供 DB-1 回归测试断言缓存命中后不再打库。
+type schedulablePlatformsAccountRepoStub struct {
+	AccountRepository
+
+	accounts []Account
+	err      error
+
+	listSchedulableCalls          atomic.Int64
+	listSchedulableByGroupIDCalls atomic.Int64
+}
+
+func (r *schedulablePlatformsAccountRepoStub) ListSchedulable(ctx context.Context) ([]Account, error) {
+	r.listSchedulableCalls.Add(1)
+	return r.accounts, r.err
+}
+
+func (r *schedulablePlatformsAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
+	r.listSchedulableByGroupIDCalls.Add(1)
+	return r.accounts, r.err
+}
+
+// 回归测试（DB-1）：GetSchedulablePlatforms 此前每次调用都直接查库；改造后应命中
+// modelsListCache，且缓存内容与直接查库的结果一致。
+func TestGetSchedulablePlatforms_CachesResult(t *testing.T) {
+	repo := &schedulablePlatformsAccountRepoStub{
+		accounts: []Account{
+			{Platform: PlatformAnthropic},
+			{Platform: PlatformGemini},
+			{Platform: PlatformAnthropic},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	groupID := int64(7)
+
+	platforms1 := svc.GetSchedulablePlatforms(context.Background(), &groupID)
+	require.Equal(t, map[string]struct{}{PlatformAnthropic: {}, PlatformGemini: {}}, platforms1)
+	require.EqualValues(t, 1, repo.listSchedulableByGroupIDCalls.Load())
+
+	platforms2 := svc.GetSchedulablePlatforms(context.Background(), &groupID)
+	require.Equal(t, platforms1, platforms2)
+	require.EqualValues(t, 1, repo.listSchedulableByGroupIDCalls.Load(), "第二次调用应命中缓存，不应再查库")
+
+	// 返回值必须是拷贝，调用方修改它不能污染缓存里的原始数据。
+	platforms2[PlatformOpenAI] = struct{}{}
+	platforms3 := svc.GetSchedulablePlatforms(context.Background(), &groupID)
+	require.NotContains(t, platforms3, PlatformOpenAI)
+
+	// InvalidateAvailableModelsCache(groupID, "") 应该也让 GetSchedulablePlatforms 的缓存失效。
+	svc.InvalidateAvailableModelsCache(&groupID, "")
+	svc.GetSchedulablePlatforms(context.Background(), &groupID)
+	require.EqualValues(t, 2, repo.listSchedulableByGroupIDCalls.Load(), "失效后应该重新查库")
+}
+
 func TestSelectAccountWithLoadAwareness_StickyReadReuse(t *testing.T) {
 	now := time.Now().Add(-time.Minute)
 	account := Account{

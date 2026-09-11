@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -74,7 +75,17 @@ type FrontendServer struct {
 	settings    PublicSettingsProvider
 	overrideDir string // local file override directory
 	landing     map[string]LandingPage
+
+	// overrideDirExists/overrideDirCheckedAt 缓存"覆盖目录本身是否存在"这一判断，避免绝大多数
+	// 从未配置本地覆盖文件的部署里，每个静态资源请求都对 overrideDir 做一次真实的磁盘 os.Stat。
+	// 目录一旦存在就会持续存在（管理员放置覆盖文件的前置条件），所以只需按周期重新探测，
+	// 不需要写侧主动失效。
+	overrideDirExists    atomic.Bool
+	overrideDirCheckedAt atomic.Int64 // unix nano，0 表示尚未探测过
 }
+
+// overrideDirExistenceCheckInterval 控制 overrideDirAvailable 的重新探测间隔。
+const overrideDirExistenceCheckInterval = 10 * time.Second
 
 // NewFrontendServer creates a new frontend server with settings injection
 func NewFrontendServer(settingsProvider PublicSettingsProvider) (*FrontendServer, error) {
@@ -161,10 +172,28 @@ func (s *FrontendServer) fileExists(path string) bool {
 	return true
 }
 
+// overrideDirAvailable 判断覆盖目录是否存在，结果按 overrideDirExistenceCheckInterval
+// 缓存。绝大多数部署从未在 data/public 放过覆盖文件，这样每个静态资源请求就不用再为一个
+// 注定 ENOENT 的路径多付一次真实的磁盘 os.Stat。
+func (s *FrontendServer) overrideDirAvailable() bool {
+	if s.overrideDir == "" {
+		return false
+	}
+	now := time.Now().UnixNano()
+	if last := s.overrideDirCheckedAt.Load(); last != 0 && now-last < int64(overrideDirExistenceCheckInterval) {
+		return s.overrideDirExists.Load()
+	}
+	info, err := os.Stat(s.overrideDir)
+	exists := err == nil && info.IsDir()
+	s.overrideDirExists.Store(exists)
+	s.overrideDirCheckedAt.Store(now)
+	return exists
+}
+
 // tryServeOverride checks if a local override file exists and serves it.
 // Files in overrideDir take precedence over embedded files.
 func (s *FrontendServer) tryServeOverride(c *gin.Context, cleanPath string) bool {
-	if s.overrideDir == "" {
+	if !s.overrideDirAvailable() {
 		return false
 	}
 	filePath := filepath.Join(s.overrideDir, filepath.Clean("/"+cleanPath))

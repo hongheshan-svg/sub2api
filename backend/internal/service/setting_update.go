@@ -692,6 +692,15 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		return
 	}
 
+	// MW-2：会话绑定开关（每个 JWT 请求都会调用）+ 站点名称/副标题/文档链接/前端 URL
+	// （被公开无鉴权的 /robots.txt /sitemap.xml /llms.txt 端点在每次访问时调用）此前
+	// 每次读取都直接查库；这里用刚落库的新值直接刷新缓存，写入侧立即生效。
+	s.storeCachedSettingValue(SettingKeyFrontendURL, settings.FrontendURL)
+	s.storeCachedSettingValue(SettingKeySessionBindingEnabled, strconv.FormatBool(settings.SessionBindingEnabled))
+	s.storeCachedSettingValue(SettingKeySiteName, settings.SiteName)
+	s.storeCachedSettingValue(SettingKeySiteSubtitle, settings.SiteSubtitle)
+	s.storeCachedSettingValue(SettingKeyDocURL, settings.DocURL)
+
 	// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
 	versionBoundsSF.Forget("version_bounds")
 	versionBoundsCache.Store(&cachedVersionBounds{

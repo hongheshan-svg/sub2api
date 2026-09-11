@@ -1381,6 +1381,38 @@ func TestContentModerationCallModeration_FreezesByHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestContentModerationCallModeration_NetworkErrorFreezesAPIKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	closedURL := server.URL
+	server.Close() // 关闭后该地址无人监听，client.Do 会直接返回连接错误，httpStatus 停留在 0
+
+	cfg := defaultContentModerationConfig()
+	cfg.BaseURL = closedURL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+
+	_, err := svc.callModeration(context.Background(), cfg, "hello")
+	require.Error(t, err)
+
+	status := svc.apiKeyStatusForHash(0, moderationAPIKeyHash("sk-test"), maskSecretTail("sk-test"), true)
+	require.Equal(t, "frozen", status.Status)
+	require.Equal(t, 0, status.LastHTTPStatus)
+	require.Equal(t, 1, status.FailureCount)
+	require.NotNil(t, status.FrozenUntil)
+	remaining := time.Until(*status.FrozenUntil)
+	require.GreaterOrEqual(t, remaining, 25*time.Second)
+	require.LessOrEqual(t, remaining, 31*time.Second)
+
+	// 冻结窗口内，第二次调用应直接快速失败（无可用 key），不会再发起真正的 HTTP 请求
+	// 重新支付一次完整的超时+重试预算。
+	_, err2 := svc.callModeration(context.Background(), cfg, "hello again")
+	require.Error(t, err2)
+	require.Equal(t, "no moderation api key available", err2.Error())
+}
+
 func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

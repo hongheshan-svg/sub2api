@@ -485,6 +485,14 @@ function formatBucketRange(value: string) {
   gap: 0.5rem clamp(0.25rem, 0.8vw, 0.625rem);
   min-height: 2.25rem;
 }
+/* FE-1: 当前"渠道 × 模型"维度组合通常只有几十行，v-for 全量渲染尚可接受；一旦规模
+   膨胀到成百上千行，让浏览器原生跳过视口外行的布局/绘制开销，不改变 DOM 结构（每行
+   仍存在、可被测试查询到），也不影响 sticky 表头与滚轮缩放逻辑——比引入虚拟滚动库
+   风险更低。粘性表头本身不跳过，避免影响其 sticky 定位计算。 */
+.matrix-row:not(.matrix-header) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.25rem;
+}
 /* + tokens/s column when throughput visible */
 .matrix-row--with-tps {
   grid-template-columns:

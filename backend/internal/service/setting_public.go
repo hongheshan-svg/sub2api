@@ -146,8 +146,8 @@ func buildLoginAgreementRevision(updatedAt string, docs []LoginAgreementDocument
 
 // GetFrontendURL 获取前端基础URL（数据库优先，fallback 到配置文件）
 func (s *SettingService) GetFrontendURL(ctx context.Context) string {
-	val, err := s.settingRepo.GetValue(ctx, SettingKeyFrontendURL)
-	if err == nil && strings.TrimSpace(val) != "" {
+	val, found := s.getSettingValueCached(ctx, SettingKeyFrontendURL)
+	if found && strings.TrimSpace(val) != "" {
 		return strings.TrimSpace(val)
 	}
 	return s.cfg.Server.FrontendURL

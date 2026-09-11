@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -16,6 +17,22 @@ import (
 )
 
 const maxAPIKeyAuthorizationHeaderBytes = service.MaxAPIKeyCredentialBytes + 128
+
+// touchLastUsedTimeout 是异步落库 last_used_at 的超时时间。此调用不再借用请求的
+// context——请求处理完成后 c.Request.Context() 可能被取消，导致落库随请求一起夭折；
+// 用独立的短超时 context 保证防抖窗口到期时也能落库，同时不无限期占用 goroutine。
+const touchLastUsedTimeout = 5 * time.Second
+
+// touchLastUsedAsync 异步触发 last_used_at 的防抖更新，不阻塞当前请求。
+// TouchLastUsed 内部已有 L1 防抖 + singleflight；真正的数据库写入只在防抖窗口到期时才
+// 发生，但那次写入不应该占用请求的关键路径（尾延迟），因此这里整体挪到独立 goroutine。
+func touchLastUsedAsync(apiKeyService *service.APIKeyService, keyID int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), touchLastUsedTimeout)
+		defer cancel()
+		_ = apiKeyService.TouchLastUsed(ctx, keyID)
+	}()
+}
 
 // NewAPIKeyAuthMiddleware 创建 API Key 认证中间件
 func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) APIKeyAuthMiddleware {
@@ -182,7 +199,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 			setGroupContext(c, apiKey.Group)
 			if !billingInfoRequest {
-				_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+				touchLastUsedAsync(apiKeyService, apiKey.ID)
 			}
 			c.Next()
 			return
@@ -280,7 +297,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 		setGroupContext(c, apiKey.Group)
 		if !billingInfoRequest {
-			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+			touchLastUsedAsync(apiKeyService, apiKey.ID)
 		}
 
 		c.Next()

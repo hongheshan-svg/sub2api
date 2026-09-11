@@ -280,8 +280,8 @@ func (s *SettingService) IsTotpEncryptionKeyConfigured() bool {
 // 开启时会话与登录时的 IP/User-Agent 绑定，任一变化立即失效并撤销该会话。
 // 默认关闭：移动网络/多出口 IP 场景下 IP 频繁变化会导致登录后立即掉线。
 func (s *SettingService) IsSessionBindingEnabled(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeySessionBindingEnabled)
-	if err != nil {
+	value, found := s.getSettingValueCached(ctx, SettingKeySessionBindingEnabled)
+	if !found {
 		return false // 默认关闭
 	}
 	return value == "true"
@@ -328,23 +328,23 @@ func parseAuditLogRetentionDays(value string) int {
 
 // GetSiteName 获取网站名称
 func (s *SettingService) GetSiteName(ctx context.Context) string {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
-	if err != nil || value == "" {
+	value, found := s.getSettingValueCached(ctx, SettingKeySiteName)
+	if !found || value == "" {
 		return "Sub2API"
 	}
 	return value
 }
 
 func (s *SettingService) GetSiteSubtitle(ctx context.Context) string {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteSubtitle)
-	if err != nil || strings.TrimSpace(value) == "" {
+	value, found := s.getSettingValueCached(ctx, SettingKeySiteSubtitle)
+	if !found || strings.TrimSpace(value) == "" {
 		return "Subscription to API Conversion Platform"
 	}
 	return value
 }
 
 func (s *SettingService) GetDocURL(ctx context.Context) string {
-	value, _ := s.settingRepo.GetValue(ctx, SettingKeyDocURL)
+	value, _ := s.getSettingValueCached(ctx, SettingKeyDocURL)
 	return strings.TrimSpace(value)
 }
 

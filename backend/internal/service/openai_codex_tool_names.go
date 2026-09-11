@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -291,6 +292,9 @@ func restoreCodexToolNamesInJSON(data []byte, reverse map[string]string) []byte 
 	if len(data) == 0 || len(reverse) == 0 || !json.Valid(data) {
 		return data
 	}
+	if !codexToolNameReverseMayApply(data, reverse) {
+		return data
+	}
 	var decoded any
 	if err := decodeOpenAIJSONUseNumber(data, &decoded); err != nil {
 		return data
@@ -303,6 +307,20 @@ func restoreCodexToolNamesInJSON(data []byte, reverse map[string]string) []byte 
 		return data
 	}
 	return restored
+}
+
+// codexToolNameReverseMayApply 用便宜的子串匹配快速判断 data 里是否可能出现了需要还原的
+// 假名，命中该请求的每一个 SSE 事件都会跑一次；工具名都是标识符（字母/数字/下划线），
+// 永远不需要 JSON 转义，所以"原始字节里包含该字符串"是"JSON 里某个字符串字段等于该值"
+// 的必要条件——返回 false 时可以安全跳过整体解码+重新序列化，不会漏掉任何真正需要还原
+// 的事件；返回 true 时退回原有的精确路径。
+func codexToolNameReverseMayApply(data []byte, reverse map[string]string) bool {
+	for aliased := range reverse {
+		if aliased != "" && bytes.Contains(data, []byte(aliased)) {
+			return true
+		}
+	}
+	return false
 }
 
 func restoreCodexToolNamesFromContext(c *gin.Context, data []byte) []byte {

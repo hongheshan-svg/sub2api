@@ -59,10 +59,16 @@ type User struct {
 	// 且该 (用户, 分组) 无 rpm_override 时作为全局兜底生效，计数键 rpm:u:{userID}:{min}。
 	RPMLimit int
 
-	// UserGroupRPMOverride 来自 auth cache snapshot 的 (user, group) RPM 覆盖值。
-	// nil = 该 API Key 对应的 (user, group) 无 override；非 nil 时 checkRPM 直接使用，
-	// 避免每请求查 DB。字段不持久化到数据库。
+	// UserGroupRPMOverride 来自 auth cache snapshot 的 (user, group) RPM 覆盖值，仅在
+	// UserGroupRPMOverrideChecked 为 true 时才有意义（nil 在那种情况下表示"确认无 override"）。
+	// 字段不持久化到数据库。
 	UserGroupRPMOverride *int
+	// UserGroupRPMOverrideChecked 标记 snapshot 构建时是否已经真正查过 (user, group) 的
+	// RPM override（无论查到值还是确认为空）。为 false 时 checkRPM 必须回退查 DB，不能把
+	// UserGroupRPMOverride==nil 误当作"确认无 override"——这是 auth cache snapshot 曾经
+	// 存在的一个缺陷：只在查到非 nil override 时才写入字段，导致"确认无 override"（多数
+	// 用户的常态）与"从未查过"都表现为 nil，每个请求都要重新查一次 DB，完全抵消缓存效果。
+	UserGroupRPMOverrideChecked bool
 
 	APIKeys       []APIKey
 	Subscriptions []UserSubscription

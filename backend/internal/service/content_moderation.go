@@ -81,14 +81,19 @@ const (
 	contentModerationKeyRateLimitFreezeDuration  = time.Minute
 	contentModerationKeyAuthFreezeDuration       = 10 * time.Minute
 	contentModerationKeyHTTPErrorFreezeDuration  = 10 * time.Second
-	maxContentModerationInputImages              = 1
-	maxContentModerationTestImages               = maxContentModerationInputImages
-	maxContentModerationTestImageBytes           = 8 * 1024 * 1024
-	maxContentModerationTestImageDataURLBytes    = 12 * 1024 * 1024
-	maxContentModerationBlockedKeywords          = 10000
-	maxContentModerationBlockedKeywordRunes      = 200
-	maxContentModerationModelFilterModels        = 1000
-	maxContentModerationModelFilterRunes         = 200
+	// contentModerationKeyNetworkErrorFreezeDuration 用于 httpStatus==0 的场景（连接超时/DNS
+	// 失败/TLS 失败/审核服务整体不可达等 client.Do 直接返回 error 的情形）。审核服务的网络级
+	// 不可达往往是持续性故障，不冻结的话每个请求都要重新完整跑一遍 TimeoutMS×(RetryCount+1)
+	// 的超时预算才能 fail-open 放行；冻结后同一 key 在窗口内直接跳过 HTTP 调用快速失败。
+	contentModerationKeyNetworkErrorFreezeDuration = 30 * time.Second
+	maxContentModerationInputImages                = 1
+	maxContentModerationTestImages                 = maxContentModerationInputImages
+	maxContentModerationTestImageBytes             = 8 * 1024 * 1024
+	maxContentModerationTestImageDataURLBytes      = 12 * 1024 * 1024
+	maxContentModerationBlockedKeywords            = 10000
+	maxContentModerationBlockedKeywordRunes        = 200
+	maxContentModerationModelFilterModels          = 1000
+	maxContentModerationModelFilterRunes           = 200
 
 	contentModerationCleanupInterval = 24 * time.Hour
 	contentModerationCleanupTimeout  = 30 * time.Minute
@@ -2370,8 +2375,12 @@ func (s *ContentModerationService) markAPIKeyError(key string, errText string, l
 
 func contentModerationFreezeDurationForHTTPStatus(httpStatus int) time.Duration {
 	switch httpStatus {
-	case 0, http.StatusBadRequest:
+	case http.StatusBadRequest:
 		return 0
+	case 0:
+		// client.Do 直接返回 error（未拿到响应）：连接超时/DNS 失败/TLS 失败/服务整体宕机。
+		// 与"拿到响应但是 400"是完全不同的故障语义，必须单独冻结，否则永远不会被冻结。
+		return contentModerationKeyNetworkErrorFreezeDuration
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return contentModerationKeyAuthFreezeDuration
 	case http.StatusTooManyRequests, 529:

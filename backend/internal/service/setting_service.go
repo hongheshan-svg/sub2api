@@ -151,6 +151,12 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 	openAIAPIKeyHealthBreakerCache    atomic.Value // *cachedOpenAIAPIKeyHealthBreakerSettings
 
+	// settingValueCache 是多个"单 key 只读 setting 值" getter 共用的进程内缓存（60s TTL），
+	// 例如会话绑定开关（每个 JWT 请求都会调用）、站点名称/文档链接（被公开无鉴权的
+	// /robots.txt /sitemap.xml /llms.txt 端点在每次访问时调用）——见 setting_value_cache.go。
+	settingValueCache sync.Map // key(string) -> cachedSettingValueEntry
+	settingValueSF    singleflight.Group
+
 	channelMonitorRuntimeListenersMu sync.Mutex
 	channelMonitorRuntimeListeners   []func()
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,10 +21,12 @@ import (
 // stubJWTUserRepo 实现 UserRepository 的最小子集，仅支持 GetByID。
 type stubJWTUserRepo struct {
 	service.UserRepository
-	users map[int64]*service.User
+	users        map[int64]*service.User
+	getByIDCalls atomic.Int64
 }
 
 func (r *stubJWTUserRepo) GetByID(_ context.Context, id int64) (*service.User, error) {
+	r.getByIDCalls.Add(1)
 	u, ok := r.users[id]
 	if !ok {
 		return nil, errors.New("user not found")
@@ -230,6 +233,82 @@ func TestJWTAuth_TamperedToken(t *testing.T) {
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, "INVALID_TOKEN", body.Code)
+}
+
+func TestJWTAuth_UserLookupCachedWithinTTLThroughMiddleware(t *testing.T) {
+	// 回归测试（MW-1）：NewJWTAuthMiddleware 应该把 UserService.GetByID 包一层短 TTL 缓存，
+	// 同一用户在 TTL 内的多次已认证请求不应重复触发底层 DB 查询。
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.JWT.Secret = "test-jwt-secret-32bytes-long!!!"
+	cfg.JWT.AccessTokenExpireMinutes = 60
+
+	user := &service.User{
+		ID:           1,
+		Email:        "cached@example.com",
+		Role:         "user",
+		Status:       service.StatusActive,
+		Concurrency:  5,
+		TokenVersion: 1,
+	}
+	userRepo := &stubJWTUserRepo{users: map[int64]*service.User{1: user}}
+	authSvc := service.NewAuthService(nil, userRepo, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	userSvc := service.NewUserService(userRepo, nil, nil, nil)
+	mw := NewJWTAuthMiddleware(authSvc, userSvc, nil, nil)
+
+	r := gin.New()
+	r.Use(gin.HandlerFunc(mw))
+	r.GET("/protected", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	token, err := authSvc.GenerateToken(context.Background(), user)
+	require.NoError(t, err)
+
+	for i := 0; i < 5; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	require.EqualValues(t, 1, userRepo.getByIDCalls.Load(), "5 次请求应只触发 1 次底层 GetByID 查询（其余 4 次命中缓存）")
+}
+
+func TestJWTAuthUserCache_RefetchesAfterExpiry(t *testing.T) {
+	// 回归测试（MW-1）：TTL 过期后应该重新回源，而不是永久返回陈旧数据。
+	inner := &countingJWTUserReader{
+		user: &service.User{ID: 1, Status: service.StatusActive},
+	}
+	cache := newJWTAuthUserCache(inner, 15*time.Millisecond)
+
+	u1, err1 := cache.GetByID(context.Background(), 1)
+	require.NoError(t, err1)
+	require.Same(t, inner.user, u1)
+	require.EqualValues(t, 1, inner.calls.Load())
+
+	u2, err2 := cache.GetByID(context.Background(), 1)
+	require.NoError(t, err2)
+	require.Same(t, inner.user, u2)
+	require.EqualValues(t, 1, inner.calls.Load(), "TTL 内第二次调用应命中缓存，不应回源")
+
+	time.Sleep(30 * time.Millisecond)
+
+	u3, err3 := cache.GetByID(context.Background(), 1)
+	require.NoError(t, err3)
+	require.Same(t, inner.user, u3)
+	require.EqualValues(t, 2, inner.calls.Load(), "TTL 过期后应该重新回源")
+}
+
+type countingJWTUserReader struct {
+	user  *service.User
+	err   error
+	calls atomic.Int64
+}
+
+func (r *countingJWTUserReader) GetByID(_ context.Context, _ int64) (*service.User, error) {
+	r.calls.Add(1)
+	return r.user, r.err
 }
 
 func TestJWTAuth_UserNotFound(t *testing.T) {

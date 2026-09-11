@@ -165,9 +165,10 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		frame := buildFrame("chunk", payload)
 
 		decoder := newBedrockEventStreamDecoder(bytes.NewReader(frame))
-		result, err := decoder.Decode()
+		result, buf, err := decoder.Decode()
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
+		putBedrockFrameBuf(buf)
 	})
 
 	t.Run("skip non-chunk events", func(t *testing.T) {
@@ -178,14 +179,15 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		_, _ = buf.Write(buildFrame("chunk", chunkPayload))
 
 		decoder := newBedrockEventStreamDecoder(&buf)
-		result, err := decoder.Decode()
+		result, resultBuf, err := decoder.Decode()
 		require.NoError(t, err)
 		assert.Equal(t, chunkPayload, result)
+		putBedrockFrameBuf(resultBuf)
 	})
 
 	t.Run("EOF on empty input", func(t *testing.T) {
 		decoder := newBedrockEventStreamDecoder(bytes.NewReader(nil))
-		_, err := decoder.Decode()
+		_, _, err := decoder.Decode()
 		assert.Equal(t, io.EOF, err)
 	})
 
@@ -194,7 +196,7 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		// Corrupt the prelude CRC (bytes 8-11)
 		frame[8] ^= 0xFF
 		decoder := newBedrockEventStreamDecoder(bytes.NewReader(frame))
-		_, err := decoder.Decode()
+		_, _, err := decoder.Decode()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "prelude CRC mismatch")
 	})
@@ -204,7 +206,7 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		// Corrupt the message CRC (last 4 bytes)
 		frame[len(frame)-1] ^= 0xFF
 		decoder := newBedrockEventStreamDecoder(bytes.NewReader(frame))
-		_, err := decoder.Decode()
+		_, _, err := decoder.Decode()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "message CRC mismatch")
 	})
@@ -237,7 +239,7 @@ func TestBedrockEventStreamDecoder(t *testing.T) {
 		_ = binary.Write(&frame, binary.BigEndian, crc32.Checksum(frame.Bytes(), castagnoliTab))
 
 		decoder := newBedrockEventStreamDecoder(bytes.NewReader(frame.Bytes()))
-		_, err := decoder.Decode()
+		_, _, err := decoder.Decode()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "prelude CRC mismatch")
 	})

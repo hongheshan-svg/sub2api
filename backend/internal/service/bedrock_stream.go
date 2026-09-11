@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 
 	type decodeEvent struct {
 		payload []byte
+		buf     []byte // payload 的底层帧缓冲区，消费者用完 payload 后必须 putBedrockFrameBuf(buf) 归还
 		err     error
 	}
 	events := make(chan decodeEvent, 16)
@@ -74,7 +76,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	go func() {
 		defer close(events)
 		for {
-			payload, err := decoder.Decode()
+			payload, buf, err := decoder.Decode()
 			if err != nil {
 				if err == io.EOF {
 					return
@@ -83,7 +85,8 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 				return
 			}
 			lastReadAt.Store(time.Now().UnixNano())
-			if !sendEvent(decodeEvent{payload: payload}) {
+			if !sendEvent(decodeEvent{payload: payload, buf: buf}) {
+				// 消费者已放弃读取（客户端断开/流超时），buf 交给 GC 回收，不放回 pool。
 				return
 			}
 		}
@@ -123,8 +126,11 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("bedrock stream read error: %w", ev.err)
 			}
 
-			// payload 是 JSON，提取 chunk.bytes（base64 编码的 Claude SSE 事件数据）
+			// payload 是 JSON，提取 chunk.bytes（base64 编码的 Claude SSE 事件数据）。
+			// extractBedrockChunkData 会把需要的内容拷贝进新分配的 sseData，用完 ev.payload
+			// 后立刻归还底层帧缓冲区，不等到本次循环结束。
 			sseData := extractBedrockChunkData(ev.payload)
+			putBedrockFrameBuf(ev.buf)
 			if sseData == nil {
 				continue
 			}
@@ -247,26 +253,57 @@ func newBedrockEventStreamDecoder(r io.Reader) *bedrockEventStreamDecoder {
 	}
 }
 
-// Decode 读取下一个 EventStream 帧并返回 chunk 类型事件的 payload
-func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
+// bedrockFrameBufPool 复用 EventStream 帧的 payload 缓冲区（headers+payload+message_crc），
+// 减少高频流式解码下的堆分配。Decode 把缓冲区的所有权转交调用方，调用方读完 payload 内容
+// 后必须调用 putBedrockFrameBuf 归还；归还前绝不能再引用对应的 payload 切片。
+var bedrockFrameBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 8*1024)
+		return &buf
+	},
+}
+
+func getBedrockFrameBuf(n int) []byte {
+	ptr := bedrockFrameBufPool.Get().(*[]byte)
+	buf := *ptr
+	if cap(buf) < n {
+		return make([]byte, n)
+	}
+	return buf[:n]
+}
+
+// putBedrockFrameBuf 归还一个不再被任何 goroutine 引用的帧缓冲区。
+func putBedrockFrameBuf(buf []byte) {
+	if buf == nil {
+		return
+	}
+	buf = buf[:0]
+	bedrockFrameBufPool.Put(&buf)
+}
+
+// Decode 读取下一个 EventStream 帧，返回 chunk 类型事件的 payload。
+// 第二个返回值 buf 是 payload 的底层完整缓冲区：调用方用完 payload 后必须调用
+// putBedrockFrameBuf(buf) 归还给 sync.Pool，且归还后不能再访问 payload。
+func (d *bedrockEventStreamDecoder) Decode() ([]byte, []byte, error) {
 	for {
 		// 读取 prelude: total_length(4) + headers_length(4) + prelude_crc(4) = 12 bytes
-		prelude := make([]byte, 12)
+		var preludeArr [12]byte
+		prelude := preludeArr[:]
 		if _, err := io.ReadFull(d.reader, prelude); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// 验证 prelude CRC（AWS EventStream 使用标准 CRC32 / IEEE）
 		preludeCRC := bedrockReadUint32(prelude[8:12])
 		if crc32.Checksum(prelude[0:8], crc32IEEETable) != preludeCRC {
-			return nil, fmt.Errorf("eventstream prelude CRC mismatch")
+			return nil, nil, fmt.Errorf("eventstream prelude CRC mismatch")
 		}
 
 		totalLength := bedrockReadUint32(prelude[0:4])
 		headersLength := bedrockReadUint32(prelude[4:8])
 
 		if totalLength < 16 { // minimum: 12 prelude + 4 message_crc
-			return nil, fmt.Errorf("invalid eventstream frame: total_length=%d", totalLength)
+			return nil, nil, fmt.Errorf("invalid eventstream frame: total_length=%d", totalLength)
 		}
 
 		// 读取 headers + payload + message_crc
@@ -274,9 +311,10 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 		if remaining <= 0 {
 			continue
 		}
-		data := make([]byte, remaining)
+		data := getBedrockFrameBuf(remaining)
 		if _, err := io.ReadFull(d.reader, data); err != nil {
-			return nil, err
+			putBedrockFrameBuf(data)
+			return nil, nil, err
 		}
 
 		// 验证 message CRC（覆盖 prelude + headers + payload）
@@ -285,7 +323,8 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 		_, _ = h.Write(prelude)
 		_, _ = h.Write(data[:len(data)-4])
 		if h.Sum32() != messageCRC {
-			return nil, fmt.Errorf("eventstream message CRC mismatch")
+			putBedrockFrameBuf(data)
+			return nil, nil, fmt.Errorf("eventstream message CRC mismatch")
 		}
 
 		// 解析 headers
@@ -297,22 +336,28 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 
 		// 只处理 chunk 事件
 		if eventType == "chunk" {
-			// payload 是完整的 JSON，包含 bytes 字段
-			return payload, nil
+			// payload 是完整的 JSON，包含 bytes 字段；data 的所有权转交调用方，
+			// 调用方用完 payload 后必须调用 putBedrockFrameBuf(data) 归还。
+			return payload, data, nil
 		}
 
 		// 检查异常事件
 		exceptionType := extractEventStreamHeaderValue(headers, ":exception-type")
 		if exceptionType != "" {
-			return nil, fmt.Errorf("bedrock exception: %s: %s", exceptionType, string(payload))
+			msg := string(payload)
+			putBedrockFrameBuf(data)
+			return nil, nil, fmt.Errorf("bedrock exception: %s: %s", exceptionType, msg)
 		}
 
 		messageType := extractEventStreamHeaderValue(headers, ":message-type")
 		if messageType == "exception" || messageType == "error" {
-			return nil, fmt.Errorf("bedrock error: %s", string(payload))
+			msg := string(payload)
+			putBedrockFrameBuf(data)
+			return nil, nil, fmt.Errorf("bedrock error: %s", msg)
 		}
 
-		// 跳过其他事件类型（如 initial-response）
+		// 跳过其他事件类型（如 initial-response），归还缓冲区后继续读下一帧
+		putBedrockFrameBuf(data)
 	}
 }
 

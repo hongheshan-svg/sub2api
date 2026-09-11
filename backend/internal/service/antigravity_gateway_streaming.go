@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 type antigravityStreamResult struct {
@@ -262,20 +263,13 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				if u := extractGeminiUsage(inner); u != nil {
 					usage = u
 				}
-				var parsed map[string]any
-				if json.Unmarshal(inner, &parsed) == nil {
-					// Check for MALFORMED_FUNCTION_CALL
-					if candidates, ok := parsed["candidates"].([]any); ok && len(candidates) > 0 {
-						if cand, ok := candidates[0].(map[string]any); ok {
-							if fr, ok := cand["finishReason"].(string); ok && fr == "MALFORMED_FUNCTION_CALL" {
-								logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward stream")
-								if content, ok := cand["content"]; ok {
-									if b, err := json.Marshal(content); err == nil {
-										logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", string(b))
-									}
-								}
-							}
-						}
+				// Check for MALFORMED_FUNCTION_CALL：仅用于诊断日志，转发出去的是原始 payload
+				// 字符串，不需要为此把整个事件反序列化成 map[string]any——用 gjson 直接在原始
+				// 字节上探测这两个字段即可。
+				if fr := gjson.GetBytes(inner, "candidates.0.finishReason").String(); fr == "MALFORMED_FUNCTION_CALL" {
+					logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward stream")
+					if content := gjson.GetBytes(inner, "candidates.0.content"); content.Exists() {
+						logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", content.Raw)
 					}
 				}
 

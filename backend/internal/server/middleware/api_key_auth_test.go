@@ -1097,6 +1097,7 @@ func TestAPIKeyAuthTouchesLastUsedOnSuccess(t *testing.T) {
 
 	var touchedID int64
 	var touchedAt time.Time
+	touched := make(chan struct{}, 1)
 	apiKeyRepo := &stubApiKeyRepo{
 		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
 			if key != apiKey.Key {
@@ -1108,6 +1109,7 @@ func TestAPIKeyAuthTouchesLastUsedOnSuccess(t *testing.T) {
 		updateLastUsed: func(ctx context.Context, id int64, usedAt time.Time) error {
 			touchedID = id
 			touchedAt = usedAt
+			touched <- struct{}{}
 			return nil
 		},
 	}
@@ -1122,6 +1124,13 @@ func TestAPIKeyAuthTouchesLastUsedOnSuccess(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+
+	// TouchLastUsed 现在异步执行（不阻塞请求返回），等待它真正跑完再断言。
+	select {
+	case <-touched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async TouchLastUsed")
+	}
 	require.Equal(t, apiKey.ID, touchedID)
 	require.False(t, touchedAt.IsZero(), "expected touch timestamp")
 }
@@ -1145,6 +1154,7 @@ func TestAPIKeyAuthTouchLastUsedFailureDoesNotBlock(t *testing.T) {
 	}
 
 	touchCalls := 0
+	touched := make(chan struct{}, 1)
 	apiKeyRepo := &stubApiKeyRepo{
 		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
 			if key != apiKey.Key {
@@ -1155,6 +1165,7 @@ func TestAPIKeyAuthTouchLastUsedFailureDoesNotBlock(t *testing.T) {
 		},
 		updateLastUsed: func(ctx context.Context, id int64, usedAt time.Time) error {
 			touchCalls++
+			touched <- struct{}{}
 			return errors.New("db unavailable")
 		},
 	}
@@ -1169,6 +1180,12 @@ func TestAPIKeyAuthTouchLastUsedFailureDoesNotBlock(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code, "touch failure should not block request")
+
+	select {
+	case <-touched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async TouchLastUsed")
+	}
 	require.Equal(t, 1, touchCalls)
 }
 
@@ -1191,6 +1208,7 @@ func TestAPIKeyAuthTouchesLastUsedInStandardMode(t *testing.T) {
 	}
 
 	touchCalls := 0
+	touched := make(chan struct{}, 1)
 	apiKeyRepo := &stubApiKeyRepo{
 		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
 			if key != apiKey.Key {
@@ -1201,6 +1219,7 @@ func TestAPIKeyAuthTouchesLastUsedInStandardMode(t *testing.T) {
 		},
 		updateLastUsed: func(ctx context.Context, id int64, usedAt time.Time) error {
 			touchCalls++
+			touched <- struct{}{}
 			return nil
 		},
 	}
@@ -1215,6 +1234,12 @@ func TestAPIKeyAuthTouchesLastUsedInStandardMode(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+
+	select {
+	case <-touched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async TouchLastUsed")
+	}
 	require.Equal(t, 1, touchCalls)
 }
 
@@ -1318,6 +1343,7 @@ func TestAPIKeyAuthUsageStillTouchesLastUsed(t *testing.T) {
 	user := &service.User{ID: 7, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
 	apiKey := &service.APIKey{ID: 100, UserID: user.ID, Key: "usage-touch", Status: service.StatusActive, User: user}
 	touchCalls := 0
+	touched := make(chan struct{}, 1)
 	apiKeyRepo := &stubApiKeyRepo{
 		getByKey: func(context.Context, string) (*service.APIKey, error) {
 			clone := *apiKey
@@ -1325,6 +1351,7 @@ func TestAPIKeyAuthUsageStillTouchesLastUsed(t *testing.T) {
 		},
 		updateLastUsed: func(context.Context, int64, time.Time) error {
 			touchCalls++
+			touched <- struct{}{}
 			return nil
 		},
 	}
@@ -1338,6 +1365,12 @@ func TestAPIKeyAuthUsageStillTouchesLastUsed(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+
+	select {
+	case <-touched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async TouchLastUsed")
+	}
 	require.Equal(t, 1, touchCalls)
 }
 

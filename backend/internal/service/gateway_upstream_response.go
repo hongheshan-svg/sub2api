@@ -81,23 +81,14 @@ func buildClaudeCodeNoopDeltaKeepalive(index int, deltaType string) (string, boo
 	return fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"%s\",\"%s\":\"\"}}\n\n", index, deltaType, fieldName), true
 }
 
-func sseEventIndex(event map[string]any) (int, bool) {
-	switch v := event["index"].(type) {
-	case float64:
-		return int(v), true
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case json.Number:
-		i, err := v.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return int(i), true
-	default:
+// sseEventIndexFromJSON 直接用 gjson 在原始 JSON 文本上
+// 读取 "index" 字段，避免为了取一个整型字段而把整个事件反序列化成 map[string]any。
+func sseEventIndexFromJSON(dataLine string) (int, bool) {
+	r := gjson.Get(dataLine, "index")
+	if r.Type != gjson.Number {
 		return 0, false
 	}
+	return int(r.Int()), true
 }
 
 // shouldRectifySignatureError 统一判断是否应触发签名整流（strip thinking blocks 并重试）。
@@ -887,8 +878,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			return []string{block}, dataLine, nil, nil
 		}
 
-		var event map[string]any
-		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
+		if !gjson.Valid(dataLine) {
 			// JSON 解析失败，直接透传原始数据
 			block := ""
 			if eventName != "" {
@@ -898,47 +888,70 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			return []string{block}, dataLine, nil, nil
 		}
 
-		eventType, _ := event["type"].(string)
+		eventType := gjson.Get(dataLine, "type").String()
 		observer.ObserveAnthropic([]byte(dataLine))
 		if eventName == "" {
 			eventName = eventType
 		}
-		eventChanged := false
 
-		if useNoopDeltaKeepalive {
-			switch eventType {
-			case "content_block_start":
-				if idx, ok := sseEventIndex(event); ok {
-					noopDeltaKeepaliveBlockIndex = -1
-					noopDeltaKeepaliveDeltaType = ""
-					if contentBlock, ok := event["content_block"].(map[string]any); ok {
-						blockType, _ := contentBlock["type"].(string)
+		// 只有 message_start / message_delta 才可能需要改写内容（cached tokens 归一化、
+		// cache TTL 重分类、模型名还原、usage 补丁提取）。绝大多数事件——尤其是承载正文的
+		// content_block_delta——从不会被这些逻辑修改，用 gjson 按需读取一两个字段即可，
+		// 避免为每个 chunk 都做一次整体反射式 json.Unmarshal 成 map[string]any。
+		if eventType != "message_start" && eventType != "message_delta" {
+			if useNoopDeltaKeepalive {
+				switch eventType {
+				case "content_block_start":
+					if idx, ok := sseEventIndexFromJSON(dataLine); ok {
+						noopDeltaKeepaliveBlockIndex = -1
+						noopDeltaKeepaliveDeltaType = ""
+						blockType := gjson.Get(dataLine, "content_block.type").String()
 						if deltaType := claudeCodeKeepaliveDeltaTypeForContentBlock(blockType); deltaType != "" {
 							noopDeltaKeepaliveBlockIndex = idx
 							noopDeltaKeepaliveDeltaType = deltaType
 						}
 					}
-				}
-			case "content_block_delta":
-				if idx, ok := sseEventIndex(event); ok {
-					if delta, ok := event["delta"].(map[string]any); ok {
-						deltaType, _ := delta["type"].(string)
+				case "content_block_delta":
+					if idx, ok := sseEventIndexFromJSON(dataLine); ok {
+						deltaType := gjson.Get(dataLine, "delta.type").String()
 						if claudeCodeKeepaliveFieldForDeltaType(deltaType) != "" {
 							noopDeltaKeepaliveBlockIndex = idx
 							noopDeltaKeepaliveDeltaType = deltaType
 						}
 					}
-				}
-			case "content_block_stop":
-				if idx, ok := sseEventIndex(event); ok && idx == noopDeltaKeepaliveBlockIndex {
+				case "content_block_stop":
+					if idx, ok := sseEventIndexFromJSON(dataLine); ok && idx == noopDeltaKeepaliveBlockIndex {
+						noopDeltaKeepaliveBlockIndex = -1
+						noopDeltaKeepaliveDeltaType = ""
+					}
+				case "message_stop":
 					noopDeltaKeepaliveBlockIndex = -1
 					noopDeltaKeepaliveDeltaType = ""
 				}
-			case "message_stop":
-				noopDeltaKeepaliveBlockIndex = -1
-				noopDeltaKeepaliveDeltaType = ""
 			}
+
+			if anthropicStreamEventIsTerminal(eventName, dataLine) {
+				sawTerminalEvent = true
+			}
+			block := ""
+			if eventName != "" {
+				block = "event: " + eventName + "\n"
+			}
+			block += "data: " + dataLine + "\n\n"
+			return []string{block}, dataLine, nil, nil
 		}
+
+		var event map[string]any
+		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
+			// gjson.Valid 已确认是合法 JSON，这里理论上不会失败；保守起见仍直接透传原始数据
+			block := ""
+			if eventName != "" {
+				block = "event: " + eventName + "\n"
+			}
+			block += "data: " + dataLine + "\n\n"
+			return []string{block}, dataLine, nil, nil
+		}
+		eventChanged := false
 
 		// 兼容 Kimi cached_tokens → cache_read_input_tokens
 		if eventType == "message_start" {
@@ -1085,7 +1098,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
 						restored := reverseToolNamesIfPresent(c, []byte(block))
-						if _, werr := fmt.Fprint(w, string(restored)); werr != nil {
+						if _, werr := w.Write(restored); werr != nil {
 							clientDisconnected = true
 							logger.LegacyPrintf("service.gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
 							// 不 break：客户端断开后仍需继续合并本事件及后续事件的 usage，

@@ -10,14 +10,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// NewJWTAuthMiddleware 创建 JWT 认证中间件
+// NewJWTAuthMiddleware 创建 JWT 认证中间件。
+//
+// userService 在鉴权查询路径上被包一层短 TTL 缓存（见 jwtAuthUserCache），减少管理后台/
+// 用户面板每个已认证请求触发的同步 DB 查询；TouchLastActiveForUser 仍直接用原始
+// userService，不受这层缓存影响（该调用本身已有独立的防抖机制）。
 func NewJWTAuthMiddleware(
 	authService *service.AuthService,
 	userService *service.UserService,
 	settingService *service.SettingService,
 	auditService *service.AuditLogService,
 ) JWTAuthMiddleware {
-	return JWTAuthMiddleware(jwtAuth(authService, userService, userService, settingService, auditService))
+	cachedUserReader := newJWTAuthUserCache(userService, jwtAuthUserCacheTTL)
+	return JWTAuthMiddleware(jwtAuth(authService, cachedUserReader, userService, settingService, auditService))
 }
 
 type jwtUserReader interface {

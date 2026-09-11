@@ -74,6 +74,7 @@ const (
 	cacheTTLTarget5m                   = "5m"
 	cacheTTLTarget1h                   = "1h"
 	compositeModelOwnershipCachePrefix = "composite-owner|"
+	schedulablePlatformsCachePrefix    = "schedulable-platforms|"
 )
 
 // ForceCacheBillingContextKey 强制缓存计费上下文键
@@ -221,6 +222,16 @@ func cloneStringSlice(src []string) []string {
 	}
 	dst := make([]string, len(src))
 	copy(dst, src)
+	return dst
+}
+
+// cloneStringSet 返回 src 的浅拷贝，供从共享缓存里取出 map 时使用——避免调用方
+// 修改返回值时污染缓存里的原始 map（GetSchedulablePlatforms 的缓存命中路径）。
+func cloneStringSet(src map[string]struct{}) map[string]struct{} {
+	dst := make(map[string]struct{}, len(src))
+	for k := range src {
+		dst[k] = struct{}{}
+	}
 	return dst
 }
 
@@ -1516,13 +1527,33 @@ func explicitModelMappingClaims(account Account, model string) bool {
 	return ok && strings.TrimSpace(mapped) != ""
 }
 
+func schedulablePlatformsCacheKey(groupID *int64) string {
+	return fmt.Sprintf("%s%d", schedulablePlatformsCachePrefix, derefGroupID(groupID))
+}
+
 // GetSchedulablePlatforms returns the concrete platforms that currently have
 // schedulable accounts in the target group.
+//
+// DB-1: 这一支路此前每次调用都对 ListSchedulable(ByGroupID) 发起未缓存查询并做完整
+// 账号 hydrate（含 proxy/group 关联），而同一分组的 GetAvailableModels 早就接入了
+// modelsListCache——composite 分组的模型列表接口如果被前端下拉菜单频繁刷新，会造成
+// 重复的账号全量 hydrate。这里复用同一个 modelsListCache 实例与 TTL。
 func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *int64) map[string]struct{} {
 	platforms := make(map[string]struct{})
 	if s == nil || s.accountRepo == nil {
 		return platforms
 	}
+
+	cacheKey := schedulablePlatformsCacheKey(groupID)
+	if s.modelsListCache != nil {
+		if cached, found := s.modelsListCache.Get(cacheKey); found {
+			if cachedPlatforms, ok := cached.(map[string]struct{}); ok {
+				modelsListCacheHitTotal.Add(1)
+				return cloneStringSet(cachedPlatforms)
+			}
+		}
+	}
+	modelsListCacheMissTotal.Add(1)
 
 	var accounts []Account
 	var err error
@@ -1541,6 +1572,11 @@ func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *i
 			platforms[platform] = struct{}{}
 		}
 	}
+
+	if s.modelsListCache != nil {
+		s.modelsListCache.Set(cacheKey, cloneStringSet(platforms), s.modelsListCacheTTL)
+		modelsListCacheStoreTotal.Add(1)
+	}
 	return platforms
 }
 
@@ -1549,6 +1585,7 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 		return
 	}
 	s.invalidateCompositeModelOwnershipCache(groupID)
+	s.invalidateSchedulablePlatformsCache(groupID)
 
 	normalizedPlatform := strings.TrimSpace(platform)
 	// 完整匹配时精准失效；否则按维度批量失效。
@@ -1575,6 +1612,21 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 		}
 		s.modelsListCache.Delete(key)
 	}
+}
+
+// invalidateSchedulablePlatformsCache 使 GetSchedulablePlatforms 的缓存失效。
+// groupID 为 nil 时清空该维度下的全部条目（与 invalidateCompositeModelOwnershipCache
+// 的 nil 语义一致），否则精确删除该分组自己的条目。
+func (s *GatewayService) invalidateSchedulablePlatformsCache(groupID *int64) {
+	if groupID == nil {
+		for key := range s.modelsListCache.Items() {
+			if strings.HasPrefix(key, schedulablePlatformsCachePrefix) {
+				s.modelsListCache.Delete(key)
+			}
+		}
+		return
+	}
+	s.modelsListCache.Delete(schedulablePlatformsCacheKey(groupID))
 }
 
 func (s *GatewayService) invalidateCompositeModelOwnershipCache(groupID *int64) {
