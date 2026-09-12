@@ -479,7 +479,8 @@ export default {
       zhipu: '智谱 GLM',
       deepseek: 'DeepSeek',
       minimax: 'MiniMax',
-      opencode_go: 'OpenCode'
+      opencode_go: 'OpenCode',
+      kiro: 'Kiro'
     },
     // 检查模式（监控条目的工作方式）
     checkMode: {

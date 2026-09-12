@@ -23,10 +23,13 @@ var monitorProviders = map[string]struct{}{
 	MonitorProviderZhipu:       {},
 	MonitorProviderDeepseek:    {},
 	MonitorProviderMiniMax:     {},
+	MonitorProviderKiro:        {},
 }
 
 // probeCapableProviders 支持探活（probe / quota_probe）的 provider。
-// antigravity 上游无 Chat/Responses 可打（仅 IDE 代理形态），只允许配额模式。
+// antigravity 上游无 Chat/Responses 可打（仅 IDE 代理形态）；kiro 同理没有
+// 探活 adapter（OAuth 凭据形态，不是静态 endpoint+api_key 对）——两者都只
+// 允许配额模式。
 //
 //nolint:gochecknoglobals // 静态查表，初始化后不变。
 var probeCapableProviders = map[string]struct{}{
@@ -73,6 +76,7 @@ func monitorCheckModeUsesQuota(checkMode string) bool {
 //	------------------------+-------+-------+------------
 //	openai/anthropic/...    |  Y    |  Y    |  Y
 //	antigravity（无 adapter）|  N    |  Y    |  N
+//	kiro（无 adapter）       |  N    |  Y    |  N
 func validateCheckMode(provider, checkMode string) error {
 	checkMode = defaultCheckMode(checkMode)
 	switch checkMode {
@@ -214,7 +218,9 @@ func normalizeMonitorPrimaryModel(provider, checkMode, model string) string {
 //   - kimi/zhipu/deepseek/minimax payg：仅 kimi/deepseek 有公开余额端点
 //   - anthropic：OAuth / Setup Token（API-Key 型无 usage 通道，永久 error）
 //   - openai：OAuth（API-Key 型无 usage 通道）
-//   - gemini/grok/antigravity：本地统计/值通道降级，不会永久 error，放行
+//   - gemini/grok/antigravity/kiro：本地统计/值通道降级，不会永久 error，放行
+//     （kiro 落进 default 分支——四种 auth_method 都能走 KiroQuotaFetcher，
+//     没有理由像 anthropic/openai 那样按凭据形态拦截其中一部分）
 func monitorAccountQuotaCapability(account *Account) error {
 	switch account.Platform {
 	case PlatformOpenCodeGo:

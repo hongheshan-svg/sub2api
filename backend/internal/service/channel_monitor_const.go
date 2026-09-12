@@ -70,6 +70,11 @@ const (
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepseek    = "deepseek"
 	MonitorProviderMiniMax     = "minimax"
+	// MonitorProviderKiro 与 antigravity 一样无探活 adapter（Kiro 是 OAuth
+	// 凭据形态——access_token+profileArn+region+machine_id，不是静态的
+	// endpoint+api_key 对，套不进探活 adapter 的形状），仅支持配额模式，
+	// 复用账号侧已有的 KiroQuotaFetcher 用量数据。
+	MonitorProviderKiro = "kiro"
 
 	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
 	//   probe       - LLM 探活（默认，原有行为）
@@ -152,7 +157,7 @@ var (
 		"CHANNEL_MONITOR_NOT_FOUND", "channel monitor not found",
 	)
 	ErrChannelMonitorInvalidProvider = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek/minimax",
+		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek/minimax/kiro",
 	)
 	ErrChannelMonitorInvalidCheckMode = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_CHECK_MODE", "check_mode must be one of probe/quota/quota_probe; antigravity only supports quota",

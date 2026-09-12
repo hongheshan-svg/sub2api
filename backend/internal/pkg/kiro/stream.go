@@ -96,6 +96,15 @@ type StreamTranslator struct {
 	fallbackCache5m       int
 	fallbackCache1h       int
 	hasFallbackCache      bool
+
+	// toolNames 把 Kiro 回显的工具名换回客户端原名（见 ToolNameMap 文档）。
+	// nil 时 ToClient 是空操作，与本机制引入前的行为一致。
+	toolNames *ToolNameMap
+
+	// contextUsagePercentage / hasContextUsage 记录上游 contextUsageEvent
+	// 最近一次给出的上下文占用比例（见 ContextUsagePercentage 的文档）。
+	contextUsagePercentage float64
+	hasContextUsage        bool
 }
 
 // NewStreamTranslator 创建翻译器。messageID 由调用方生成，便于与请求日志关联。
@@ -121,6 +130,22 @@ func (t *StreamTranslator) SawContent() bool { return t.sawContent }
 // Credits 返回本次请求消耗的 Kiro credits（来自 meteringEvent）。
 func (t *StreamTranslator) Credits() float64 { return t.credits }
 
+// ContextUsagePercentage 返回上游 contextUsageEvent 报告的上下文占用比例
+// （0-1 之间），ok=false 表示这次响应从未出现过这个事件。
+//
+// 不用于计费——本网关的 input token 计费口径始终是 EstimateRequestInput
+// 的本地估算（见 Usage() 文档），这里只是把此前被 handle() 直接丢弃的信号
+// 保留下来供调用方按需记录/日后校准用：三份参考实现（尤其是 Kiro-Go）都
+// 把这个百分比结合每模型的上下文窗口大小换算成绝对 token 数，认为这是比
+// 字符加权启发式更贴近上游真实口径的信号。我们目前没有一份自己验证过的
+// 「每个 Kiro 模型上下文窗口大小」权威表——models.go 顶部的历史教训是：
+// 未经真实账号验证就照抄第三方参考实现的数字，出过错（fable 别名事故）。
+// 在拿到我们自己验证过的窗口大小表之前，只暴露原始比例本身，不擅自换算
+// 成绝对数字、更不用它覆盖或校正现有的计费估算。
+func (t *StreamTranslator) ContextUsagePercentage() (float64, bool) {
+	return t.contextUsagePercentage, t.hasContextUsage
+}
+
 // SetInputTokens 填充本次请求的 input token 估算值（调用方通常用
 // EstimateRequestInput 算出）。必须在 Finalize 之前调用，否则
 // message_delta 里的 usage.input_tokens 会保持默认的 0——Kiro 本身不提供
@@ -139,6 +164,12 @@ func (t *StreamTranslator) SetPromptCacheFallback(creation, read, creation5m, cr
 	t.fallbackCache1h = creation1h
 	t.hasFallbackCache = true
 }
+
+// SetToolNameMap 提供本次请求用来把工具名转成 Kiro 安全形态的映射（调用方
+// 用同一个实例传给 kiro.Options.ToolNames 构造请求）——响应里 Kiro 回显的
+// 是转换后的名字，必须用同一个实例才能换回客户端原名。必须在 Feed 第一个
+// toolUseEvent 之前调用；调用方通常在构造 translator 之后立刻设置。
+func (t *StreamTranslator) SetToolNameMap(names *ToolNameMap) { t.toolNames = names }
 
 // PromptCacheCreationSplit 返回 Usage() 里 cache_creation 的 5m/1h TTL 拆分——
 // 只有采用了本地模拟兜底时才非零；Kiro 协议本身不区分 TTL 档位，上游真实值
@@ -244,7 +275,16 @@ func (t *StreamTranslator) handle(ev Event) ([]apicompat.AnthropicStreamEvent, e
 		}
 		return out, &UpstreamError{Type: ex.Type, Code: ex.Code, Message: ex.Message}
 
-	case EventContextUsage, EventCodeReference, EventUnknown:
+	case EventContextUsage:
+		// 不下发给客户端（Anthropic 协议没有这个字段），但留作诊断信号——
+		// 见 ContextUsagePercentage 的文档。只保留最近一次的值：这是一个
+		// 累计占比，不是增量，后面的值天然覆盖前面的。
+		if ev.ContextUsage != nil {
+			t.contextUsagePercentage = ev.ContextUsage.Percentage
+			t.hasContextUsage = true
+		}
+
+	case EventCodeReference, EventUnknown:
 		// 无需下发给客户端。
 	}
 
@@ -382,9 +422,12 @@ func (t *StreamTranslator) handleToolUse(tu *ToolUse) []apicompat.AnthropicStrea
 	if tu.ToolUseID != t.curToolID || t.openKind != blockToolUse {
 		out = append(out, t.closeBlock()...)
 		out = append(out, t.openBlockOf(blockToolUse, &apicompat.AnthropicContentBlock{
-			Type:  "tool_use",
-			ID:    tu.ToolUseID,
-			Name:  tu.Name,
+			Type: "tool_use",
+			ID:   tu.ToolUseID,
+			// 换回客户端原名——发给 Kiro 的可能是经 ToolNameMap.ToKiro 转换
+			// 过的安全名字（见 request.go processTools 的文档），客户端不该
+			// 看到一个自己从未声明过的工具名。
+			Name:  t.toolNames.ToClient(tu.Name),
 			Input: json.RawMessage("{}"),
 		}))
 		t.curToolID = tu.ToolUseID

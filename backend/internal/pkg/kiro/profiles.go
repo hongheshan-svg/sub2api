@@ -18,6 +18,30 @@ func IsValidProfileArn(arn string) bool {
 	return profileArnPattern.MatchString(strings.TrimSpace(arn))
 }
 
+// profileArnRegionPattern 与 profileArnPattern 同源，额外捕获 region 分段。
+var profileArnRegionPattern = regexp.MustCompile(`^arn:[-.a-z0-9]{1,63}:(?:codewhisperer|transform):([-.a-z0-9]{1,63}):\d{12}:profile/[a-zA-Z0-9]{12}$`)
+
+// RegionFromProfileArn 从合法的 profile ARN 里解析出它所在的区域。
+//
+// 背景：参考实现 Kiro-Go 明确文档记录过这个坑——账号 credentials 里存的
+// region 是 SSO 登录时的授权/OIDC 区域，跟这个 profile 实际所在的数据面
+// 区域可能不是同一个（其 regionalizeURLForRegion 的注释原话："account.Region
+// 是认证区域，可能和 profile 实际所在区域不一致"）。多数场景下两者凑巧相同
+// 所以"能跑"，一旦不一致，用授权区域拼数据面主机会打到错误的区域，且没有
+// 任何症状直接指向"region 配错了"这个根因——调用方（kiroDataPlaneRegion）
+// 应该优先信任这里解析出的区域。
+//
+// 只在 arn 本身完整合法时才提取 region，不用一个更宽松的正则"尽量"提取——
+// 避免把一个格式错误、可能被篡改的字符串里的任意子串当成合法区域名拼进
+// 出站请求的 URL。
+func RegionFromProfileArn(arn string) (string, bool) {
+	m := profileArnRegionPattern.FindStringSubmatch(strings.TrimSpace(arn))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // ListProfilesHostFor 返回 ListAvailableProfiles 该打去哪个 host。
 //
 // CodeWhisperer 的 REST host 只在 us-east-1 存在；其它区域用区域化的

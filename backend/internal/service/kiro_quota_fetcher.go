@@ -36,7 +36,9 @@ type KiroQuotaFetcher struct {
 func NewKiroQuotaFetcher() *KiroQuotaFetcher {
 	return &KiroQuotaFetcher{
 		qHostFor: func(account *Account) string {
-			return fmt.Sprintf("https://q.%s.amazonaws.com", account.KiroRegion())
+			// 优先用 profileArn 里解析出的数据面区域，而不是账号存的 SSO
+			// 授权区域——见 kiroDataPlaneRegion 的文档。
+			return fmt.Sprintf("https://q.%s.amazonaws.com", kiroDataPlaneRegion(account))
 		},
 	}
 }

@@ -87,6 +87,7 @@ func (s *KiroGatewayService) nonStreamToClient(
 	}
 
 	events = append(events, translator.Finalize()...)
+	logKiroContextUsageSignal(account, upstreamModel, translator)
 
 	anthropicResp, err := kiroAccumulateAnthropicResponse(events)
 	if err != nil {

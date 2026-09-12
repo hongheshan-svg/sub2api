@@ -258,6 +258,59 @@ func TestBuildRequestToolResultsMappedWithStatus(t *testing.T) {
 	require.Equal(t, "error", ctx.ToolResults[1].Status)
 }
 
+func TestBuildRequestSanitizesToolNamesWhenMapProvided(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"q"`)},
+			{Role: "assistant", Content: rawJSON(t, `[{"type":"tool_use","id":"tu_1","name":"mcp__fs__read_file","input":{}}]`)},
+			{Role: "user", Content: rawJSON(t, `[{"type":"tool_result","tool_use_id":"tu_1","content":"ok"}]`)},
+		},
+		Tools: []apicompat.AnthropicTool{{Name: "mcp__fs__read_file", InputSchema: rawJSON(t, `{"type":"object"}`)}},
+	}
+
+	opts := baseOpts()
+	opts.ToolNames = NewToolNameMap()
+	out, err := BuildRequest(req, opts)
+	require.NoError(t, err)
+
+	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	require.NotNil(t, ctx)
+	require.Len(t, ctx.Tools, 1)
+	declaredName := ctx.Tools[0].ToolSpecification.Name
+	require.NotContains(t, declaredName, "_", "工具名必须已经转成不含下划线的安全形态")
+	require.Regexp(t, `^[A-Za-z][A-Za-z0-9]*$`, declaredName)
+
+	// history = [user "q", assistant tool_use]；current message 是最后一条
+	// （tool_result 那条 user 消息），见 BuildRequest 步骤 5 的切分规则。
+	require.Len(t, out.ConversationState.History, 2)
+	assistantEntry := out.ConversationState.History[1].AssistantResponseMessage
+	require.NotNil(t, assistantEntry)
+	require.Len(t, assistantEntry.ToolUses, 1)
+	require.Equal(t, declaredName, assistantEntry.ToolUses[0].Name,
+		"历史里的工具调用名字必须和当前请求声明的工具名用同一套转换结果")
+}
+
+func TestBuildRequestLeavesToolNamesUntouchedWhenMapNotProvided(t *testing.T) {
+	t.Parallel()
+
+	req := &apicompat.AnthropicRequest{
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: rawJSON(t, `"q"`)},
+		},
+		Tools: []apicompat.AnthropicTool{{Name: "mcp__fs__read_file", InputSchema: rawJSON(t, `{"type":"object"}`)}},
+	}
+
+	out, err := BuildRequest(req, baseOpts())
+	require.NoError(t, err)
+
+	ctx := out.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	require.NotNil(t, ctx)
+	require.Equal(t, "mcp__fs__read_file", ctx.Tools[0].ToolSpecification.Name,
+		"未接线 ToolNames 时必须是本次改动前的行为：原样透传")
+}
+
 func TestBuildRequestImagesMapped(t *testing.T) {
 	t.Parallel()
 

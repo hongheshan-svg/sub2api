@@ -129,6 +129,11 @@ type Options struct {
 	FakeThinkingMaxTokens int
 	// ToolDescMaxLen 超过此长度的工具描述移入 system prompt。
 	ToolDescMaxLen int
+	// ToolNames 是本次请求的工具名映射（见 ToolNameMap 文档）。调用方需要
+	// 用同一个实例设置给 StreamTranslator.SetToolNameMap，才能在响应侧把
+	// Kiro 回显的安全名字换回客户端原名。留空（nil）时退化为不转换，
+	// 与本次改动前的行为完全一致。
+	ToolNames *ToolNameMap
 }
 
 // BuildRequest 把 Anthropic 请求转换成 Kiro 的 conversationState。
@@ -138,8 +143,8 @@ func BuildRequest(req *apicompat.AnthropicRequest, opts Options) (*Request, erro
 		return nil, ErrNoMessages
 	}
 
-	// 1-2. 工具预处理：长描述移入 system，schema 清洗。
-	tools, toolDocs := processTools(req.Tools, opts.ToolDescMaxLen)
+	// 1-2. 工具预处理：长描述移入 system，schema 清洗，工具名转 Kiro 安全形态。
+	tools, toolDocs := processTools(req.Tools, opts.ToolDescMaxLen, opts.ToolNames)
 
 	// 3. system 拼接。
 	systemText, err := FlattenSystem(req.System)
@@ -187,7 +192,7 @@ func BuildRequest(req *apicompat.AnthropicRequest, opts Options) (*Request, erro
 		}
 	}
 
-	history := buildHistory(historyMsgs, opts.ModelID, origin)
+	history := buildHistory(historyMsgs, opts.ModelID, origin, opts.ToolNames)
 
 	// 6. current message；assistant 结尾时移入 history 并顶替为 Continue。
 	currentContent := current.Text
@@ -197,7 +202,7 @@ func BuildRequest(req *apicompat.AnthropicRequest, opts Options) (*Request, erro
 
 	if current.Role == "assistant" {
 		history = append(history, HistoryEntry{
-			AssistantResponseMessage: assistantEntry(current, currentContent),
+			AssistantResponseMessage: assistantEntry(current, currentContent, opts.ToolNames),
 		})
 		current = Msg{Role: "user"}
 		currentContent = continuePlaceholder
@@ -243,8 +248,9 @@ func joinSystem(system, content string) string {
 	return system + "\n\n" + content
 }
 
-// processTools 清洗 schema，并把超长描述移入 system prompt 文档段。
-func processTools(tools []apicompat.AnthropicTool, maxLen int) ([]Tool, string) {
+// processTools 清洗 schema，把超长描述移入 system prompt 文档段，并把工具名
+// 转成 Kiro 安全形态（names 为 nil 时 ToKiro 是空操作，见 ToolNameMap 文档）。
+func processTools(tools []apicompat.AnthropicTool, maxLen int, names *ToolNameMap) ([]Tool, string) {
 	if len(tools) == 0 {
 		return nil, ""
 	}
@@ -259,17 +265,23 @@ func processTools(tools []apicompat.AnthropicTool, maxLen int) ([]Tool, string) 
 			_ = json.Unmarshal(tool.InputSchema, &schema)
 		}
 
+		// 文档段落里的引用也必须用转换后的名字——这段文本会被模型当作
+		// 系统提示词的一部分读到，必须和它实际能调用的工具名（下面的
+		// ToolSpecification.Name）保持一致，否则模型会引用一个自己实际
+		// 声明不出来的名字。
+		kiroName := names.ToKiro(tool.Name)
+
 		desc := tool.Description
 		if desc == "" {
-			desc = "Tool: " + tool.Name
+			desc = "Tool: " + kiroName
 		}
 		if maxLen > 0 && len(desc) > maxLen {
-			docs = append(docs, fmt.Sprintf("## Tool: %s\n\n%s", tool.Name, desc))
-			desc = fmt.Sprintf("[Full documentation in system prompt under '## Tool: %s']", tool.Name)
+			docs = append(docs, fmt.Sprintf("## Tool: %s\n\n%s", kiroName, desc))
+			desc = fmt.Sprintf("[Full documentation in system prompt under '## Tool: %s']", kiroName)
 		}
 
 		out = append(out, Tool{ToolSpecification: ToolSpecification{
-			Name:        tool.Name,
+			Name:        kiroName,
 			Description: desc,
 			InputSchema: InputSchema{JSON: SanitizeSchema(schema)},
 		}})
@@ -282,7 +294,7 @@ func processTools(tools []apicompat.AnthropicTool, maxLen int) ([]Tool, string) 
 	return out, toolDocs
 }
 
-func buildHistory(msgs []Msg, modelID, origin string) []HistoryEntry {
+func buildHistory(msgs []Msg, modelID, origin string, names *ToolNameMap) []HistoryEntry {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -291,7 +303,7 @@ func buildHistory(msgs []Msg, modelID, origin string) []HistoryEntry {
 	for _, m := range msgs {
 		if m.Role == "assistant" {
 			history = append(history, HistoryEntry{
-				AssistantResponseMessage: assistantEntry(m, m.Text),
+				AssistantResponseMessage: assistantEntry(m, m.Text, names),
 			})
 			continue
 		}
@@ -314,7 +326,7 @@ func buildHistory(msgs []Msg, modelID, origin string) []HistoryEntry {
 	return history
 }
 
-func assistantEntry(m Msg, content string) *AssistantResponseMessage {
+func assistantEntry(m Msg, content string, names *ToolNameMap) *AssistantResponseMessage {
 	if content == "" {
 		content = "(empty)"
 	}
@@ -325,7 +337,10 @@ func assistantEntry(m Msg, content string) *AssistantResponseMessage {
 			input = json.RawMessage("{}")
 		}
 		out.ToolUses = append(out.ToolUses, KiroToolUse{
-			Name:      tc.Name,
+			// 历史里的工具调用名字必须和当前这次请求 processTools 声明的
+			// 名字保持同一套转换结果——同一个 ToolNameMap 实例保证了这一点
+			// （ToKiro 对同一个原始名字恒定返回同一个结果）。
+			Name:      names.ToKiro(tc.Name),
 			Input:     input,
 			ToolUseID: tc.ID,
 		})

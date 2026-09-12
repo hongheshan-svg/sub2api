@@ -67,7 +67,9 @@ func (s *KiroGatewayService) listAvailableModels(ctx context.Context, account *A
 		s.persistMachineIDIfGenerated(ctx, account)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.listModelsURL(account.KiroRegion()), bytes.NewReader(body))
+	// 优先用 profileArn 里解析出的数据面区域，而不是账号存的 SSO 授权区域——
+	// 见 kiroDataPlaneRegion 的文档。
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.listModelsURL(kiroDataPlaneRegion(account)), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("kiro: build list models http request: %w", err)
 	}
