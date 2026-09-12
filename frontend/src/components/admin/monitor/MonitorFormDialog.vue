@@ -271,6 +271,7 @@ import {
   PROVIDER_DEEPSEEK,
   PROVIDER_MINIMAX,
   PROVIDER_OPENCODE_GO,
+  PROVIDER_KIRO,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
   CHECK_MODE_PROBE,
@@ -479,6 +480,7 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
   { value: PROVIDER_MINIMAX, label: t('monitorCommon.providers.minimax') },
   { value: PROVIDER_OPENCODE_GO, label: t('monitorCommon.providers.opencode_go') },
+  { value: PROVIDER_KIRO, label: t('monitorCommon.providers.kiro') },
 ])
 
 // 国产 provider 预填的官方 endpoint（仅探活侧；配额模式 endpoint 可留空）。
@@ -502,8 +504,8 @@ const checkModeOptions = computed<CheckModeOption[]>(() => [
     value: CHECK_MODE_PROBE,
     label: t('admin.channelMonitor.form.checkModeProbe'),
     hint: t('admin.channelMonitor.form.checkModeProbeHint'),
-    // antigravity 无探活 adapter，仅配额模式。
-    disabled: form.provider === PROVIDER_ANTIGRAVITY,
+    // antigravity/kiro 无探活 adapter，仅配额模式。
+    disabled: form.provider === PROVIDER_ANTIGRAVITY || form.provider === PROVIDER_KIRO,
   },
   {
     value: CHECK_MODE_QUOTA,
@@ -515,8 +517,8 @@ const checkModeOptions = computed<CheckModeOption[]>(() => [
     value: CHECK_MODE_QUOTA_PROBE,
     label: t('admin.channelMonitor.form.checkModeQuotaProbe'),
     hint: t('admin.channelMonitor.form.checkModeQuotaProbeHint'),
-    // antigravity 无探活 adapter，只支持配额模式。
-    disabled: form.provider === PROVIDER_ANTIGRAVITY,
+    // antigravity/kiro 无探活 adapter，只支持配额模式。
+    disabled: form.provider === PROVIDER_ANTIGRAVITY || form.provider === PROVIDER_KIRO,
   },
 ])
 
@@ -679,15 +681,18 @@ function selectProvider(provider: Provider) {
   form.account_id = null
   pinnedAccount.value = null
   accountHydrationFailed.value = false
-  // antigravity 仅配额模式：切到它时强制 quota（checkModeOptions 同步禁用其余项）。
-  if (provider === PROVIDER_ANTIGRAVITY && form.check_mode !== CHECK_MODE_QUOTA) {
+  // antigravity/kiro 仅配额模式：切到它们时强制 quota（checkModeOptions 同步禁用其余项）。
+  if ((provider === PROVIDER_ANTIGRAVITY || provider === PROVIDER_KIRO) && form.check_mode !== CHECK_MODE_QUOTA) {
     form.check_mode = CHECK_MODE_QUOTA
   }
-  // 对称还原：从 antigravity 切走时撤掉强制 quota，否则编辑存量 antigravity
-  // 监控换平台后仍停留在 quota（目标平台未必支持），update 会携带残留配置。
+  // 对称还原：从 antigravity/kiro 切走时撤掉强制 quota，否则编辑存量监控换
+  // 平台后仍停留在 quota（目标平台未必支持），update 会携带残留配置。
   // 同步清掉 quota 占位模型（loadFromMonitor 回填的 'quota'），否则切回
   // probe 后拿 'quota' 当探活模型（与离开 grok 清 DEFAULT_GROK_MODEL 同理）。
-  if (previousProvider === PROVIDER_ANTIGRAVITY && form.check_mode === CHECK_MODE_QUOTA) {
+  if (
+    (previousProvider === PROVIDER_ANTIGRAVITY || previousProvider === PROVIDER_KIRO) &&
+    form.check_mode === CHECK_MODE_QUOTA
+  ) {
     form.check_mode = CHECK_MODE_PROBE
     if (form.primary_model.trim() === 'quota') form.primary_model = ''
   }

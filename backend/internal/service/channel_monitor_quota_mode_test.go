@@ -366,6 +366,7 @@ func TestNormalizeMonitorPrimaryModel_QuotaDefault(t *testing.T) {
 
 func TestProviderProbeCapabilityMatrix(t *testing.T) {
 	require.False(t, providerSupportsProbe(MonitorProviderAntigravity))
+	require.False(t, providerSupportsProbe(MonitorProviderKiro), "kiro 是 OAuth 凭据形态，没有探活 adapter")
 	for _, p := range []string{
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
@@ -377,10 +378,18 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderAntigravity,
 		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
-		MonitorProviderMiniMax,
+		MonitorProviderMiniMax, MonitorProviderKiro,
 	} {
 		require.NoError(t, validateProvider(p), p)
 	}
+}
+
+// TestValidateCheckMode_KiroQuotaOnly 覆盖 kiro 与 antigravity 同款约束：
+// 只允许 quota，probe/quota_probe 均因缺少探活 adapter 被拒。
+func TestValidateCheckMode_KiroQuotaOnly(t *testing.T) {
+	require.NoError(t, validateCheckMode(MonitorProviderKiro, MonitorCheckModeQuota))
+	require.ErrorIs(t, validateCheckMode(MonitorProviderKiro, MonitorCheckModeProbe), ErrChannelMonitorInvalidCheckMode)
+	require.ErrorIs(t, validateCheckMode(MonitorProviderKiro, MonitorCheckModeQuotaProbe), ErrChannelMonitorInvalidCheckMode)
 }
 
 // --- 关联账号校验 ---
@@ -522,6 +531,13 @@ func TestMonitorAccountQuotaCapability_Matrix(t *testing.T) {
 		{
 			name:    "antigravity ok",
 			account: &Account{ID: 15, Platform: domain.PlatformAntigravity},
+		},
+		{
+			// kiro 落进 default 分支：四种 auth_method（idc/builder_id/social/
+			// api_key）都能走 KiroQuotaFetcher，不像 anthropic/openai 需要按
+			// Type 拦截其中一部分。
+			name:    "kiro ok",
+			account: &Account{ID: 16, Platform: domain.PlatformKiro},
 		},
 	}
 	for _, tc := range cases {

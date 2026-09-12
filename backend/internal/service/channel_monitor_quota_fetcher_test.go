@@ -144,6 +144,29 @@ func TestQuotaFetcher_OverseasAccountUsesUsageService(t *testing.T) {
 	require.Equal(t, 0, cnQuota.calls)
 }
 
+// TestQuotaFetcher_KiroAccountUsesUsageServiceWithCreditsTier 覆盖 kiro 落进
+// fetchUncached 的 default 分支（走 AccountUsageService，同海外平台），且
+// PlanLevel 在通用 SubscriptionTier/SubscriptionTierRaw 都为空时回退到
+// KiroSubscriptionTitle（kiroUsageInfo 只填了这个专属字段）。
+func TestQuotaFetcher_KiroAccountUsesUsageServiceWithCreditsTier(t *testing.T) {
+	fetcher, usage, _, _, accounts := newQuotaFetcherTestSetup(t)
+	accounts.accounts[20] = &Account{ID: 20, Platform: domain.PlatformKiro}
+	usage.usage = &UsageInfo{
+		KiroSubscriptionTitle: "KIRO PRO+",
+		KiroOverageStatus:     "ENABLED",
+		KiroCredits:           &UsageProgress{Utilization: 35, UsedRequests: 350, LimitRequests: 1000},
+	}
+
+	snapshot := fetcher.Fetch(context.Background(), 20)
+
+	require.True(t, snapshot.Success)
+	require.Equal(t, "usage", snapshot.Source)
+	require.Equal(t, "KIRO PRO+", snapshot.PlanLevel)
+	require.Len(t, snapshot.Tiers, 1)
+	require.Equal(t, "credits", snapshot.Tiers[0].Window)
+	require.InDelta(t, 35, snapshot.Tiers[0].UsedPercent, 0.001)
+}
+
 func TestQuotaFetcher_CodingPlanAccountUsesCNQuota(t *testing.T) {
 	fetcher, _, cnQuota, cnBalance, accounts := newQuotaFetcherTestSetup(t)
 	accounts.accounts[9] = &Account{
@@ -651,12 +674,13 @@ func TestUsageQuotaTiers_MapsAllWindowKinds(t *testing.T) {
 			"gemini-3-pro":   {Utilization: 45},
 			"gemini-3-flash": {Utilization: 55},
 		},
+		KiroCredits: &UsageProgress{Utilization: 66},
 	}
 
 	tiers := usageQuotaTiers(usage)
 
-	// 5h/7d/7d-sonnet/7d-fable/30d + gemini×3 + grok×2 + antigravity×2
-	require.Len(t, tiers, 12)
+	// 5h/7d/7d-sonnet/7d-fable/30d + gemini×3 + grok×2 + antigravity×2 + kiro credits×1
+	require.Len(t, tiers, 13)
 
 	byKey := make(map[string]domain.MonitorQuotaTier, len(tiers))
 	for _, tier := range tiers {
@@ -679,6 +703,7 @@ func TestUsageQuotaTiers_MapsAllWindowKinds(t *testing.T) {
 	require.Contains(t, byKey, "daily/tokens")
 	require.Contains(t, byKey, "total/gemini-3-pro")
 	require.Contains(t, byKey, "total/gemini-3-flash")
+	require.Contains(t, byKey, "credits")
 
 	// grok requests 窗口：used = limit - remaining，百分比 60%。
 	requests := byKey["daily/requests"]

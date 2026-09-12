@@ -88,6 +88,13 @@ const PROVIDER_ICONS: Record<Provider, IconData> = {
       'M16 6H8v12h8V6zm4 16H4V2h16v20z',
     ],
   },
+  // 没有可核实的官方 Kiro 商标 SVG 路径，用与 opencode_go 同一套「通用几何
+  // 占位符」处理，不臆造一个冒充官方 logo 的图形。
+  kiro: {
+    paths: [
+      'M12 2L2 12l10 10 10-10L12 2zm0 3.83L18.17 12 12 18.17 5.83 12 12 5.83z',
+    ],
+  },
 }
 
 const props = withDefaults(defineProps<{

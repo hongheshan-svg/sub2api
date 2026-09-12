@@ -268,6 +268,12 @@ func (f *ChannelMonitorQuotaFetcher) fetchUsage(ctx context.Context, account *Ac
 	if snapshot.PlanLevel == "" {
 		snapshot.PlanLevel = usage.SubscriptionTierRaw
 	}
+	// Kiro 没有 SubscriptionTier/SubscriptionTierRaw（kiroUsageInfo 只填了专属的
+	// KiroSubscriptionTitle 字段），不加这条兜底的话 Kiro 监控的快照会永远是空
+	// plan_level。
+	if snapshot.PlanLevel == "" {
+		snapshot.PlanLevel = usage.KiroSubscriptionTitle
+	}
 	return snapshot
 }
 
@@ -289,6 +295,8 @@ func usageQuotaTiers(usage *UsageInfo) []domain.MonitorQuotaTier {
 	// Grok requests/tokens 两个日窗口 + 月度计费窗口。
 	appendQuotaWindowTier(&tiers, "daily", "requests", usage.GrokRequestQuota)
 	appendQuotaWindowTier(&tiers, "daily", "tokens", usage.GrokTokenQuota)
+	// Kiro credits：AGENTIC_REQUEST 口径的请求数配额（getUsageLimits 唯一给出的窗口）。
+	appendProgressTier(&tiers, "credits", "", usage.KiroCredits)
 	// Antigravity per-model 总量额度，Label = 模型名（按名排序保证输出稳定）。
 	for _, model := range sortedQuotaModelNames(usage.AntigravityQuota) {
 		q := usage.AntigravityQuota[model]
