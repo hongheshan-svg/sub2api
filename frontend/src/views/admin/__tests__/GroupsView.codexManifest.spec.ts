@@ -19,6 +19,8 @@ const {
   getLiveCapability: vi.fn(),
 }));
 
+const authState = vi.hoisted(() => ({ isSimpleMode: false }));
+
 vi.mock("@/api/admin", () => ({
   adminAPI: {
     groups: {
@@ -46,6 +48,10 @@ vi.mock("@/stores/app", () => ({
     showError: vi.fn(),
     showSuccess: vi.fn(),
   }),
+}));
+
+vi.mock("@/stores/auth", () => ({
+  useAuthStore: () => authState,
 }));
 
 vi.mock("@/stores/onboarding", () => ({

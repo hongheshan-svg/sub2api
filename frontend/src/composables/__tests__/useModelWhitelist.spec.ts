@@ -162,6 +162,9 @@ describe('useModelWhitelist', () => {
 
     // 2026-09-06：opus-4.5/4.6/4.7/4.8、sonnet-5 经真实账号权威接口
     // ListAvailableModels 核实后加入，与后端 kiro.DefaultModels() 同步更新。
+    // gpt-5.6-sol/terra/luna 走 /backend-api/codex/responses（Codex 端点），
+    // 与上面的 claude-* 系列从不混用，见 kiro_gateway_service.go 的
+    // kiroOutputProtocol 说明。
     expect(models).toEqual([
       'claude-sonnet-4.6',
       'claude-sonnet-4.5',
@@ -172,7 +175,10 @@ describe('useModelWhitelist', () => {
       'claude-opus-4.8',
       'claude-opus-4.7',
       'claude-opus-4.6',
-      'claude-opus-4.5'
+      'claude-opus-4.5',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna'
     ])
   })
 
