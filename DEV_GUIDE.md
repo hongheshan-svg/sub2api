@@ -116,7 +116,10 @@ gh release edit v0.1.X --notes-file notes.md
 
 | 版本 | 日期 | 同步上游 | 上游提交 | PR | Merge commit | 冲突处理 |
 |------|------|----------|---------|----|--------------|----------|
+| v0.3.4 | 2026-09-15 | v0.2.4 → v0.2.5 | 56 | #63 | `311fdc243` | 2 处冲突：`VERSION`（我们 0.3.3 > 上游 0.2.5，取 ours）；`wire_gen.go`（上游把 `ollamaCloudUsageService :=` 上移到 L122 给 `ProvideRateLimitService` 用，保留我们带 `kiroOAuthHandler`+`adminInvoiceHandler` 的 `ProvideAdminHandlers` 调用、删旧位置重复定义）。另修上游新增的 exhaustive `Record<GroupPlatform, KeyGroupProvider>` 缺 fork 的 `kiro` 导致的 TS2741（git 不报冲突，只有 typecheck 抓得到）。 |
 | v0.1.155 | 2026-07-14 | v0.1.153 → v0.1.155 | 68 | #29 | `e2b5bff8` | 1 处 add/add 去重：`http_upstream_http2_keepalive_test.go`（fork PR #28 的 HTTP/2 keepalive 补丁被上游 cherry-pick #4207 回流，取 ours 复用已有 `timeoutTestPoolSettings()` helper）。`upstream-pr/http2-keepalive` 分支本地+远端已删。 |
+
+**v0.3.4 校验记录**：本地 `go build -tags embed` / `go test -tags=unit`（57 包 ok，0 FAIL）/ `go test ./...` / `golangci-lint`（0 issues）/ vue-tsc / eslint `--max-warnings 0` / `pnpm build` / **全量 vitest（289 文件 2323 tests，0 FAIL）** 全绿；双向语义防丢失：正向上游 106 文件 0 丢失、反向 11 文件 0 丢失；PR CI 12 pass / 2 skipping，main CI 6/6 success；`release.yml` 4 job 全绿；GHCR `ghcr.io/hongheshan-svg/sub2api:0.3.4` 多架构 `linux/amd64`+`linux/arm64` ✓。
 
 **v0.1.155 校验记录**：本地 `go build -tags embed` / `go test -tags=unit`（0 FAIL）/ vue-tsc / eslint / critical vitest（6 文件 91 tests）全绿；CI 真跑（test 6m23s、golangci-lint 2m40s、frontend 1m21s）；`release.yml` 4 job 全绿；GHCR `ghcr.io/hongheshan-svg/sub2api:0.1.155` 多架构 `linux/amd64`+`linux/arm64` ✓。
 
