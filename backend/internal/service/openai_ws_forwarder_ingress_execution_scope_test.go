@@ -227,7 +227,7 @@ func (c *openAIWSGatedConn) Close() error {
 // runOpenAIWSCodexThreadPair 用 OAuth 账号（抢占只对 OAuth ctx_pool 生效）跑两条并发接入：
 // A 的请求发到上游后 B 才接入并立即完成，B 完成后才放行 A 的上游事件。
 // 返回 A 与 B 的服务端返回值、A 客户端读结果的错误。
-func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverErrs []error, aReadErr error) {
+func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverErrs []error, aReadErr, aCloseErr error) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	cfg := newOpenAIWSExecutionScopeTestConfig()
@@ -314,7 +314,9 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 	cancelA()
 	if aReadErr == nil {
 		require.Equal(t, "resp_thread_a", gjson.GetBytes(completedA, "response.id").String())
-		require.NoError(t, connA.Close(coderws.StatusNormalClosure, "done"))
+		// 不在这里断言:同线程场景下 A 读到完成事件后仍可能被抢占,那时 Close 会
+		// 撞上迟到的抢占关闭帧 —— 那是合法结果。交给各自的测试判断。
+		aCloseErr = connA.Close(coderws.StatusNormalClosure, "done")
 	}
 	require.NoError(t, connB.Close(coderws.StatusNormalClosure, "done"))
 
@@ -326,24 +328,40 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 			t.Fatal("等待 ingress websocket 结束超时")
 		}
 	}
-	return serverErrs, aReadErr
+	return serverErrs, aReadErr, aCloseErr
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexThreadsDoNotPreemptEachOther(t *testing.T) {
-	serverErrs, aReadErr := runOpenAIWSCodexThreadPair(t, "thread-a", "thread-b")
+	serverErrs, aReadErr, aCloseErr := runOpenAIWSCodexThreadPair(t, "thread-a", "thread-b")
 	require.NoError(t, aReadErr, "子智能体接入后父线程在飞的请求必须继续完成")
+	require.NoError(t, aCloseErr, "不同线程之间不应发生抢占,A 必须能正常关闭")
 	for _, err := range serverErrs {
 		require.NoError(t, err)
 	}
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_SameCodexThreadStillPreempts(t *testing.T) {
-	serverErrs, aReadErr := runOpenAIWSCodexThreadPair(t, "thread-a", "thread-a")
-	require.Error(t, aReadErr, "同线程重连必须取代旧连接")
-	var closeErr coderws.CloseError
-	require.True(t, errors.As(aReadErr, &closeErr), "被取代的连接应收到关闭帧而不是裸断开: %v", aReadErr)
-	require.Equal(t, coderws.StatusTryAgainLater, closeErr.Code)
-	require.Equal(t, openAIWSSessionPreemptedCloseReason, closeErr.Reason)
+	serverErrs, aReadErr, aCloseErr := runOpenAIWSCodexThreadPair(t, "thread-a", "thread-a")
+
+	// gate 释放后,"把 A 的完成事件转发给客户端" 与 "抢占并关闭 A" 是并发的,
+	// 顺序不固定:通常 A 先收到抢占关闭帧(aReadErr),但 CI 负载高时 A 会先读到
+	// 完成事件、随后才被抢占,抢占就体现在 aCloseErr 上。两条路径都证明抢占发生
+	// 了,所以断言落在实际观察到的那一个上,而不是假定固定顺序。
+	require.True(t, aReadErr != nil || aCloseErr != nil, "同线程重连必须取代旧连接")
+
+	if aReadErr != nil {
+		// 主路径:抢占在 A 读取时就到达,可以完整校验关闭帧的状态码与原因。
+		var closeErr coderws.CloseError
+		require.True(t, errors.As(aReadErr, &closeErr), "被取代的连接应收到关闭帧而不是裸断开: %v", aReadErr)
+		require.Equal(t, coderws.StatusTryAgainLater, closeErr.Code)
+		require.Equal(t, openAIWSSessionPreemptedCloseReason, closeErr.Reason)
+	} else {
+		// 次要路径:A 已读到完成事件,抢占迟一步到达,体现为 Close 失败。这里只要求
+		// 关闭确实失败了;抢占语义由下面服务端侧的 preempted 计数做强校验 —— 那个
+		// 断言不受客户端时序影响。
+		require.Error(t, aCloseErr, "A 被抢占后关闭应当失败")
+	}
+
 	preempted := 0
 	for _, err := range serverErrs {
 		if IsOpenAIWSSessionPreemptedError(err) {
