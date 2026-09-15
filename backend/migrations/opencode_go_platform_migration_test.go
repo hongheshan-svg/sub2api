@@ -20,10 +20,14 @@ func TestOpenCodeGoPlatformMigration(t *testing.T) {
 	require.Contains(t, sql, "'minimax'")
 	require.Contains(t, sql, "position('opencode_go' IN monitor_constraint_def) = 0")
 	require.Contains(t, sql, "position('opencode_go' IN template_constraint_def) = 0")
+	// user_platform_quotas/composite_model_routes must keep the fork-only kiro
+	// platform (234_kiro_platform.sql, restored again by 237) alongside
+	// opencode_go — dropping it here broke every deployment with pre-existing
+	// platform='kiro' rows (v0.3.4 crash-loop incident, same shape as v0.3.1).
 	require.Contains(t, sql,
-		"CHECK (platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'))")
+		"CHECK (platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'kiro'))")
 	require.Contains(t, sql,
-		"CHECK (target_platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'))")
+		"CHECK (target_platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'kiro'))")
 	require.Contains(t, sql,
 		"CHECK (provider IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'))")
 }

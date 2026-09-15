@@ -102,7 +102,31 @@ var migrationChecksumCompatibilityRules = map[string]migrationChecksumCompatibil
 	// rows failed the ADD CONSTRAINT validation and crash-looped (v0.3.1
 	// incident). Deployments with no kiro rows yet had already applied and
 	// recorded the old (kiro-less) checksum successfully — grandfather it in.
-	"237_add_minimax_platform.sql": newMigrationChecksumCompatibilityRule("ea9aa474be4d6b70e6b93120cd4b27087385e99dd5f237ebbb3e0a2e4e3f95d1", "9bf4623f1f82f7b18f8ebc25f7205be6eebd5ed221e4c4be94b531131e479b64"),
+	//
+	// The two checksums originally registered here (ea9aa474…, 9bf4623f…) match
+	// NEITHER the pre-fix file (f4c73d2d…) nor the post-fix one (1c589ac3…), so
+	// the rule never actually fired: a deployment still recording the pre-fix
+	// checksum would have hit the hard "checksum mismatch" error instead of being
+	// grandfathered. Keep them (harmless, and we cannot rule out a deployment that
+	// recorded one) and add the two real versions.
+	"237_add_minimax_platform.sql": newMigrationChecksumCompatibilityRule(
+		"1c589ac3541f2f5b983a92961fe94c372997c442ce83f44352ac882728f786c1", // current file (kiro restored)
+		"f4c73d2dbce114ca7ade1aac51998c3465490f4f3c9b3e868e53590f3fa8601b", // pre-fix upstream version (kiro dropped)
+		"ea9aa474be4d6b70e6b93120cd4b27087385e99dd5f237ebbb3e0a2e4e3f95d1",
+		"9bf4623f1f82f7b18f8ebc25f7205be6eebd5ed221e4c4be94b531131e479b64",
+	),
+	// 238 is the exact same incident as 237, one upstream release later: the
+	// OpenCode patch rebuilt user_platform_quotas.platform and
+	// composite_model_routes.target_platform (both bare DROP+ADD, no idempotency
+	// guard) from the upstream platform list, dropping the fork-only kiro that
+	// 234 added and 237 restored. Any deployment holding platform='kiro' rows
+	// fails ADD CONSTRAINT validation and crash-loops (v0.3.4 incident).
+	// Deployments that had no kiro rows yet applied the old (kiro-less) file
+	// successfully and recorded its checksum — grandfather it in.
+	"238_opencode_go_platform.sql": newMigrationChecksumCompatibilityRule(
+		"07ca033dc449bee1648c8f2ec60a90dfceead39a131cf6520a9615c6595bf052", // current file (kiro restored)
+		"6f987e251519bd3759e60da44620a5d777494cceb333b6ce394aa0ea536ef5a2", // released v0.3.4 version (kiro dropped)
+	),
 }
 
 // ApplyMigrations 将嵌入的 SQL 迁移文件应用到指定的数据库。
