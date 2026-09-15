@@ -116,8 +116,16 @@ gh release edit v0.1.X --notes-file notes.md
 
 | 版本 | 日期 | 同步上游 | 上游提交 | PR | Merge commit | 冲突处理 |
 |------|------|----------|---------|----|--------------|----------|
-| v0.3.4 | 2026-09-15 | v0.2.4 → v0.2.5 | 56 | #63 | `311fdc243` | 2 处冲突：`VERSION`（我们 0.3.3 > 上游 0.2.5，取 ours）；`wire_gen.go`（上游把 `ollamaCloudUsageService :=` 上移到 L122 给 `ProvideRateLimitService` 用，保留我们带 `kiroOAuthHandler`+`adminInvoiceHandler` 的 `ProvideAdminHandlers` 调用、删旧位置重复定义）。另修上游新增的 exhaustive `Record<GroupPlatform, KeyGroupProvider>` 缺 fork 的 `kiro` 导致的 TS2741（git 不报冲突，只有 typecheck 抓得到）。 |
+| v0.3.4 | 2026-09-15 | v0.2.4 → v0.2.5 | 56 | #63, #64(hotfix) | `90e54978c`（重发） | 2 处冲突：`VERSION`（我们 0.3.3 > 上游 0.2.5，取 ours）；`wire_gen.go`（上游把 `ollamaCloudUsageService :=` 上移到 L122 给 `ProvideRateLimitService` 用，保留我们带 `kiroOAuthHandler`+`adminInvoiceHandler` 的 `ProvideAdminHandlers` 调用、删旧位置重复定义）。另修上游新增的 exhaustive `Record<GroupPlatform, KeyGroupProvider>` 缺 fork 的 `kiro` 导致的 TS2741（git 不报冲突，只有 typecheck 抓得到）。**⚠️ 首发版本上线即 crash-loop，tag/release/镜像已撤回重发** —— 见下方事故记录。 |
 | v0.1.155 | 2026-07-14 | v0.1.153 → v0.1.155 | 68 | #29 | `e2b5bff8` | 1 处 add/add 去重：`http_upstream_http2_keepalive_test.go`（fork PR #28 的 HTTP/2 keepalive 补丁被上游 cherry-pick #4207 回流，取 ours 复用已有 `timeoutTestPoolSettings()` helper）。`upstream-pr/http2-keepalive` 分支本地+远端已删。 |
+
+**⚠️ v0.3.4 事故记录（首发版本已撤回重发）**：上游 `238_opencode_go_platform.sql` 用**无幂等守卫的裸 DROP+ADD** 重建 `user_platform_quotas.platform` 与 `composite_model_routes.target_platform`，白名单取自上游平台列表，丢掉了 fork 的 `kiro`（234 加入、237 修复时保留）→ 生产库 5 行 `platform='kiro'` 违约 → `ADD CONSTRAINT` 失败 → 迁移中止 → 启动 crash-loop。**与 v0.3.1 的 237 事故完全同型，隔一个上游版本重演**。
+
+- **漏检点**：同步时只 diff 了本次同步窗口（`BASE..upstream/main`，确实 0 个新 migration），没 diff 整个发版区间 `v0.3.3..v0.3.4` —— 238 是上一次合并（上游 0.2.4 期间）带进来的，卡在两次同步的缝里。**以后发版前必须跑 `git diff --name-status <上一个 tag> HEAD -- backend/migrations/`**。
+- **修复两处并存**（覆盖互不相交的两类部署）：改 238 补回 kiro（救 crash-loop 的库——失败迁移在事务里回滚、未记账，重启会重跑修复后的内容）；新增 `240_restore_kiro_platform_constraints.sql` 兜底（救表里当时没有 kiro 行、把 kiro-less 238 **成功**应用并记账的库，那类库 238 永不重跑）。240 带幂等守卫，且排在 `238_purge_unlimited_user_platform_quotas.sql` 之后（占位行已清空，ADD CONSTRAINT 不会因存量数据失败）。
+- **顺带修掉**：v0.3.1 给 237 注册的 checksum 兼容规则填的两个值与真实文件对不上，三个版本里一直失效。新守卫 `TestMigrationChecksumCompatibilityRulesMatchRealFiles` 又抓出另外 9 条同样失效的规则（均在 `v0.3.3..v0.3.4` 未变、与本次事故无关，列入 `knownStaleChecksumRules` 记账）。
+- **守卫必须反向验证**：`TestPlatformCheckMigrationsKeepKiro` 的第一版断言整个文件文本含 `'kiro'`，在 kiro 被抠掉后**照样通过**——因为 238 的注释里就写着 `platform='kiro'`。改为解析 `ADD CONSTRAINT ... CHECK (...)` **子句内部的白名单**后才真正生效。
+- **撤回重发流程**：`gh release delete v0.3.4 --yes --cleanup-tag`（连远程 tag 一起删）→ 删本地 tag → `git tag -f -a v0.3.4 main` → `git push --force` → 重发后 GHCR 的 `0.3.4/0.3/0/latest` 四个标签自动移到新镜像、旧的变 untagged 孤儿 → 逐个复查 `tags==[]` 后按 id 删除。⚠️ **删 GHCR 镜像需要 `read:packages,delete:packages` scope**（默认 token 没有，`gh auth refresh -s` 是交互式的，得用户自己跑）。⚠️ **tag 名复用时，已拉过旧镜像的机器必须强制 `docker pull`**，否则用的还是本地缓存的坏镜像。
 
 **v0.3.4 校验记录**：本地 `go build -tags embed` / `go test -tags=unit`（57 包 ok，0 FAIL）/ `go test ./...` / `golangci-lint`（0 issues）/ vue-tsc / eslint `--max-warnings 0` / `pnpm build` / **全量 vitest（289 文件 2323 tests，0 FAIL）** 全绿；双向语义防丢失：正向上游 106 文件 0 丢失、反向 11 文件 0 丢失；PR CI 12 pass / 2 skipping，main CI 6/6 success；`release.yml` 4 job 全绿；GHCR `ghcr.io/hongheshan-svg/sub2api:0.3.4` 多架构 `linux/amd64`+`linux/arm64` ✓。
 
