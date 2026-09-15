@@ -6,6 +6,13 @@
 --
 -- Runs after 237_add_minimax_platform.sql. DROP ... IF EXISTS + 幂等守卫保证可重入；
 -- 新约束是 237 的超集，必须同时保留 MiniMax。
+--
+-- FORK PATCH：上游原版重建这两个约束时漏掉了 fork 独有的 kiro 平台
+-- （234_kiro_platform.sql 加入、237 修复时保留），任何已有 platform='kiro'
+-- 行的部署都会在 ADD CONSTRAINT 校验时失败并 crash-loop —— 与 v0.3.1 的
+-- 237 事故完全同型。这里把 kiro 与 minimax/opencode_go 一起放进超集。
+-- 注意下面 channel_monitors / channel_monitor_request_templates 两处带幂等
+-- 守卫，kiro 由 239_channel_monitor_kiro_provider.sql 补入，故此处不动。
 
 ALTER TABLE user_platform_quotas
     DROP CONSTRAINT IF EXISTS user_platform_quotas_platform_check;
@@ -13,7 +20,7 @@ ALTER TABLE user_platform_quotas
 ALTER TABLE user_platform_quotas
     ADD CONSTRAINT user_platform_quotas_platform_check
     CHECK (platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok',
-                        'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'));
+                        'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'kiro'));
 
 ALTER TABLE composite_model_routes
     DROP CONSTRAINT IF EXISTS composite_model_routes_target_platform_check;
@@ -21,7 +28,7 @@ ALTER TABLE composite_model_routes
 ALTER TABLE composite_model_routes
     ADD CONSTRAINT composite_model_routes_target_platform_check
     CHECK (target_platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok',
-                               'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'));
+                               'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'kiro'));
 
 DO $$
 DECLARE
