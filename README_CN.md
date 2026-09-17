@@ -766,6 +766,61 @@ Antigravity 账户支持可选的**混合调度**功能。开启后，通用端�
 
 ---
 
+## Kiro 使用说明
+
+Sub2API 支持 [Kiro](https://kiro.dev/) 账户，其上游是 AWS CodeWhisperer / Amazon Q Developer，而非 Anthropic 官方。Kiro 没有专用网关前缀 —— Kiro 账户直接服务通用端点，请求按**被选中账户**的平台分流，因此一个 Kiro 账户可以承接原本由 Anthropic 账户处理的 `/v1/messages` 流量。
+
+### 支持范围
+
+- 平台名称：`kiro`
+- 接入方式：**Social**（粘贴 `refreshToken`）、**AWS Builder ID**（设备码）、**IAM Identity Center**（组织 SSO，授权码）、**Kiro API Key**
+- Claude 端点：`/v1/messages`、`/v1/messages/count_tokens`
+- Responses 端点：`/v1/responses`、`/responses`、`/backend-api/codex/responses` —— 仅供下方非 Claude 系模型使用
+- Claude 模型：`claude-opus-5`、`claude-sonnet-5`、`claude-opus-4.8`、`claude-opus-4.7`、`claude-opus-4.6`、`claude-opus-4.5`、`claude-sonnet-4.6`、`claude-sonnet-4.5`、`claude-sonnet-4`、`claude-haiku-4.5`
+- 非 Claude 模型：`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
+- 不支持：embeddings 与图片/视频端点 —— Kiro 仅支持文本对话
+- `/v1/messages/count_tokens` 由本地估算作答，因为 Kiro 上游没有原生的 token 计数端点
+- Composite 复合分组不吸收 Kiro 账户。请把 Kiro 账户放进 `kiro` 分组，或通过下方的混合调度挂进 Anthropic 分组。
+
+> **⚠️ 协议归属强制隔离**：Claude 系模型只能走 Anthropic 协议（`/v1/messages`），`gpt-5.6-*` 只能走 Responses 协议（`/backend-api/codex/responses`）。模型与端点不匹配时会直接返回明确错误，而不是强行转换 —— 真实客户端本来就是按这条边界连接的（Claude Code 只打 `/v1/messages`，Codex 只打 `/backend-api/codex/responses`），不匹配基本都意味着客户端配错了端点。
+
+### 账户配置
+
+| 接入方式 | 必填字段 |
+|----------|----------|
+| Social | `Refresh Token` |
+| AWS Builder ID | `Refresh Token`、`Client ID`、`Client Secret` —— 或使用内置的设备码授权向导 |
+| IAM Identity Center | `Refresh Token`、`Client ID`、`Client Secret`、`SSO 门户地址` —— 或使用内置的授权码向导 |
+| Kiro API Key | `API Key` |
+
+`Region` 默认 `us-east-1`。
+
+**IAM Identity Center 授权是手动粘贴回调地址的流程。** AWS SSO-OIDC 强制 `redirect_uri` 为裸 loopback 地址，Sub2API 无法为它托管回调页。向导会生成授权链接；登录并同意后浏览器会跳到一个打不开的地址（提示"无法连接"—— 这是预期行为，那里并没有服务在监听）。把地址栏里的完整 URL 复制、粘回向导即可完成。AWS Builder ID 走设备码，不需要粘贴回调。
+
+**`Profile ARN` 可选，但通常需要填。** Builder ID 与 IAM Identity Center 的令牌交换都不会返回 `profileArn`，只有 Social 登录会自动带上。缺少它时，账号级额度查询与上游模型清单可能受限。可在装有 Kiro CLI 的机器上执行 `kiro-cli profile` 获取，或向组织管理员索取。
+
+**假思考（模拟 thinking）默认开启。** Kiro 没有原生 thinking 输出，因此 Sub2API 会向请求注入数百 token 的思考指令，产出的是模型自写文本而非真实 reasoning。默认开启是为了让客户端携带的推理强度诉求（`thinking.budget_tokens` / `output_config.effort`）在上游真实生效，而不是因为没有显式配置就被静默丢弃 —— 注入预算会跟随本次请求的诉求，请求没带任何诉求时才退回默认值。不接受这部分额外 prompt token 开销的账户可以逐个关闭。
+
+Kiro 账户展示的 prompt cache 数字来自账号级、进程内的**模拟**。Kiro 自身的计量从未被观测到返回非零缓存读取，因此 Sub2API 只在客户端自己发来了 `cache_control` 断点、且内容与该账户近期确实发过的内容匹配时，才报缓存命中。
+
+### 混合调度模式
+
+与 Antigravity 一样，Kiro 账户支持可选的账号级**混合调度**开关。开启后该账户也会参与 **Anthropic** 分组的调度，Anthropic 分组的 `/v1/messages` 流量因此可以由 Kiro 账户承接。
+
+与 Antigravity 不同的是，Kiro 仅限 Anthropic 分组 —— Kiro 协议层只讲 Anthropic 的请求/响应形状，不会参与 Gemini 分组调度。
+
+> **⚠️ 注意**：Kiro 的上游是 AWS CodeWhisperer，与真正的 Anthropic 账户并非同一上游。同一会话/上下文在 Kiro 账户与真 Anthropic 账户之间切换时，响应细节可能略有差异。若这一点对你重要，请通过分组做好隔离。
+
+### 用量与额度展示
+
+Kiro 是 **credits 制**，不是 token 用量窗口制。账户展示的 **AI Credits** 进度来自上游 `getUsageLimits` 快照 —— `AGENTIC_REQUEST` 口径下统计的是**请求数**而非 token —— 并计入处于生效状态的赠送额度与免费试用状态。由于没有可用于评估的滚动 token 用量窗口，Kiro 被刻意排除在"按平台设置调度阈值"功能之外；额度耗尽改由冷却机制处理。
+
+**允许超量请求 (AI Credits)** 开关决定账户在免费配额被明确判定为耗尽后，是否可以动用付费 credits。普通的并发 `429` 限流不会切换到超量请求。
+
+在渠道监控中，Kiro 与 Antigravity 一样属于 **quota-only** provider：没有可主动探测的 Chat/Responses 端点，因此只采集额度信号。
+
+---
+
 ## 项目结构
 
 ```

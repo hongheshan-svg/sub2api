@@ -690,6 +690,61 @@ Antigravity アカウントはオプションの**ハイブリッドスケジュ
 
 ---
 
+## Kiro サポート
+
+Sub2API は [Kiro](https://kiro.dev/) アカウントをサポートしています。Kiro の上流は Anthropic 公式ではなく AWS CodeWhisperer / Amazon Q Developer です。Kiro には専用のゲートウェイプレフィックスはありません。Kiro アカウントは汎用エンドポイントをそのまま処理し、リクエストは**選択されたアカウント**のプラットフォームに基づいて振り分けられるため、本来 Anthropic アカウントが処理する `/v1/messages` のトラフィックを Kiro アカウントが引き受けられます。
+
+### サポート範囲
+
+- プラットフォーム名: `kiro`
+- 認証方式: **Social**（`refreshToken` を貼り付け）、**AWS Builder ID**（デバイスコード）、**IAM Identity Center**（組織 SSO、認可コード）、**Kiro API Key**
+- Claude エンドポイント: `/v1/messages`、`/v1/messages/count_tokens`
+- Responses エンドポイント: `/v1/responses`、`/responses`、`/backend-api/codex/responses` — 下記の非 Claude 系モデル専用
+- Claude モデル: `claude-opus-5`、`claude-sonnet-5`、`claude-opus-4.8`、`claude-opus-4.7`、`claude-opus-4.6`、`claude-opus-4.5`、`claude-sonnet-4.6`、`claude-sonnet-4.5`、`claude-sonnet-4`、`claude-haiku-4.5`
+- 非 Claude モデル: `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
+- 非対応: embeddings および画像/動画エンドポイント — Kiro はテキスト対話のみです
+- `/v1/messages/count_tokens` はローカル推定で応答します。Kiro にはネイティブのトークンカウントエンドポイントが存在しないためです
+- Composite グループは Kiro アカウントを取り込みません。Kiro アカウントは `kiro` グループに入れるか、下記のハイブリッドスケジューリングで Anthropic グループに参加させてください。
+
+> **⚠️ プロトコルの分離が強制されます**: Claude 系モデルは Anthropic プロトコル（`/v1/messages`）でのみ、`gpt-5.6-*` は Responses プロトコル（`/backend-api/codex/responses`）でのみ利用できます。モデルとエンドポイントが一致しない場合は強制変換せず、明示的なエラーを返します。実際のクライアントは元々この境界で接続しており（Claude Code は `/v1/messages` のみ、Codex は `/backend-api/codex/responses` のみを呼び出します）、不一致はほぼ確実にクライアント側のエンドポイント設定ミスを意味します。
+
+### アカウント設定
+
+| 認証方式 | 必須項目 |
+|----------|----------|
+| Social | `Refresh Token` |
+| AWS Builder ID | `Refresh Token`、`Client ID`、`Client Secret` — または内蔵のデバイスコードウィザードを使用 |
+| IAM Identity Center | `Refresh Token`、`Client ID`、`Client Secret`、`SSO ポータル URL` — または内蔵の認可コードウィザードを使用 |
+| Kiro API Key | `API Key` |
+
+`Region` のデフォルトは `us-east-1` です。
+
+**IAM Identity Center の認証は、コールバック URL を手動で貼り付ける方式です。** AWS SSO-OIDC は `redirect_uri` をループバックアドレスに強制するため、Sub2API 側でコールバックページをホストできません。ウィザードが認証リンクを生成し、サインインして承認すると、ブラウザは読み込みに失敗するアドレスに遷移します（「接続できません」と表示されますが、そこで待ち受けているものは無いため想定どおりの挙動です）。アドレスバーの URL 全体をコピーしてウィザードに貼り戻すと完了します。AWS Builder ID はデバイスコード方式のため、貼り付けは不要です。
+
+**`Profile ARN` は任意ですが、多くの場合必要になります。** Builder ID と IAM Identity Center のトークン交換では `profileArn` が返らず、自動的に取得できるのは Social ログインのみです。無い場合、アカウント単位のクォータ照会と上流モデル一覧が制限されることがあります。Kiro CLI が入っているマシンで `kiro-cli profile` を実行して取得するか、組織の管理者に問い合わせてください。
+
+**擬似 Thinking（thinking のシミュレーション）はデフォルトで有効です。** Kiro にはネイティブの thinking 出力が無いため、Sub2API は数百トークン分の思考指示をリクエストに注入します。出力されるのはモデルが自ら書いたテキストであり、実際の reasoning ではありません。デフォルトで有効なのは、クライアントが指定した推論強度（`thinking.budget_tokens` / `output_config.effort`）を上流で実際に反映させるためです。明示的に設定していないだけで指定が黙って破棄されることを避ける意図です。注入される予算はリクエストの指定に従い、指定が無い場合にのみデフォルト値に戻ります。この追加のプロンプトトークンを避けたいアカウントは個別に無効化できます。
+
+Kiro アカウントに表示される prompt cache の数値は、アカウント単位・プロセス内の**シミュレーション**です。Kiro 自身のメータリングで非ゼロのキャッシュ読み取りが観測されたことは無いため、Sub2API はクライアントが自ら `cache_control` のブレークポイントを送り、かつ内容がそのアカウントで直近に送信されたものと一致した場合にのみキャッシュヒットを報告します。
+
+### ハイブリッドスケジューリングモード
+
+Antigravity と同様に、Kiro アカウントはオプションのアカウント単位の**ハイブリッドスケジューリング**スイッチをサポートしています。有効にすると、そのアカウントは **Anthropic** グループのスケジューリングにも参加し、Anthropic グループの `/v1/messages` トラフィックを Kiro アカウントが処理できるようになります。
+
+Antigravity と異なり、Kiro は Anthropic グループに限定されます。Kiro のプロトコル層は Anthropic 形式のリクエスト/レスポンスのみを扱うため、Gemini グループのスケジューリングには参加しません。
+
+> **⚠️ 警告**: Kiro の上流は AWS CodeWhisperer であり、本物の Anthropic アカウントとは別の上流です。同一のセッション/コンテキストが Kiro アカウントと本物の Anthropic アカウントの間で切り替わると、レスポンスの細部が異なる場合があります。これが問題になる場合はグループを使用して分離してください。
+
+### 使用量とクォータの表示
+
+Kiro はトークン使用量ウィンドウ制ではなく **credits 制**です。アカウントには上流の `getUsageLimits` スナップショットから得られる **AI Credits** の進捗が表示されます（`AGENTIC_REQUEST` の単位はトークンではなく**リクエスト数**です）。有効なボーナス付与分と無料トライアルの状態も含まれます。評価に使えるローリングのトークン使用量ウィンドウが存在しないため、Kiro はプラットフォーム別のスケジューリングしきい値機能から意図的に除外されており、クレジットの枯渇はクールダウンで処理されます。
+
+**超過リクエストを許可 (AI Credits)** スイッチは、無料クォータが明確に枯渇したと判定された後に有料クレジットを使用してよいかを制御します。通常の同時実行 `429` レート制限では超過リクエストに切り替わりません。
+
+チャネル監視では、Kiro は Antigravity と同様に **quota-only** プロバイダーです。能動的に probe できる Chat/Responses エンドポイントが無いため、クォータ信号のみを収集します。
+
+---
+
 ## プロジェクト構成
 
 ```

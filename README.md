@@ -887,6 +887,61 @@ Antigravity accounts support optional **hybrid scheduling**. When enabled, the g
 
 ---
 
+## Kiro Support
+
+Sub2API supports [Kiro](https://kiro.dev/) accounts, which are served by AWS CodeWhisperer / Amazon Q Developer rather than by Anthropic directly. Kiro has no dedicated gateway prefix — Kiro accounts answer the standard public endpoints, and requests are dispatched on the **selected account's** platform, so a Kiro account can serve the same `/v1/messages` traffic a native Anthropic account would.
+
+### Supported Scope
+
+- Platform name: `kiro`
+- Authorization methods: **Social** (paste a `refreshToken`), **AWS Builder ID** (device code), **IAM Identity Center** (organization SSO, authorization code), and **Kiro API Key**
+- Public Claude targets: `/v1/messages` and `/v1/messages/count_tokens`
+- Public Responses targets: `/v1/responses`, `/responses`, and `/backend-api/codex/responses` — used only by the non-Claude models below
+- Claude models: `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4.8`, `claude-opus-4.7`, `claude-opus-4.6`, `claude-opus-4.5`, `claude-sonnet-4.6`, `claude-sonnet-4.5`, `claude-sonnet-4`, `claude-haiku-4.5`
+- Non-Claude models: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+- Out of scope: embeddings and the image/video endpoints — Kiro is text/chat only
+- `/v1/messages/count_tokens` is answered by a local estimator, because Kiro exposes no native token-counting endpoint
+- Composite groups do not absorb Kiro accounts. Put Kiro accounts in a `kiro` group, or attach them to an Anthropic group with hybrid scheduling (below).
+
+> **⚠️ Protocol isolation is enforced**: Claude models may only be driven over the Anthropic protocol (`/v1/messages`), and the `gpt-5.6-*` models may only be driven over the Responses protocol (`/backend-api/codex/responses`). A mismatched model/endpoint pair is rejected with an explicit error instead of being force-converted — real clients already split along this boundary (Claude Code only calls `/v1/messages`, Codex only calls `/backend-api/codex/responses`), so a mismatch almost always means the client is pointed at the wrong endpoint.
+
+### Account Configuration
+
+| Authorization method | Required fields |
+|----------------------|-----------------|
+| Social | `Refresh Token` |
+| AWS Builder ID | `Refresh Token`, `Client ID`, `Client Secret` — or run the built-in device-code wizard |
+| IAM Identity Center | `Refresh Token`, `Client ID`, `Client Secret`, `SSO Portal URL` — or run the built-in authorization-code wizard |
+| Kiro API Key | `API Key` |
+
+`Region` defaults to `us-east-1`.
+
+**IAM Identity Center authorization is a manual paste-back flow.** AWS SSO-OIDC forces the `redirect_uri` to a bare loopback address, so Sub2API cannot host a callback page for it. The wizard generates an authorization link; after you sign in and approve, the browser lands on an address that fails to load ("unable to connect" — this is expected, nothing is listening there). Copy the complete URL from the address bar and paste it back into the wizard to finish. AWS Builder ID uses a device code instead and needs no paste-back.
+
+**`Profile ARN` is optional but frequently needed.** Builder ID and IAM Identity Center token exchanges never return a `profileArn` — only Social logins provide one automatically. Without it, account-level quota lookups and upstream model listing may be limited. Retrieve it by running `kiro-cli profile` on a machine that has the Kiro CLI, or ask your organization administrator.
+
+**Fake Thinking (simulated) is enabled by default.** Kiro has no native thinking output, so Sub2API injects a few hundred tokens of thinking instructions into the request; the result is model-authored text, not real reasoning. It defaults to on so that a client's reasoning request (`thinking.budget_tokens` / `output_config.effort`) actually takes effect upstream instead of being silently dropped — the injected budget follows whatever the request asks for, falling back to a default when the request asks for nothing. Turn it off per account if you would rather not pay the extra prompt tokens.
+
+Prompt-cache figures shown for Kiro accounts come from an account-scoped, in-process **simulation**. Kiro's own metering has not been observed to return non-zero cache reads, so Sub2API reports a cache hit only when the client sent its own `cache_control` breakpoints and the content matches what that account recently sent.
+
+### Hybrid Scheduling Mode
+
+Like Antigravity, Kiro accounts support an optional account-level **hybrid scheduling** switch. When enabled, the account also joins **Anthropic** group scheduling, so `/v1/messages` traffic for an Anthropic group can be served by Kiro accounts.
+
+Unlike Antigravity, Kiro is limited to Anthropic groups — the Kiro protocol layer only speaks Anthropic request/response shapes, so it never joins Gemini group scheduling.
+
+> **⚠️ Warning**: Kiro is backed by AWS CodeWhisperer, a different upstream from real Anthropic accounts. If a single session/context switches between a Kiro account and a real Anthropic account, response details may differ slightly. Use groups to isolate them if that matters.
+
+### Usage And Quota Display
+
+Kiro is **credits-based** rather than token-window-based. Accounts show an **AI Credits** progress signal derived from the upstream `getUsageLimits` snapshot — counted in *requests* under the `AGENTIC_REQUEST` measure, not tokens — including active bonus grants and free-trial state. Because there is no rolling token-usage window to evaluate, Kiro is deliberately excluded from the per-platform scheduling-threshold feature; credit exhaustion is handled by a cooldown instead.
+
+An **Allow Overages (AI Credits)** switch controls whether an account may spend paid credits once its free quota is explicitly exhausted. Ordinary concurrent `429` rate limits do not trip overages.
+
+In channel monitoring, Kiro is a **quota-only** provider (like Antigravity): there is no Chat/Responses endpoint to actively probe, so only the quota signal is collected.
+
+---
+
 ## Project Structure
 
 ```
