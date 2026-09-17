@@ -35,6 +35,11 @@
 <table>
 
 <tr>
+<td width="180"><a href="https://gw-link.ai"><img src="assets/partners/logos/gw-link.png" alt="gw-link" width="150"></a></td>
+<td><a href="https://gw-link.ai">gw-link</a> 是本仓库维护者运营的 AI 编码中转工作台。一个 gw-link 账号，同时使用 Claude Code、Codex 和 Gemini CLI，统一的 API 接入与线路管理，把时间还给你的代码，而不是配置面板。更低价格、更简单的配置，让每位开发者都能用上顶级 AI 编码模型；目前已服务消费电子、金融、互联网、新能源等行业的企业团队。访问 <a href="https://gw-link.ai">gw-link.ai</a> 立即体验。</td>
+</tr>
+
+<tr>
 <td width="180"><a href="https://cctk.ai/register?aff=SUB2API"><img src="assets/partners/logos/cctk.jpg" alt="CCTK.AI" width="150"></a></td>
 <td>感谢 CCTK.AI 赞助了本项目！<a href="https://cctk.ai/register?aff=SUB2API">CCTK.AI</a> 是一个专注于稳定与性价比的 AI API 网关平台，提供 Claude、OpenAI、Gemini 等主流模型的高速中转服务，无缝兼容 Claude Code、Codex 等主流编程工具，以远低于官方的成本获得同等的模型能力。点击<a href="https://cctk.ai/register?aff=SUB2API">此链接</a>注册，即刻体验更快、更稳、更省的 AI API 接入。</td>
 </tr>

@@ -151,6 +151,7 @@ vite.config.js
 *.gif
 !frontend/public/**
 !frontend/src/**
+!assets/partners/logos/**
 *.pdf
 !docs/**/*.pdf
 docs/*
