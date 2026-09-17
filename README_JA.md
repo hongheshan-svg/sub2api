@@ -34,6 +34,11 @@
 <table>
 
 <tr>
+<td width="180"><a href="https://gw-link.ai"><img src="assets/partners/logos/gw-link.png" alt="gw-link" width="150"></a></td>
+<td><a href="https://gw-link.ai">gw-link</a> は本リポジトリのメンテナーが運営する AI コーディング中継ワークベンチです。1 つの gw-link アカウントで Claude Code、Codex、Gemini CLI をまとめて利用でき、API 接続と回線管理を一元化できるため、設定画面でなくコードに時間を使えます。より安価で簡単な設定により、すべての開発者がトップクラスの AI コーディングモデルを利用でき、現在も消費者向け電子機器、金融、インターネット、新エナルギーなどの企業チームに利用されています。<a href="https://gw-link.ai">gw-link.ai</a> からご利用ください。</td>
+</tr>
+
+<tr>
 <td width="180"><a href="https://cctk.ai/register?aff=SUB2API"><img src="assets/partners/logos/cctk.jpg" alt="CCTK.AI" width="150"></a></td>
 <td>CCTK.AI のご支援に感謝します！<a href="https://cctk.ai/register?aff=SUB2API">CCTK.AI</a> は安定性とコストパフォーマンスにこだわった AI API ゲートウェイで、Claude、OpenAI、Gemini など主要モデルの高速中継サービスを提供しています。Claude Code や Codex などの主要なコーディングツールにシームレスに対応し、公式価格を大きく下回るコストで同等のモデル能力を利用できます。<a href="https://cctk.ai/register?aff=SUB2API">こちらのリンク</a>から登録して、より速く、より安定した、よりお得な AI API 接続をお試しください。</td>
 </tr>

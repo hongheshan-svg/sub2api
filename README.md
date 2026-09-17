@@ -34,6 +34,11 @@ Please read the following carefully before using this project:
 <table>
 
 <tr>
+<td width="180"><a href="https://gw-link.ai"><img src="assets/partners/logos/gw-link.png" alt="gw-link" width="150"></a></td>
+<td><a href="https://gw-link.ai">gw-link</a> is the hosted AI coding gateway run by the maintainers of this fork. One gw-link account covers Claude Code, Codex and Gemini CLI together, with unified API access and route management — so you spend your time on code instead of config panels. Better pricing and simpler setup put top-tier AI coding models within reach of every developer, and it is already serving enterprise teams across consumer electronics, finance, internet and new energy. Visit <a href="https://gw-link.ai">gw-link.ai</a> to get started.</td>
+</tr>
+
+<tr>
 <td width="180"><a href="https://cctk.ai/register?aff=SUB2API"><img src="assets/partners/logos/cctk.jpg" alt="CCTK.AI" width="150"></a></td>
 <td>Thanks to CCTK.AI for sponsoring this project! <a href="https://cctk.ai/register?aff=SUB2API">CCTK.AI</a> is an AI API gateway focused on stability and cost-effectiveness, offering fast relay services for Claude, OpenAI, Gemini, and other popular models. It works seamlessly with Claude Code, Codex, and other mainstream coding tools, delivering the same model capabilities at a fraction of the official cost. Register via <a href="https://cctk.ai/register?aff=SUB2API">this link</a> for faster, more stable, and more affordable AI API access.</td>
 </tr>
