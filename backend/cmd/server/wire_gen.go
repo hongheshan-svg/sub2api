@@ -201,14 +201,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokQuotaFetcher := service.NewGrokQuotaFetcher()
 	kiroQuotaFetcher := service.NewKiroQuotaFetcher()
 	grokQuotaService := service.ProvideGrokQuotaService(accountRepository, proxyRepository, grokTokenProvider, httpUpstream, configConfig, usageLogRepository, settingService)
-	openAIQuotaService := service.ProvideOpenAIQuotaService(accountRepository, proxyRepository, openAITokenProvider, privacyClientFactory, openAIGatewayService)
+	openAIReferralClient := repository.NewOpenAIReferralClient(privacyClientFactory)
+	openAIQuotaService := service.ProvideOpenAIQuotaService(accountRepository, proxyRepository, openAITokenProvider, privacyClientFactory, openAIReferralClient, openAIGatewayService)
 	usageCache := service.NewUsageCache()
 	accountUsageService := service.ProvideAccountUsageService(accountRepository, usageLogRepository, claudeUsageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, kiroQuotaFetcher, grokQuotaService, openAIQuotaService, usageCache, identityCache, tlsFingerprintProfileService, openAIGatewayService, proxyRepository)
 	pluginRepository := repository.NewPluginRepository(db)
 	pluginHostInfo := providePluginHostInfo(buildInfo)
 	pluginKVStore := repository.NewPluginKVStore(redisClient)
-	pluginManager := service.NewPluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo, pluginKVStore)
-	pluginManager.SetAccountDirectory(openAIGatewayService)
+	pluginManager := service.ProvidePluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo, pluginKVStore, openAIGatewayService)
 	// KiroGatewayService 不接 AccountRuntimeBlocker——kiro 账号的调度冷却走
 	// model_rate_limits 机制，不经过那个只对 openai/grok 生效的接口，见
 	// NewKiroGatewayService 的文档。
