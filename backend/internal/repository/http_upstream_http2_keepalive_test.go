@@ -93,8 +93,12 @@ func TestBuildUpstreamTransport_NegotiatesExpectedProtocol(t *testing.T) {
 	}{
 		{upstreamProtocolModeOpenAIH2, 2},
 		{upstreamProtocolModeLongStreamH2, 2},
-		{upstreamProtocolModeDefault, 1},
-		{upstreamProtocolModeGrok, 1},
+		// fork 分叉：default/grok 在本仓库仍协商 H2（上游期望 1）。
+		// buildUpstreamTransport 设了自定义 DialContext 后 Go 不再自动升级 H2，
+		// 我们在 default 分支显式 ForceAttemptHTTP2=true 补回了这一步，维持加
+		// dial 超时之前就有的 H2 行为；上游加 dial 超时时没补，于是退化成 H1。
+		{upstreamProtocolModeDefault, 2},
+		{upstreamProtocolModeGrok, 2},
 		{upstreamProtocolModeOpenAIH1, 1},
 		{upstreamProtocolModeOpenAIH1Fallback, 1},
 	} {

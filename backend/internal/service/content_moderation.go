@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -798,7 +799,7 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 		latency := int(time.Since(start).Milliseconds())
 		keyHash := scopedModerationKeyHash(key, cfg.Engine)
 		if err != nil {
-			s.markAPIKeyError(key, err.Error(), latency, httpStatus, cfg.Engine)
+			s.markAPIKeyError(key, err, latency, httpStatus, cfg.Engine)
 		} else {
 			s.markAPIKeySuccess(key, latency, httpStatus, cfg.Engine)
 			if auditResult == nil {
@@ -1729,7 +1730,7 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		if trackLoad {
 			s.finishModerationAPIKeyCall(key, latency, false, cfg.Engine)
 		}
-		s.markAPIKeyError(key, err.Error(), latency, httpStatus, cfg.Engine)
+		s.markAPIKeyError(key, err, latency, httpStatus, cfg.Engine)
 		lastErr = err
 		if httpStatus == http.StatusBadRequest {
 			break
@@ -2369,15 +2370,20 @@ func (s *ContentModerationService) markAPIKeySuccess(key string, latencyMS int, 
 	state.LastTested = true
 }
 
-func (s *ContentModerationService) markAPIKeyError(key string, errText string, latencyMS int, httpStatus int, engine ...string) {
+func (s *ContentModerationService) markAPIKeyError(key string, callErr error, latencyMS int, httpStatus int, engine ...string) {
 	hash := scopedModerationKeyHash(key, engine...)
 	if hash == "" || s == nil {
 		return
 	}
+	errText := ""
+	if callErr != nil {
+		errText = callErr.Error()
+	}
+	freezeDuration := contentModerationFreezeDuration(callErr, httpStatus)
 	s.keyHealthMu.Lock()
 	defer s.keyHealthMu.Unlock()
 	state := s.ensureAPIKeyHealthLocked(hash, maskSecretTail(key))
-	if contentModerationFreezeDurationForHTTPStatus(httpStatus) > 0 {
+	if freezeDuration > 0 {
 		state.FailureCount++
 	}
 	state.LastError = trimRunes(errText, 180)
@@ -2385,9 +2391,36 @@ func (s *ContentModerationService) markAPIKeyError(key string, errText string, l
 	state.LastLatencyMS = latencyMS
 	state.LastHTTPStatus = httpStatus
 	state.LastTested = true
-	if freezeDuration := contentModerationFreezeDurationForHTTPStatus(httpStatus); freezeDuration > 0 {
+	if freezeDuration > 0 {
 		state.FrozenUntil = time.Now().Add(freezeDuration)
 	}
+}
+
+// contentModerationFreezeDuration 在状态码判定之上再看一眼失败是否真的发生在请求发出之后。
+// httpStatus==0 有两种完全不同的来源：client.Do 直接失败（连接超时/DNS/TLS/服务不可达，
+// 属于网络级故障，值得冻结 key 让后续请求快速失败），以及请求压根没发出去的本地失败
+// （输入不合法、HTTP 客户端构造失败）。后者与 key 无关，冻结它会让重试拿不到可用 key，
+// 真实错误被 "no moderation api key available" 掩盖——TypeSafe 这类纯文本引擎在只有图片
+// 的输入上就会走这条路径。
+func contentModerationFreezeDuration(callErr error, httpStatus int) time.Duration {
+	if httpStatus == 0 && !moderationFailureReachedUpstream(callErr) {
+		return 0
+	}
+	return contentModerationFreezeDurationForHTTPStatus(httpStatus)
+}
+
+// moderationFailureReachedUpstream 报告这次失败是否发生在请求真正发出之后：net/http 把
+// client.Do 的失败一律包成 *url.Error，本地校验失败则不会。
+func moderationFailureReachedUpstream(callErr error) bool {
+	if callErr == nil {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(callErr, &urlErr) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(callErr, &netErr)
 }
 
 func contentModerationFreezeDurationForHTTPStatus(httpStatus int) time.Duration {
