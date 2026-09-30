@@ -2,6 +2,30 @@
   <AppLayout>
     <div class="space-y-4">
       <div class="card p-4">
+        <div class="inline-flex w-full rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-dark-700 dark:bg-dark-900 lg:w-auto">
+          <button
+            v-for="tab in tabs"
+            :key="tab.value"
+            type="button"
+            :class="[
+              'inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors lg:flex-none',
+              activeTab === tab.value
+                ? 'bg-white text-primary-600 shadow-sm dark:bg-dark-800 dark:text-primary-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'
+            ]"
+            :data-test="`invoice-tab-${tab.value}`"
+            @click="activeTab = tab.value"
+          >
+            <Icon :name="tab.icon" size="sm" />
+            <span>{{ tab.label }}</span>
+          </button>
+        </div>
+      </div>
+
+      <InvoiceReconciliationPanel v-if="activeTab === 'reconciliation'" />
+
+      <template v-else>
+      <div class="card p-4">
         <div class="grid gap-3 md:grid-cols-[160px_1fr_180px_180px_auto] md:items-end">
           <div>
             <label class="input-label">{{ t('invoice.filters.status') }}</label>
@@ -178,6 +202,7 @@
           @update:pageSize="handlePageSizeChange"
         />
       </div>
+      </template>
     </div>
 
     <BaseDialog
@@ -373,9 +398,18 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import InvoiceReconciliationPanel from '@/components/admin/invoice/InvoiceReconciliationPanel.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+
+type AdminInvoiceTab = 'requests' | 'reconciliation'
+
+const activeTab = ref<AdminInvoiceTab>('requests')
+const tabs = computed<Array<{ value: AdminInvoiceTab; label: string; icon: 'document' | 'chartBar' }>>(() => [
+  { value: 'requests', label: t('invoice.admin.tabs.requests'), icon: 'document' },
+  { value: 'reconciliation', label: t('invoice.admin.tabs.reconciliation'), icon: 'chartBar' }
+])
 
 const loading = ref(false)
 const actionLoading = ref(false)

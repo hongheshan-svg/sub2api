@@ -111,6 +111,9 @@ func RegisterPaymentRoutes(
 			adminInvoices.POST("/:id/reject", adminInvoiceHandler.RejectInvoiceRequest)
 			adminInvoices.POST("/send-email", adminInvoiceHandler.SendInvoiceEmail)
 			adminInvoices.GET("/email-sends", adminInvoiceHandler.ListInvoiceEmailSends)
+			adminInvoices.GET("/reconciliation", adminInvoiceHandler.ListInvoiceReconciliation)
+			adminInvoices.GET("/reconciliation/summary", adminInvoiceHandler.GetInvoiceReconciliationSummary)
+			adminInvoices.GET("/reconciliation/users/:id", adminInvoiceHandler.GetUserInvoiceReconciliation)
 		}
 
 		// Dashboard
