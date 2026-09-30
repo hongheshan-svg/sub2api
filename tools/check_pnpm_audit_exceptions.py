@@ -111,6 +111,31 @@ def iter_vulns(data: dict):
                 yield name, severity, advisory_id, title
 
 
+def audit_output_problem(data) -> str | None:
+    # pnpm audit 失败（registry 没有审计接口、网络错误等）时仍会输出 JSON，只是形如
+    # {"error": {...}}，里面没有任何漏洞条目。这种结果不能当成"零漏洞"放行，
+    # 否则审计服务一出故障门禁就悄悄失效（工作流里的 `|| true` 也会吞掉退出码）。
+    if not isinstance(data, dict):
+        return "pnpm audit output is not a JSON object"
+    error = data.get("error")
+    if error:
+        if isinstance(error, dict):
+            detail = ": ".join(
+                str(part) for part in (error.get("code"), error.get("message")) if part
+            )
+        else:
+            detail = str(error)
+        return f"pnpm audit failed: {detail or error}"
+    if not isinstance(data.get("advisories"), dict) and not isinstance(
+        data.get("vulnerabilities"), dict
+    ):
+        return (
+            "pnpm audit output has neither 'advisories' nor 'vulnerabilities'; "
+            "refusing to treat it as clean"
+        )
+    return None
+
+
 def normalize_severity(severity: str) -> str:
     # 统一大小写，避免比较失败。
     return (severity or "").strip().lower()
@@ -145,8 +170,16 @@ def main() -> int:
     parser.add_argument("--exceptions", required=True)
     args = parser.parse_args()
 
-    with open(args.audit, "r", encoding="utf-8") as handle:
-        audit = json.load(handle)
+    try:
+        with open(args.audit, "r", encoding="utf-8") as handle:
+            audit = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"Cannot read pnpm audit output {args.audit}: {exc}\n")
+        return 1
+    problem = audit_output_problem(audit)
+    if problem:
+        sys.stderr.write(problem + "\n")
+        return 1
 
     # 读取异常清单并建立索引，便于快速匹配包名 + advisory。
     exceptions = parse_exceptions(args.exceptions)
