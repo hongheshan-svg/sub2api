@@ -25,6 +25,9 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
+# xlsx is installed from a vendored SheetJS tarball (file: dependency), so it
+# must be present before `pnpm install`. See frontend/third_party/sheetjs/.
+COPY frontend/third_party/ ./third_party/
 RUN pnpm install --prefer-frozen-lockfile
 
 # Copy frontend source and build.
