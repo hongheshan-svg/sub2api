@@ -18,7 +18,10 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
-ENV NODE_OPTIONS=--max-old-space-size=1536
+# vue-tsc + vite build needs more than 1.5 GB since the frontend grew (on
+# 2026-10-01: 1536 OOMs, 2048 and 3072 pass); 4096 leaves headroom. It is a
+# ceiling, not a reservation.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
 # Install pnpm (pinned to v9 to match root Dockerfile, CI, and the lockfile)
 RUN corepack enable && corepack prepare pnpm@9 --activate
