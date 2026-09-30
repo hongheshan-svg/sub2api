@@ -1,6 +1,15 @@
 import { apiClient } from '../client'
 import type { BasePaginationResponse } from '@/types'
-import type { AdminInvoiceListParams, AdminInvoiceRequest, InvoiceEmailSend, InvoiceRequest } from '@/types/invoice'
+import type {
+  AdminInvoiceListParams,
+  AdminInvoiceRequest,
+  InvoiceEmailSend,
+  InvoiceReconciliationDetail,
+  InvoiceReconciliationListParams,
+  InvoiceReconciliationRow,
+  InvoiceReconciliationSummary,
+  InvoiceRequest
+} from '@/types/invoice'
 
 export const adminInvoiceAPI = {
   list(params?: AdminInvoiceListParams) {
@@ -37,5 +46,17 @@ export const adminInvoiceAPI = {
 
   listEmailSends(params?: { page?: number; page_size?: number }) {
     return apiClient.get<BasePaginationResponse<InvoiceEmailSend>>('/admin/payment/invoices/email-sends', { params })
+  },
+
+  listReconciliation(params?: InvoiceReconciliationListParams) {
+    return apiClient.get<BasePaginationResponse<InvoiceReconciliationRow>>('/admin/payment/invoices/reconciliation', { params })
+  },
+
+  getReconciliationSummary() {
+    return apiClient.get<InvoiceReconciliationSummary>('/admin/payment/invoices/reconciliation/summary')
+  },
+
+  getUserReconciliation(userId: number) {
+    return apiClient.get<InvoiceReconciliationDetail>(`/admin/payment/invoices/reconciliation/users/${userId}`)
   }
 }

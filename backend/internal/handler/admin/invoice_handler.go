@@ -200,6 +200,49 @@ func (h *InvoiceHandler) ListInvoiceEmailSends(c *gin.Context) {
 	response.Paginated(c, items, int64(total), page, pageSize)
 }
 
+// ListInvoiceReconciliation returns per-user paid-vs-invoiced reconciliation rows.
+// GET /api/v1/admin/payment/invoices/reconciliation
+func (h *InvoiceHandler) ListInvoiceReconciliation(c *gin.Context) {
+	page, pageSize := response.ParsePagination(c)
+	rows, total, err := h.paymentService.ListInvoiceReconciliation(c.Request.Context(), service.InvoiceReconciliationParams{
+		Page:     page,
+		PageSize: pageSize,
+		Keyword:  c.Query("keyword"),
+		Scope:    c.Query("scope"),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Paginated(c, rows, int64(total), page, pageSize)
+}
+
+// GetInvoiceReconciliationSummary returns platform-wide reconciliation totals.
+// GET /api/v1/admin/payment/invoices/reconciliation/summary
+func (h *InvoiceHandler) GetInvoiceReconciliationSummary(c *gin.Context) {
+	summary, err := h.paymentService.GetInvoiceReconciliationSummary(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, summary)
+}
+
+// GetUserInvoiceReconciliation returns one user's reconciliation with order-level detail.
+// GET /api/v1/admin/payment/invoices/reconciliation/users/:id
+func (h *InvoiceHandler) GetUserInvoiceReconciliation(c *gin.Context) {
+	userID, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+	detail, err := h.paymentService.GetUserInvoiceReconciliation(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, detail)
+}
+
 // writeUserNotification persists an in-app notification for the requester.
 // Best-effort — failures are logged but not surfaced to the admin caller.
 func (h *InvoiceHandler) writeUserNotification(req *service.InvoiceRequest, completed bool) {

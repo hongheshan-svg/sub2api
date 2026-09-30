@@ -128,3 +128,67 @@ export interface InvoiceEmailSend {
   sent_by: number
   sent_at: string
 }
+
+export type InvoiceReconciliationScope = 'all' | 'invoiced' | 'mismatched'
+export type InvoiceReconciliationIssue = 'duplicate' | 'refunded_invoiced'
+
+export interface InvoiceReconciliationRow {
+  user_id: number
+  username: string
+  email: string
+  paid_amount: number
+  refunded_amount: number
+  net_paid_amount: number
+  invoiced_amount: number
+  pending_amount: number
+  uninvoiced_amount: number
+  over_invoiced_amount: number
+  duplicate_orders: number
+  refunded_invoiced_orders: number
+  mismatched: boolean
+}
+
+export interface InvoiceReconciliationSummary {
+  paid_amount: number
+  refunded_amount: number
+  net_paid_amount: number
+  invoiced_amount: number
+  pending_amount: number
+  uninvoiced_amount: number
+  over_invoiced_amount: number
+  user_count: number
+  mismatched_users: number
+}
+
+export interface InvoiceReconciliationListParams {
+  page?: number
+  page_size?: number
+  keyword?: string
+  scope?: InvoiceReconciliationScope
+}
+
+export interface InvoiceReconciliationRequestRef {
+  id: number
+  serial_no: string
+  status: InvoiceStatus
+  invoice_no?: string
+}
+
+export interface InvoiceReconciliationOrder {
+  id: number
+  out_trade_no: string
+  pay_amount: number
+  refunded_amount: number
+  status: string
+  order_type: string
+  payment_type: string
+  created_at: string
+  completed_at?: string
+  requests: InvoiceReconciliationRequestRef[]
+  issues: InvoiceReconciliationIssue[]
+}
+
+export interface InvoiceReconciliationDetail {
+  summary: InvoiceReconciliationRow
+  orders: InvoiceReconciliationOrder[]
+}
