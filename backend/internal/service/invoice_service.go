@@ -692,12 +692,21 @@ func scanInvoiceRequest(scanner interface {
 	return req, nil
 }
 
+// queryInvoiceableOrdersByIDs 读取并锁定(FOR UPDATE)待开票订单。
+//
+// 加锁是防重复提交的关键:invoice_request_orders 的主键是 (申请, 订单),数据库层面
+// 不阻止同一订单挂进两张申请,只能靠 CreateInvoiceRequest 里"查占用→插入"的检查。
+// 不加锁时并发的两个请求会在对方提交前都查到"未占用",各自插入成功(同一笔订单开两张票、
+// 专票费扣两次)。锁住订单行后,后到的请求会等前一个事务提交,READ COMMITTED 下随后的
+// 占用检查是新快照,能看到已提交的关联行,从而返回 INVOICE_ORDER_ALREADY_REQUESTED。
+// ORDER BY 以 id 收尾是确定的全序,并发事务按相同顺序加锁,不会互相死锁。
 func queryInvoiceableOrdersByIDs(ctx context.Context, tx *sql.Tx, userID int64, orderIDs []int64) ([]InvoiceRequestOrder, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, out_trade_no, pay_amount::float8, payment_type, order_type, status, created_at, completed_at
 		FROM payment_orders
 		WHERE user_id = $1 AND status = $2 AND id = ANY($3)
 		ORDER BY completed_at DESC NULLS LAST, created_at DESC, id DESC
+		FOR UPDATE
 	`, userID, OrderStatusCompleted, pq.Array(orderIDs))
 	if err != nil {
 		return nil, infraerrors.InternalServer("INVOICE_ORDER_LOAD_FAILED", "failed to load invoice orders").WithCause(err)

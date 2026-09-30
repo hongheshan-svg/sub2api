@@ -13,7 +13,8 @@ import (
 // OnOrderRefundedForInvoices reconciles invoice requests when a payment order is refunded.
 //
 // Behaviour by invoice request status:
-//   - pending  : detach the order; recompute total; if no orders left, hard-delete the request.
+//   - pending  : detach the order; recompute base/invoice/fee amounts and refund the fee
+//     difference to balance; if no orders left, refund the whole fee and hard-delete the request.
 //   - completed: flag has_refunded_orders=true; admin must manually void/reissue.
 //   - rejected : ignore (the order is already disqualified for invoicing).
 //
@@ -78,8 +79,9 @@ func (s *PaymentService) OnOrderRefundedForInvoices(ctx context.Context, orderID
 	}
 }
 
-// handleRefundPending detaches the refunded order from a pending request and recomputes the total.
-// If the request becomes empty, it is hard-deleted (orders return to the invoiceable pool naturally).
+// handleRefundPending detaches the refunded order from a pending request and recomputes its amounts.
+// The VAT-special fee was charged on the original amount at submit time, so the difference
+// (or the whole fee, when no orders are left and the request is hard-deleted) goes back to balance.
 func (s *PaymentService) handleRefundPending(ctx context.Context, db *sql.DB, reqID, userID int64, serialNo string, orderID int64) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -87,6 +89,31 @@ func (s *PaymentService) handleRefundPending(ctx context.Context, db *sql.DB, re
 		return
 	}
 	defer rollbackIfActive(tx)
+
+	// 锁住申请行并重读状态:调用方读到 pending 之后,管理员可能已完成/驳回,用户可能已取消;
+	// 同时与 Cancel/Reject 串行,保证开票费只退一次。
+	var status string
+	var feeRate, feeAmount float64
+	var feeChargedAt, feeRefundedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status, fee_rate::float8, fee_amount::float8, fee_charged_at, fee_refunded_at
+		FROM invoice_requests
+		WHERE id = $1
+		FOR UPDATE
+	`, reqID).Scan(&status, &feeRate, &feeAmount, &feeChargedAt, &feeRefundedAt); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("invoice refund hook: lock request failed", "request_id", reqID, "error", err)
+		}
+		return
+	}
+	if status != InvoiceStatusPending {
+		// 先释放行锁,handleRefundCompleted 走另一条连接更新同一行。
+		_ = tx.Rollback()
+		if status == InvoiceStatusCompleted {
+			s.handleRefundCompleted(ctx, db, reqID, userID, serialNo, orderID)
+		}
+		return
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM invoice_request_orders
@@ -97,46 +124,82 @@ func (s *PaymentService) handleRefundPending(ctx context.Context, db *sql.DB, re
 	}
 
 	var remaining int
+	var remainingAmount float64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM invoice_request_orders WHERE invoice_request_id = $1
-	`, reqID).Scan(&remaining); err != nil {
+		SELECT COUNT(*), COALESCE(SUM(po.pay_amount), 0)::float8
+		FROM invoice_request_orders iro
+		JOIN payment_orders po ON po.id = iro.payment_order_id
+		WHERE iro.invoice_request_id = $1
+	`, reqID).Scan(&remaining, &remainingAmount); err != nil {
 		slog.Warn("invoice refund hook: count remaining failed", "request_id", reqID, "error", err)
 		return
 	}
 
+	// 只有已扣且未退的费用才涉及余额变动;fee_amount 始终表示"当前实际扣着的费用",
+	// 之后 Cancel/Reject 按它退款,多次部分退款 + 取消合计正好退回原始费用。
+	outstandingFee := 0.0
+	if feeChargedAt.Valid && !feeRefundedAt.Valid && feeAmount > 0 {
+		outstandingFee = feeAmount
+	}
+
+	feeRefund := 0.0
 	notifyTitle := ""
 	notifyBody := ""
 
 	if remaining == 0 {
+		feeRefund = outstandingFee
 		if _, err := tx.ExecContext(ctx, `DELETE FROM invoice_requests WHERE id = $1`, reqID); err != nil {
 			slog.Warn("invoice refund hook: delete empty request failed", "request_id", reqID, "error", err)
 			return
 		}
 		notifyTitle = "您的开票申请已撤销"
 		notifyBody = fmt.Sprintf("申请单号 %s 关联的全部订单已退款，申请已自动撤销。", serialNo)
+		if feeRefund > 0 {
+			notifyBody += fmt.Sprintf("已扣除的增值税专用发票费 ¥%.2f 已退回余额。", feeRefund)
+		}
 	} else {
+		baseAmount := round2(remainingAmount)
+		newFee, invoiceAmount := computeInvoiceAmounts(baseAmount, feeRate)
+		if outstandingFee > newFee {
+			feeRefund = round2(outstandingFee - newFee)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE invoice_requests
-			SET total_amount = (
-				SELECT COALESCE(SUM(po.pay_amount), 0)
-				FROM invoice_request_orders iro
-				JOIN payment_orders po ON po.id = iro.payment_order_id
-				WHERE iro.invoice_request_id = $1
-			),
+			SET total_amount = $2,
+			    base_amount = $2,
+			    invoice_amount = $3,
+			    fee_amount = $4,
 			    has_refunded_orders = true,
 			    updated_at = NOW()
 			WHERE id = $1
-		`, reqID); err != nil {
-			slog.Warn("invoice refund hook: recompute total failed", "request_id", reqID, "error", err)
+		`, reqID, baseAmount, invoiceAmount, newFee); err != nil {
+			slog.Warn("invoice refund hook: recompute amounts failed", "request_id", reqID, "error", err)
 			return
 		}
 		notifyTitle = "申请订单已部分退款"
 		notifyBody = fmt.Sprintf("申请单号 %s 中的部分订单已退款，金额已重新计算。", serialNo)
+		if feeRefund > 0 {
+			notifyBody += fmt.Sprintf("多扣的增值税专用发票费 ¥%.2f 已退回余额。", feeRefund)
+		}
+	}
+
+	if feeRefund > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1 WHERE id = $2`, feeRefund, userID); err != nil {
+			slog.Warn("invoice refund hook: refund invoice fee failed", "request_id", reqID, "error", err)
+			return
+		}
+		if err := insertInvoiceFeeLedgerTx(ctx, tx, newInvoiceFeeRefundEntry(userID, feeRefund, serialNo)); err != nil {
+			slog.Warn("invoice refund hook: record invoice fee refund ledger failed", "request_id", reqID, "error", err)
+			return
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		slog.Warn("invoice refund hook: commit failed", "request_id", reqID, "error", err)
 		return
+	}
+	if feeRefund > 0 && s.userService != nil {
+		s.userService.InvalidateBalanceCaches(ctx, userID)
 	}
 
 	s.writeRefundNotification(ctx, userID, reqID, serialNo, notifyTitle, notifyBody)

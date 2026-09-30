@@ -505,6 +505,8 @@ func (s *PaymentService) finalizePendingRefundSuccess(ctx context.Context, p *Re
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit refund finalization: %w", err)
 	}
+	// Best-effort: reconcile invoice requests linked to this order (same as markRefundOk).
+	s.OnOrderRefundedForInvoices(ctx, p.OrderID)
 	return result, nil
 }
 

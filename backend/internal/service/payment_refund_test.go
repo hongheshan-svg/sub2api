@@ -3,9 +3,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"testing"
 	"time"
@@ -532,6 +534,34 @@ func TestFinalizePendingRefundSuccessRejectsStaleCallerBeforeSecondDeduction(t *
 		Count(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, successAudits)
+}
+
+// 异步退款(渠道先回 pending、之后查询确认成功)同样要联动发票：已开票订单打标、
+// 待处理申请摘单并退开票费。发票联动的 SQL 是 Postgres 方言，sqlite 测试库里没有发票表，
+// hook 会在第一条查询失败并打告警日志——这里用这条日志确认它在退款落库后被调用了；
+// hook 本身的行为由 repository 包的 Postgres 集成测试(invoice_integration_test.go)覆盖。
+func TestFinalizePendingRefundSuccessTriggersInvoiceRefundHook(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	order := createPendingRefundOrderForTest(t, ctx, client, "finalize-invoice-hook")
+
+	svc := &PaymentService{
+		entClient: client,
+		userRepo: &mockUserRepo{deductAvailableBalanceFn: func(ctx context.Context, id int64, amount float64) (float64, error) {
+			return amount, nil
+		}},
+	}
+
+	result, err := svc.finalizePendingRefundSuccess(ctx, svc.refundFinalizePlan(order))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Contains(t, logs.String(), "invoice refund hook")
+	require.Contains(t, logs.String(), fmt.Sprintf("order_id=%d", order.ID))
 }
 
 func TestFinalizePendingRefundSuccessRollsBackPostDeductionFailure(t *testing.T) {
