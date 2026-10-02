@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>gw-link - AI API Gateway for Claude Code, Codex and Gemini CLI</title>
-    <meta name="description" content="gw-link 是面向 Claude Code、Codex、Gemini CLI、VS Code 与主流 AI 编程工具的 OpenAI 兼容 API Gateway。只需替换 base_url 和 API Key，即可统一接入 Claude、GPT、Gemini 等模型。" />
-    <meta name="keywords" content="gw-link, Claude Code API Gateway, Codex API Gateway, Gemini CLI API, OpenAI compatible API, AI API Gateway, GPT-Image-2 API, API 中转, AI 编码" />
+    <title>gw-link - Claude Code / Codex / Gemini CLI API 中转网关 | AI API Gateway</title>
+    <meta name="description" content="gw-link 是面向 Claude Code、Codex、Gemini CLI 与 VS Code 的 AI API 中转网关，兼容 Anthropic、OpenAI、Gemini 原生接口。只需设置 base_url 和 API Key，即可统一接入 Claude、GPT、Gemini 等模型。" />
+    <meta name="keywords" content="gw-link, Claude Code API, Claude Code 中转, Codex API, Codex 中转, Gemini CLI API, ANTHROPIC_BASE_URL, OpenAI compatible API, AI API Gateway, API 中转, GPT-Image-2 API, AI 编程" />
     <meta name="robots" content="index, follow, max-snippet:160, max-image-preview:large" />
     <meta name="theme-color" content="#1a1a2e" />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:card" content="summary" />
     <!--
       canonical / og:* / twitter:title|description / Organization + WebSite +
       SoftwareApplication JSON-LD 由后端 BuildSEOHead 在响应时按站点配置注入
@@ -27,7 +27,7 @@
             "name": "gw-link 支持 Claude Code 吗？",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "支持。gw-link 提供 OpenAI 兼容 API Gateway，Claude Code 只需配置 base_url 和 API Key 即可接入。"
+              "text": "支持。gw-link 提供与 Anthropic 一致的 /v1/messages 接口，Claude Code 只需设置 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN 两个环境变量即可接入。"
             }
           },
           {
@@ -35,7 +35,7 @@
             "name": "gw-link 支持 Codex 和 Gemini CLI 吗？",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "支持。gw-link 面向 Claude Code、Codex、Gemini CLI、VS Code 等 AI 编程工具提供统一 API 接入。"
+              "text": "支持。Codex CLI 通过 ~/.codex/config.toml 把 base_url 指向 gw-link 的 /v1（Responses API）；Gemini CLI 设置 GOOGLE_GEMINI_BASE_URL 和 GEMINI_API_KEY 即可。"
             }
           },
           {
@@ -43,7 +43,7 @@
             "name": "gw-link 是否兼容 OpenAI API 格式？",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "兼容。gw-link 采用 OpenAI-compatible API 形式，便于现有 CLI、IDE 插件和自动化脚本低成本迁移。"
+              "text": "兼容。gw-link 提供 /v1/chat/completions 与 /v1/responses 等 OpenAI 兼容接口，现有 OpenAI SDK、IDE 插件和脚本只需替换 base_url 与 API Key。"
             }
           }
         ]
@@ -52,8 +52,14 @@
   </head>
   <body>
     <noscript>
-      <h1>AI API Gateway for Claude Code, Codex and Gemini CLI</h1>
-      <p>gw-link 是面向 Claude Code、Codex、Gemini CLI、VS Code 与主流 AI 编程工具的 OpenAI 兼容 API Gateway。</p>
+      <h1>gw-link：Claude Code、Codex、Gemini CLI 的 AI API 中转网关</h1>
+      <p>gw-link 是面向 Claude Code、Codex CLI、Gemini CLI、VS Code 插件等 AI 编程工具的 AI API 网关，同时兼容 Anthropic Messages（/v1/messages）、OpenAI Chat Completions / Responses（/v1/chat/completions、/v1/responses）与 Gemini 原生（/v1beta）接口。</p>
+      <p>在控制台创建 API Key 后，把工具的 base_url 指向 gw-link 即可使用 Claude、GPT、Gemini 等模型，API Key、用量与计费在同一控制台统一管理。</p>
+      <ul>
+        <li>Claude Code：设置 ANTHROPIC_BASE_URL 与 ANTHROPIC_AUTH_TOKEN</li>
+        <li>Codex CLI：在 ~/.codex/config.toml 中配置 base_url（/v1）与 wire_api = "responses"</li>
+        <li>Gemini CLI：设置 GOOGLE_GEMINI_BASE_URL 与 GEMINI_API_KEY</li>
+      </ul>
     </noscript>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>

@@ -5,6 +5,8 @@ export default {
   },
   // Home Page
   home: {
+    // <title> of the public homepage (SEO): "<documentTitle> - <site name>"
+    documentTitle: 'AI API Gateway for Claude Code, Codex and Gemini CLI',
     viewOnGithub: 'View on GitHub',
     viewDocs: 'View Documentation',
     docs: 'Docs',

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PURCHASE_ROUTE_NAME, resolveDocumentTitle, resolveRouteDocumentTitle, resolveRouteMetaKeys } from '@/router/title'
+import { setSeoPageTitle } from '@/utils/seoPageTitle'
 
 // 语言包在测试环境是懒加载的，这里只提供本文件用到的几个 key，其余原样返回 key（触发 meta.title 回退）。
 vi.mock('@/i18n', () => {
@@ -118,5 +119,18 @@ describe('resolveRouteDocumentTitle 站点类型', () => {
   it('充值 & 订阅时保留原标题', () => {
     const title = resolveRouteDocumentTitle(purchaseRoute, 'EzouAPI', [], { billingMode: 'recharge_and_subscription' })
     expect(title).toBe('充值/订阅 - EzouAPI')
+  })
+})
+
+describe('resolveRouteDocumentTitle SEO landing pages', () => {
+  it('落地页登记了完整标题时，优先使用该标题而不是“路由标题 - 站点名”', () => {
+    setSeoPageTitle('/codex-api-gateway', 'Codex CLI API 中转配置 - gw-link')
+    const route = { name: 'CodexApiGateway', path: '/codex-api-gateway', params: {}, meta: { title: 'Codex API Gateway' } }
+    expect(resolveRouteDocumentTitle(route as any, 'gw-link')).toBe('Codex CLI API 中转配置 - gw-link')
+  })
+
+  it('未登记的路由仍按原规则生成标题', () => {
+    const route = { name: 'Dashboard', path: '/dashboard', params: {}, meta: { title: 'Dashboard' } }
+    expect(resolveRouteDocumentTitle(route as any, 'gw-link')).toBe('Dashboard - gw-link')
   })
 })

@@ -348,6 +348,18 @@ func (s *SettingService) GetDocURL(ctx context.Context) string {
 	return strings.TrimSpace(value)
 }
 
+// GetSiteLogo 返回站点 Logo 设置原值(URL、路径或 data: URI),供公开的 /site-logo 端点使用。
+func (s *SettingService) GetSiteLogo(ctx context.Context) string {
+	value, _ := s.getSettingValueCached(ctx, SettingKeySiteLogo)
+	return strings.TrimSpace(value)
+}
+
+// GetCustomEndpoints 返回 custom_endpoints 设置的原始 JSON,供 /llms.txt 列出接入地址。
+func (s *SettingService) GetCustomEndpoints(ctx context.Context) string {
+	value, _ := s.getSettingValueCached(ctx, SettingKeyCustomEndpoints)
+	return strings.TrimSpace(value)
+}
+
 // GetDefaultConcurrency 获取默认并发量
 func (s *SettingService) GetDefaultConcurrency(ctx context.Context) int {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultConcurrency)
