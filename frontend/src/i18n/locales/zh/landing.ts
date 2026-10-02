@@ -5,6 +5,8 @@ export default {
   },
   // Home Page
   home: {
+    // <title> of the public homepage (SEO): "<documentTitle> - <site name>"
+    documentTitle: 'Claude Code / Codex / Gemini CLI API 中转网关',
     viewOnGithub: '在 GitHub 上查看',
     viewDocs: '查看文档',
     docs: '文档',

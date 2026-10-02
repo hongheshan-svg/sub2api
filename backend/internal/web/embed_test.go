@@ -5,6 +5,7 @@ package web
 import (
 	"bytes"
 	"context"
+	htmlpkg "html"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -872,6 +873,7 @@ func newTestServer(t *testing.T) *FrontendServer {
 	p.FAQ = []LandingFAQ{{Q: "可以用吗?", A: "可以"}}
 	// no seo/landing-pages.json in the test build; inject the page directly
 	s.landing = map[string]LandingPage{p.Path: p}
+	s.landingList = []LandingPage{p}
 	return s
 }
 
@@ -892,7 +894,7 @@ func TestServeLandingRoute(t *testing.T) {
 	require.Contains(t, body, `"@type":"FAQPage"`)
 	require.Contains(t, body, "window.__SEO_PAGE__=")
 	// The site-wide homepage description must not survive on a landing page.
-	require.NotContains(t, body, "OpenAI 兼容 API Gateway。只需替换 base_url")
+	require.NotContains(t, body, "兼容 Anthropic、OpenAI、Gemini 原生接口。只需设置 base_url")
 	// The static homepage FAQPage must be stripped: only the page-specific
 	// FAQPage may remain, so a landing page carries exactly one FAQPage entity.
 	require.NotContains(t, body, "gw-link 支持 Claude Code 吗")
@@ -987,4 +989,82 @@ func TestServeNonLandingRoute_NoBodyInjection(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.NotContains(t, w.Body.String(), "Claude Code API Gateway 标题")
+}
+
+func TestExternalizeSiteLogo(t *testing.T) {
+	dataLogo := "data:image/png;base64," + strings.Repeat("A", 4096)
+	in := []byte(`{"site_name":"gw-link","site_logo":"` + dataLogo + `","n":1}`)
+	out := externalizeSiteLogo(in)
+	require.NotContains(t, string(out), "base64")
+	require.Contains(t, string(out), `"site_logo":"`+SiteLogoHref(dataLogo)+`"`)
+	require.Contains(t, string(out), `"site_name":"gw-link"`)
+	require.Contains(t, string(out), `"n":1`)
+
+	// URL logos, missing logos and invalid JSON pass through untouched.
+	for _, keep := range []string{`{"site_logo":"https://x/l.png"}`, `{"a":1}`, `not json`} {
+		require.Equal(t, keep, string(externalizeSiteLogo([]byte(keep))))
+	}
+}
+
+func TestServeHomepage_DataLogoNotInlined(t *testing.T) {
+	dataLogo := "data:image/png;base64," + strings.Repeat("A", 4096)
+	s := newTestServer(t)
+	s.settings = &mockSettingsProvider{settings: map[string]any{
+		"site_name": "gw-link", "frontend_url": "https://gw-link.com", "site_logo": dataLogo,
+	}}
+	r := gin.New()
+	r.Use(s.Middleware())
+	for _, path := range []string{"/", "/claude-code-api-gateway"} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		body := w.Body.String()
+		require.NotContains(t, body, "base64", path)
+		require.Contains(t, body, `<link rel="icon" href="`+SiteLogoHref(dataLogo)+`" />`, path)
+		require.Contains(t, body, `content="https://gw-link.com`+SiteLogoHref(dataLogo)+`"`, path) // og:image
+	}
+}
+
+func TestServeHomepage_GuideLinksInNoscriptAndRichDescription(t *testing.T) {
+	s := newTestServer(t)
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := w.Body.String()
+	noscript := body[strings.Index(body, "<noscript>"):strings.Index(body, "</noscript>")]
+	require.Contains(t, noscript, `<a href="/claude-code-api-gateway">Claude Code API Gateway</a>`)
+	if desc := metaDescription(s.baseHTML); desc != "" {
+		require.Contains(t, body, `property="og:description" content="`+htmlpkg.EscapeString(desc)+`"`)
+	}
+}
+
+func TestServeLandingRoute_DropsHomepageNoscriptAndLinksSiblings(t *testing.T) {
+	s := newTestServer(t)
+	sib := LandingPage{Path: "/codex-api-gateway", Kicker: "Codex API Gateway", H1: "Codex", Lang: "zh-CN"}
+	s.landing[sib.Path] = sib
+	s.landingList = append(s.landingList, sib)
+	r := gin.New()
+	r.Use(s.Middleware())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/claude-code-api-gateway", nil))
+	body := w.Body.String()
+	require.NotContains(t, body, "<noscript>")
+	require.Equal(t, 1, strings.Count(body, "<h1>"))
+	require.Contains(t, body, `<a href="/codex-api-gateway">Codex API Gateway</a>`)
+}
+
+func TestInjectSiteTitle_KeepsStaticTitleNamingSite(t *testing.T) {
+	html := []byte(`<head><title>gw-link - AI API Gateway for Claude Code, Codex and Gemini CLI</title></head>`)
+	out := injectSiteTitle(html, []byte(`{"site_name":"gw-link"}`))
+	require.Equal(t, string(html), string(out))
+}
+
+func TestRemoveNoscriptAndInjectIntoNoscript(t *testing.T) {
+	html := []byte("<body>\n<noscript><h1>x</h1></noscript>\n<div id=\"app\"></div></body>")
+	require.Equal(t, "<body>\n<div id=\"app\"></div></body>", string(removeNoscript(html)))
+	require.Equal(t, "<body>\n<noscript><h1>x</h1><nav/></noscript>\n<div id=\"app\"></div></body>",
+		string(injectIntoNoscript(html, []byte("<nav/>"))))
+	require.Equal(t, string(html), string(injectIntoNoscript(html, nil)))
+	plain := []byte("<body></body>")
+	require.Equal(t, string(plain), string(removeNoscript(plain)))
 }

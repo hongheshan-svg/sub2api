@@ -27,7 +27,18 @@ func resolveBaseURL(c *gin.Context, settingService *service.SettingService) stri
 	return ""
 }
 
-// RegisterSEORoutes 注册 /robots.txt /sitemap.xml /llms.txt。
+func llmsInput(c *gin.Context, settingService *service.SettingService) web.LLMsInput {
+	ctx := c.Request.Context()
+	return web.LLMsInput{
+		SiteName:     settingService.GetSiteName(ctx),
+		SiteSubtitle: settingService.GetSiteSubtitle(ctx),
+		BaseURL:      resolveBaseURL(c, settingService),
+		DocURL:       settingService.GetDocURL(ctx),
+		Endpoints:    web.ParseLLMsEndpoints(settingService.GetCustomEndpoints(ctx)),
+	}
+}
+
+// RegisterSEORoutes 注册 /robots.txt /sitemap.xml /llms.txt /llms-full.txt /site-logo。
 func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 	landing := web.LandingPages() // nil in non-embed builds -> sitemap falls back to "/"
 
@@ -44,14 +55,32 @@ func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 	})
 
 	r.GET("/llms.txt", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		base := resolveBaseURL(c, settingService)
 		c.Header("Cache-Control", "public, max-age=3600")
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(web.BuildLLMsTxt(web.LLMsInput{
-			SiteName:     settingService.GetSiteName(ctx),
-			SiteSubtitle: settingService.GetSiteSubtitle(ctx),
-			BaseURL:      base,
-			DocURL:       settingService.GetDocURL(ctx),
-		}, landing)))
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(web.BuildLLMsTxt(llmsInput(c, settingService), landing)))
+	})
+
+	r.GET("/llms-full.txt", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=3600")
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(web.BuildLLMsFullTxt(llmsInput(c, settingService), landing)))
+	})
+
+	// Admin-uploaded logos are stored as data: URIs; the HTML references them
+	// via web.SiteLogoHref so pages stay small and og:image is a real URL.
+	r.GET(web.SiteLogoPath, func(c *gin.Context) {
+		logo := settingService.GetSiteLogo(c.Request.Context())
+		contentType, data, ok := web.DecodeDataImage(logo)
+		if !ok {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		if c.Query("v") == web.SiteLogoVersion(logo) {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			c.Header("Cache-Control", "public, max-age=300")
+		}
+		// The image is admin-supplied; never let a (SVG) logo run as a document.
+		c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Data(http.StatusOK, contentType, data)
 	})
 }

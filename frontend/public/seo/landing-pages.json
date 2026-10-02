@@ -4,21 +4,145 @@
     "changefreq": "weekly",
     "priority": "0.95",
     "lang": "zh-CN",
-    "title": "Claude Code API Gateway - gw-link",
-    "description": "gw-link 为 Claude Code 提供 OpenAI 兼容 API Gateway，只需配置 base_url 和 API Key，即可稳定接入 Claude、GPT、Gemini 等模型。",
+    "updated": "2026-10-02",
+    "title": "Claude Code API 中转网关：2 个环境变量接入 - gw-link",
+    "description": "gw-link 为 Claude Code 提供 Anthropic 兼容的 /v1/messages 接口。设置 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN 即可接入，Key、用量与计费在控制台统一管理。",
     "kicker": "Claude Code API Gateway",
-    "h1": "Claude Code API Gateway：统一模型、Key 与 base_url",
-    "lead": "用 gw-link 把 Claude Code 接入统一 AI API Gateway，集中管理模型路由、API Key、计费与稳定线路。",
+    "h1": "Claude Code API 网关：两个环境变量完成接入",
+    "lead": "Claude Code 通过 Anthropic Messages API（/v1/messages）与模型通信。gw-link 提供同一协议的网关入口：把 ANTHROPIC_BASE_URL 指向 https://gw-link.com，用控制台签发的 sk- 开头的 Key 作为 ANTHROPIC_AUTH_TOKEN，无需改动 Claude Code 本身。",
     "guideTitle": "Claude Code 接入步骤",
     "benefits": [
-      { "title": "OpenAI 兼容", "text": "沿用熟悉的 base_url 与 API Key 配置方式，降低 Claude Code 迁移成本。" },
-      { "title": "统一模型入口", "text": "在同一入口使用 Claude、GPT、Gemini 等模型，减少多平台配置碎片。" },
-      { "title": "适合团队管理", "text": "统一分发 Key、观察用量、控制成本，适合开发团队与 AI 编码场景。" }
+      {
+        "title": "原生协议，零改造",
+        "text": "gw-link 直接提供 Anthropic 兼容的 /v1/messages 接口，Claude Code 的工具调用、流式输出与长上下文按原样工作，不经过 OpenAI 格式转换。"
+      },
+      {
+        "title": "一个 Key 管理团队用量",
+        "text": "为每位成员或每个项目单独创建 API Key，可设置额度上限，在控制台查看每个 Key 的调用量与费用。"
+      },
+      {
+        "title": "两个接入节点",
+        "text": "https://gw-link.com 为主节点（三网优化），https://gw-link.ai 为美国节点，按网络环境任选其一，配置方式完全相同。"
+      }
     ],
-    "steps": ["登录 gw-link 控制台并创建 API Key。", "在 Claude Code 中配置 gw-link base_url。", "选择目标模型并进行一次最小请求验证。"],
+    "steps": [
+      "注册并登录 gw-link 控制台，在「API 密钥」页创建 Key（选择 Claude 分组）。",
+      "设置环境变量 ANTHROPIC_BASE_URL=https://gw-link.com 与 ANTHROPIC_AUTH_TOKEN=你的 Key（注意 base_url 不要带 /v1）。",
+      "在项目目录运行 claude，发送一条消息验证连通。",
+      "如需长期生效，把同样的配置写入 ~/.claude/settings.json 的 env 字段。"
+    ],
+    "snippets": [
+      {
+        "title": "macOS / Linux 终端",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-你的gw-link密钥\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "~/.claude/settings.json（推荐，长期生效）",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-你的gw-link密钥\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}",
+        "note": "Windows 路径为 %USERPROFILE%\\.claude\\settings.json。"
+      },
+      {
+        "title": "Windows PowerShell",
+        "lang": "powershell",
+        "code": "$env:ANTHROPIC_BASE_URL=\"https://gw-link.com\"\n$env:ANTHROPIC_AUTH_TOKEN=\"sk-你的gw-link密钥\"\n$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      }
+    ],
     "faq": [
-      { "q": "Claude Code 可以使用 gw-link 吗？", "a": "可以。gw-link 提供 OpenAI 兼容 API Gateway，适合 Claude Code 的 base_url/API Key 接入。" },
-      { "q": "是否需要改代码？", "a": "通常只需要替换 base_url 和 API Key，具体取决于你的 Claude Code 配置方式。" }
+      {
+        "q": "Claude Code 可以使用 gw-link 吗？",
+        "a": "可以。gw-link 提供与 Anthropic 一致的 /v1/messages 接口，Claude Code 只需设置 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN 两个环境变量即可接入，不需要修改代码或安装插件。"
+      },
+      {
+        "q": "还需要单独的 Anthropic API Key 吗？",
+        "a": "不需要。使用 gw-link 控制台签发的 sk- 开头的 Key 即可，调用费用从你的 gw-link 账户余额或订阅额度中扣除。"
+      },
+      {
+        "q": "ANTHROPIC_BASE_URL 要不要加 /v1？",
+        "a": "不要。Claude Code 会自动在 base_url 后拼接 /v1/messages，填 https://gw-link.com 即可；写成 https://gw-link.com/v1 会变成 /v1/v1/messages 并返回 404。"
+      },
+      {
+        "q": "VS Code / JetBrains 里的 Claude Code 也能用吗？",
+        "a": "可以。IDE 集成调用的是同一个 Claude Code，写在 ~/.claude/settings.json 的 env 配置同样生效。"
+      },
+      {
+        "q": "支持哪些模型？",
+        "a": "以 Key 所属分组的可用模型为准，可以用 curl https://gw-link.com/v1/models -H \"Authorization: Bearer 你的Key\" 查看当前可用的模型列表。"
+      }
+    ]
+  },
+  {
+    "path": "/en/claude-code-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.85",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "Claude Code API Gateway: Set Up in 2 Env Vars - gw-link",
+    "description": "Use Claude Code through gw-link's Anthropic-compatible /v1/messages API: set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN, then manage keys and usage in one console.",
+    "kicker": "Claude Code API Gateway",
+    "h1": "Claude Code API Gateway: Connect with Two Environment Variables",
+    "lead": "Claude Code talks to models through the Anthropic Messages API (/v1/messages). gw-link serves the same protocol: point ANTHROPIC_BASE_URL at https://gw-link.com and use your console-issued sk- key as ANTHROPIC_AUTH_TOKEN. Claude Code itself needs no changes.",
+    "guideTitle": "How to connect Claude Code",
+    "benefits": [
+      {
+        "title": "Native protocol, no shims",
+        "text": "gw-link speaks the Anthropic-compatible /v1/messages API directly, so Claude Code's tool use, streaming and long context work as-is — no OpenAI-format translation in between."
+      },
+      {
+        "title": "One key per teammate",
+        "text": "Create a separate API key per person or project, set spending caps, and see per-key usage and cost in the console."
+      },
+      {
+        "title": "Two entry points",
+        "text": "https://gw-link.com is the primary endpoint and https://gw-link.ai is the US endpoint. Pick whichever is faster from your network; configuration is identical."
+      }
+    ],
+    "steps": [
+      "Sign up and log in to the gw-link console, then create a key on the API Keys page (choose a Claude group).",
+      "Set ANTHROPIC_BASE_URL=https://gw-link.com and ANTHROPIC_AUTH_TOKEN=<your key>. Do not append /v1 to the base URL.",
+      "Run claude in your project and send a message to confirm the connection.",
+      "To make it permanent, put the same values in the env block of ~/.claude/settings.json."
+    ],
+    "snippets": [
+      {
+        "title": "macOS / Linux shell",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-your-gw-link-key\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "~/.claude/settings.json (recommended, persistent)",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-your-gw-link-key\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}",
+        "note": "On Windows the file is %USERPROFILE%\\.claude\\settings.json."
+      },
+      {
+        "title": "Windows PowerShell",
+        "lang": "powershell",
+        "code": "$env:ANTHROPIC_BASE_URL=\"https://gw-link.com\"\n$env:ANTHROPIC_AUTH_TOKEN=\"sk-your-gw-link-key\"\n$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      }
+    ],
+    "faq": [
+      {
+        "q": "Does Claude Code work with gw-link?",
+        "a": "Yes. gw-link exposes the same /v1/messages API as Anthropic, so Claude Code only needs ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN — no code changes or plugins."
+      },
+      {
+        "q": "Do I also need an Anthropic API key?",
+        "a": "No. Use the sk- key issued by the gw-link console; usage is charged to your gw-link balance or subscription quota."
+      },
+      {
+        "q": "Should ANTHROPIC_BASE_URL include /v1?",
+        "a": "No. Claude Code appends /v1/messages itself, so use https://gw-link.com. Using https://gw-link.com/v1 produces /v1/v1/messages and a 404."
+      },
+      {
+        "q": "Does it work with Claude Code in VS Code or JetBrains?",
+        "a": "Yes. The IDE integrations run the same Claude Code, so the env block in ~/.claude/settings.json applies there too."
+      },
+      {
+        "q": "Which models are available?",
+        "a": "Whatever your key's group allows. List them with curl https://gw-link.com/v1/models -H \"Authorization: Bearer <your key>\"."
+      }
     ]
   },
   {
@@ -26,20 +150,137 @@
     "changefreq": "weekly",
     "priority": "0.9",
     "lang": "zh-CN",
-    "title": "Claude Code base_url 配置指南 - gw-link",
-    "description": "了解如何用 gw-link 配置 Claude Code base_url，通过 OpenAI 兼容 API Gateway 统一接入 AI 编程模型。",
+    "updated": "2026-10-02",
+    "title": "Claude Code ANTHROPIC_BASE_URL 配置指南 - gw-link",
+    "description": "Claude Code 的 base_url 怎么填？详解 ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 与 settings.json 配置、Windows 写法和常见 404/401 错误。",
     "kicker": "Claude Code base_url",
-    "h1": "Claude Code base_url 配置指南",
-    "lead": "gw-link 让 Claude Code 使用统一 base_url，避免在多个 Provider、Key 和模型之间反复切换。",
+    "h1": "Claude Code base_url（ANTHROPIC_BASE_URL）配置指南",
+    "lead": "Claude Code 没有名为 base_url 的配置项，对应的是环境变量 ANTHROPIC_BASE_URL。本文说明它该填什么、配合哪个鉴权变量、写在哪里优先级最高，以及最常见的配置错误。",
     "guideTitle": "推荐配置流程",
     "benefits": [
-      { "title": "配置简单", "text": "核心就是 base_url、API Key 和模型名三项配置。" },
-      { "title": "降低切换成本", "text": "不同模型统一从 gw-link 网关接入，工具侧配置保持稳定。" },
-      { "title": "便于排障", "text": "集中观察请求、错误与用量，定位问题更直接。" }
+      {
+        "title": "ANTHROPIC_BASE_URL",
+        "text": "填网关根地址 https://gw-link.com（或美国节点 https://gw-link.ai），不要带 /v1，Claude Code 会自动拼接 /v1/messages。"
+      },
+      {
+        "title": "ANTHROPIC_AUTH_TOKEN",
+        "text": "填 gw-link 的 sk- 密钥，以 Authorization: Bearer 方式发送。用 ANTHROPIC_API_KEY（x-api-key 头）也能被网关识别，但首次启动 Claude Code 会询问是否使用该 Key。"
+      },
+      {
+        "title": "settings.json 的 env",
+        "text": "写在 ~/.claude/settings.json 的 env 字段对所有终端和 IDE 生效，比在 shell 里 export 更稳定，也不会被新终端遗漏。"
+      }
     ],
-    "steps": ["复制 gw-link 的 OpenAI-compatible endpoint。", "把 Claude Code 的 base_url 指向 gw-link。", "保存 API Key 后运行一次测试。"],
+    "steps": [
+      "在 gw-link 控制台创建 API Key，并点击「使用密钥」查看 Claude Code 配置。",
+      "把 ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 写入 ~/.claude/settings.json 的 env 字段。",
+      "（可选）设置 ANTHROPIC_MODEL 固定默认模型，模型名以 /v1/models 返回为准。",
+      "重新打开终端运行 claude，确认对话正常返回。"
+    ],
+    "snippets": [
+      {
+        "title": "~/.claude/settings.json",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-你的gw-link密钥\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}"
+      },
+      {
+        "title": "临时在当前终端生效",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-你的gw-link密钥\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "用 curl 验证 Key 与网络",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-你的gw-link密钥\"",
+        "note": "返回模型列表说明 Key 有效、网络可达；返回 401 说明 Key 有误。"
+      }
+    ],
     "faq": [
-      { "q": "base_url 应该填什么？", "a": "部署后以控制台展示为准，通常是 gw-link 的 OpenAI 兼容 /v1 入口。" }
+      {
+        "q": "Claude Code 的 base_url 应该填什么？",
+        "a": "设置环境变量 ANTHROPIC_BASE_URL=https://gw-link.com。海外网络可改用 https://gw-link.ai。两者都不要带 /v1 后缀。"
+      },
+      {
+        "q": "ANTHROPIC_AUTH_TOKEN 和 ANTHROPIC_API_KEY 用哪个？",
+        "a": "推荐 ANTHROPIC_AUTH_TOKEN（Bearer 鉴权，不会触发确认提示）。gw-link 同时接受 x-api-key，所以 ANTHROPIC_API_KEY 也可以用。两个不要同时设置不同的值。"
+      },
+      {
+        "q": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 有什么用？",
+        "a": "它关闭 Claude Code 的遥测、错误上报等非必要请求，让所有流量只走你配置的网关，减少因无法访问官方服务导致的卡顿。"
+      },
+      {
+        "q": "改了配置还是不生效？",
+        "a": "检查是否同时存在 shell 环境变量和 settings.json（shell 中旧的 export 可能覆盖新值），修改后需要重新打开终端或重启 IDE。"
+      }
+    ]
+  },
+  {
+    "path": "/en/claude-code-base-url",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "Claude Code ANTHROPIC_BASE_URL Setup Guide - gw-link",
+    "description": "What to put in Claude Code's base URL: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, settings.json, Windows syntax and fixes for common 404/401 errors.",
+    "kicker": "Claude Code base_url",
+    "h1": "Claude Code Base URL (ANTHROPIC_BASE_URL) Setup Guide",
+    "lead": "Claude Code has no setting literally called base_url — it reads the ANTHROPIC_BASE_URL environment variable. This guide covers what to set it to, which auth variable goes with it, where to put it so it always applies, and the most common mistakes.",
+    "guideTitle": "Recommended setup",
+    "benefits": [
+      {
+        "title": "ANTHROPIC_BASE_URL",
+        "text": "Use the gateway root https://gw-link.com (or the US endpoint https://gw-link.ai) without /v1 — Claude Code appends /v1/messages itself."
+      },
+      {
+        "title": "ANTHROPIC_AUTH_TOKEN",
+        "text": "Your gw-link sk- key, sent as Authorization: Bearer. ANTHROPIC_API_KEY (x-api-key header) is accepted too, but Claude Code asks you to confirm it on first launch."
+      },
+      {
+        "title": "The env block in settings.json",
+        "text": "Values in the env block of ~/.claude/settings.json apply to every terminal and IDE session — more reliable than exporting them in one shell."
+      }
+    ],
+    "steps": [
+      "Create an API key in the gw-link console and open Use Key to see the Claude Code configuration.",
+      "Put ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN in the env block of ~/.claude/settings.json.",
+      "Optionally pin a default model with ANTHROPIC_MODEL, using an ID returned by /v1/models.",
+      "Open a new terminal, run claude and confirm you get a reply."
+    ],
+    "snippets": [
+      {
+        "title": "~/.claude/settings.json",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-your-gw-link-key\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}"
+      },
+      {
+        "title": "Current shell only",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-your-gw-link-key\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "Verify the key and network with curl",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-your-gw-link-key\"",
+        "note": "A model list means the key works and the endpoint is reachable; a 401 means the key is wrong."
+      }
+    ],
+    "faq": [
+      {
+        "q": "What should Claude Code's base URL be?",
+        "a": "Set ANTHROPIC_BASE_URL=https://gw-link.com, or https://gw-link.ai for the US endpoint. Never add a /v1 suffix."
+      },
+      {
+        "q": "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY?",
+        "a": "Prefer ANTHROPIC_AUTH_TOKEN (Bearer auth, no confirmation prompt). gw-link also accepts x-api-key, so ANTHROPIC_API_KEY works too — just don't set both to different values."
+      },
+      {
+        "q": "What does CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC do?",
+        "a": "It turns off Claude Code's telemetry and error-reporting calls so all traffic goes to the gateway you configured, avoiding stalls when those services are unreachable."
+      },
+      {
+        "q": "My change doesn't take effect — why?",
+        "a": "An older export in your shell profile can override settings.json. Remove duplicates and open a new terminal or restart the IDE after editing."
+      }
     ]
   },
   {
@@ -47,20 +288,127 @@
     "changefreq": "weekly",
     "priority": "0.9",
     "lang": "zh-CN",
-    "title": "Codex API Gateway - gw-link",
-    "description": "gw-link 为 Codex CLI 和 AI 编程工作流提供 OpenAI 兼容 API Gateway，统一管理 API Key、模型和成本。",
+    "updated": "2026-10-02",
+    "title": "Codex CLI API 中转配置：config.toml 示例 - gw-link",
+    "description": "用 gw-link 接入 OpenAI Codex CLI：在 ~/.codex/config.toml 设置 base_url=https://gw-link.com/v1 与 wire_api=\"responses\"，在 auth.json 填入 Key 即可。",
     "kicker": "Codex API Gateway",
-    "h1": "Codex API Gateway for CLI and IDE Workflows",
-    "lead": "把 Codex CLI、IDE 插件和自动化脚本接入 gw-link，用统一 API 网关管理模型与调用。",
+    "h1": "Codex CLI 接入 gw-link：config.toml 与 auth.json 配置",
+    "lead": "Codex CLI 使用 OpenAI Responses API。gw-link 提供兼容的 /v1/responses 接口：在 ~/.codex/config.toml 中声明一个指向 https://gw-link.com/v1 的 model provider，再把 Key 写入 ~/.codex/auth.json，Codex CLI 与 IDE 扩展即可使用。",
     "guideTitle": "Codex 接入步骤",
     "benefits": [
-      { "title": "CLI 友好", "text": "适合 Codex CLI、脚本和自动化任务的环境变量/API Key 配置方式。" },
-      { "title": "多模型路由", "text": "根据任务选择不同模型，同时保持工具侧接入方式一致。" },
-      { "title": "成本透明", "text": "集中跟踪调用量与费用，便于团队控制预算。" }
+      {
+        "title": "Responses API 原生兼容",
+        "text": "wire_api 设为 responses，Codex 的工具调用、推理与流式输出直接走 /v1/responses，无需额外代理。"
+      },
+      {
+        "title": "与 Claude Code 共用账户",
+        "text": "同一个 gw-link 账户可同时为 Codex 与 Claude Code 签发不同的 Key，余额与用量集中管理。"
+      },
+      {
+        "title": "适合脚本与 CI",
+        "text": "codex exec 等非交互命令同样读取 config.toml，适合在自动化任务中复用同一套配置。"
+      }
     ],
-    "steps": ["在 gw-link 创建 Key。", "把 Codex 的 API endpoint 指向 gw-link。", "运行一次简单 prompt 验证响应。"],
+    "steps": [
+      "在 gw-link 控制台创建 Key（选择 OpenAI / GPT 分组），点击「使用密钥」切换到 Codex 标签页。",
+      "把 config.toml 内容写入 ~/.codex/config.toml（Windows 为 %USERPROFILE%\\.codex\\config.toml）。",
+      "把 Key 写入同目录下的 auth.json。",
+      "运行 codex，输入一个简单任务验证响应。"
+    ],
+    "snippets": [
+      {
+        "title": "~/.codex/config.toml",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true",
+        "note": "base_url 必须带 /v1；model 以控制台可用模型为准。"
+      },
+      {
+        "title": "~/.codex/auth.json",
+        "lang": "json",
+        "code": "{\n  \"OPENAI_API_KEY\": \"sk-你的gw-link密钥\"\n}"
+      }
+    ],
     "faq": [
-      { "q": "Codex 能和 Claude Code 共用 gw-link 吗？", "a": "可以。两者都可以通过统一 OpenAI 兼容入口接入。" }
+      {
+        "q": "Codex 的 base_url 要不要带 /v1？",
+        "a": "要。Codex 会在 base_url 后直接拼接 /responses，所以必须写成 https://gw-link.com/v1。这一点和 Claude Code 相反。"
+      },
+      {
+        "q": "wire_api 应该填什么？",
+        "a": "填 \"responses\"。新版 Codex 只支持 Responses API，gw-link 的 /v1/responses 与之兼容。"
+      },
+      {
+        "q": "启动后提示登录 ChatGPT 怎么办？",
+        "a": "确认 config.toml 中的 model_provider 指向你配置的 provider，并且 ~/.codex/auth.json 里有 OPENAI_API_KEY。配置正确时 Codex 会直接使用该 Key。"
+      },
+      {
+        "q": "Codex 能和 Claude Code 共用 gw-link 吗？",
+        "a": "可以。两者使用各自的配置文件，可以用同一个账户下的不同 Key，分别统计用量。"
+      }
+    ]
+  },
+  {
+    "path": "/en/codex-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "Codex CLI API Gateway: config.toml Example - gw-link",
+    "description": "Connect OpenAI Codex CLI to gw-link: set base_url = https://gw-link.com/v1 and wire_api = \"responses\" in ~/.codex/config.toml, then put your key in auth.json.",
+    "kicker": "Codex API Gateway",
+    "h1": "Connect Codex CLI to gw-link: config.toml and auth.json",
+    "lead": "Codex CLI uses the OpenAI Responses API. gw-link serves a compatible /v1/responses endpoint: declare a model provider pointing at https://gw-link.com/v1 in ~/.codex/config.toml, put your key in ~/.codex/auth.json, and both the CLI and the IDE extension are ready.",
+    "guideTitle": "How to connect Codex",
+    "benefits": [
+      {
+        "title": "Native Responses API",
+        "text": "With wire_api = \"responses\", Codex tool calls, reasoning and streaming go straight to /v1/responses — no extra proxy."
+      },
+      {
+        "title": "Shared account with Claude Code",
+        "text": "One gw-link account can issue separate keys for Codex and Claude Code, with balance and usage in one place."
+      },
+      {
+        "title": "Works in scripts and CI",
+        "text": "Non-interactive commands such as codex exec read the same config.toml, so automation reuses one setup."
+      }
+    ],
+    "steps": [
+      "Create a key in the gw-link console (OpenAI / GPT group) and open Use Key → Codex.",
+      "Save the config.toml content to ~/.codex/config.toml (%USERPROFILE%\\.codex\\config.toml on Windows).",
+      "Save your key to auth.json in the same directory.",
+      "Run codex and try a small task to confirm it responds."
+    ],
+    "snippets": [
+      {
+        "title": "~/.codex/config.toml",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true",
+        "note": "base_url must end with /v1; pick a model your console lists."
+      },
+      {
+        "title": "~/.codex/auth.json",
+        "lang": "json",
+        "code": "{\n  \"OPENAI_API_KEY\": \"sk-your-gw-link-key\"\n}"
+      }
+    ],
+    "faq": [
+      {
+        "q": "Does Codex's base_url need /v1?",
+        "a": "Yes. Codex appends /responses directly, so use https://gw-link.com/v1 — the opposite of Claude Code."
+      },
+      {
+        "q": "What should wire_api be?",
+        "a": "\"responses\". Current Codex releases only speak the Responses API, which gw-link's /v1/responses supports."
+      },
+      {
+        "q": "Codex asks me to sign in to ChatGPT — what now?",
+        "a": "Check that model_provider in config.toml points at the provider you defined and that ~/.codex/auth.json contains OPENAI_API_KEY. With both in place Codex uses the key directly."
+      },
+      {
+        "q": "Can Codex and Claude Code share gw-link?",
+        "a": "Yes. Each uses its own config file; you can give them separate keys under one account to track usage independently."
+      }
     ]
   },
   {
@@ -68,20 +416,109 @@
     "changefreq": "weekly",
     "priority": "0.85",
     "lang": "zh-CN",
-    "title": "Gemini CLI API Gateway - gw-link",
-    "description": "用 gw-link 统一 Gemini CLI、Claude Code、Codex 等 AI 编程工具的 API 接入与模型管理。",
+    "updated": "2026-10-02",
+    "title": "Gemini CLI 中转配置：GOOGLE_GEMINI_BASE_URL - gw-link",
+    "description": "用 gw-link 接入 Gemini CLI：设置 GOOGLE_GEMINI_BASE_URL=https://gw-link.com 与 GEMINI_API_KEY，即可通过 Gemini 原生接口使用模型。",
     "kicker": "Gemini CLI API Gateway",
-    "h1": "Gemini CLI API Gateway：统一接入与模型管理",
-    "lead": "通过 gw-link 管理 Gemini CLI 的 API 入口，同时与 Claude Code、Codex 共用统一网关。",
+    "h1": "Gemini CLI 接入 gw-link：GOOGLE_GEMINI_BASE_URL 配置",
+    "lead": "Gemini CLI 使用 Gemini 原生 API（/v1beta）。gw-link 提供兼容的 /v1beta 接口：设置 GOOGLE_GEMINI_BASE_URL 指向网关根地址、GEMINI_API_KEY 填入控制台签发的 Key，即可在终端里使用 Gemini 模型，并与 Claude Code、Codex 共用一个账户。",
     "guideTitle": "Gemini CLI 接入步骤",
     "benefits": [
-      { "title": "统一入口", "text": "把 Gemini CLI 纳入同一 AI API Gateway，减少配置分散。" },
-      { "title": "跨工具一致", "text": "Claude Code、Codex、Gemini CLI 可以使用同一套接入策略。" },
-      { "title": "团队可控", "text": "统一 Key、额度和模型选择。" }
+      {
+        "title": "Gemini 原生协议",
+        "text": "gw-link 直接提供 /v1beta 接口并兼容 x-goog-api-key 鉴权，Gemini CLI 无需任何格式转换。"
+      },
+      {
+        "title": "跨工具统一账户",
+        "text": "Claude Code、Codex、Gemini CLI 使用同一个 gw-link 账户，不同工具用不同 Key，余额统一管理。"
+      },
+      {
+        "title": "配置只有两项",
+        "text": "GOOGLE_GEMINI_BASE_URL 与 GEMINI_API_KEY，可写入 shell 配置文件长期生效。"
+      }
     ],
-    "steps": ["创建 gw-link API Key。", "配置 Gemini CLI endpoint。", "执行测试请求并检查模型响应。"],
+    "steps": [
+      "在 gw-link 控制台创建 Key（选择 Gemini 分组），点击「使用密钥」查看 Gemini CLI 配置。",
+      "设置 GOOGLE_GEMINI_BASE_URL=https://gw-link.com（不要带 /v1beta）与 GEMINI_API_KEY。",
+      "运行 gemini；如提示选择认证方式，选择「Use Gemini API Key」。",
+      "发送一条消息确认模型正常返回。"
+    ],
+    "snippets": [
+      {
+        "title": "macOS / Linux 终端",
+        "lang": "bash",
+        "code": "export GOOGLE_GEMINI_BASE_URL=\"https://gw-link.com\"\nexport GEMINI_API_KEY=\"sk-你的gw-link密钥\"\ngemini",
+        "note": "可选：export GEMINI_MODEL=<模型名> 指定默认模型，模型名以控制台为准。"
+      }
+    ],
     "faq": [
-      { "q": "Gemini CLI 是否适合接入 API Gateway？", "a": "适合，尤其是团队需要统一 Key、模型和成本管理时。" }
+      {
+        "q": "GOOGLE_GEMINI_BASE_URL 要不要带 /v1beta？",
+        "a": "不要。Gemini CLI 会自动拼接 /v1beta/models/...，填 https://gw-link.com 即可。"
+      },
+      {
+        "q": "需要 Google 账号登录吗？",
+        "a": "不需要。设置 GEMINI_API_KEY 后 Gemini CLI 以 API Key 方式鉴权，使用的是 gw-link 签发的 Key。"
+      },
+      {
+        "q": "Gemini CLI 是否适合接入 API 网关？",
+        "a": "适合，尤其是团队需要统一管理 Key、额度和多种 AI 编程工具的成本时。"
+      }
+    ]
+  },
+  {
+    "path": "/en/gemini-cli-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.75",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "Gemini CLI API Gateway: GOOGLE_GEMINI_BASE_URL - gw-link",
+    "description": "Connect Gemini CLI to gw-link: set GOOGLE_GEMINI_BASE_URL=https://gw-link.com and GEMINI_API_KEY to use Gemini models through the native API.",
+    "kicker": "Gemini CLI API Gateway",
+    "h1": "Connect Gemini CLI to gw-link with GOOGLE_GEMINI_BASE_URL",
+    "lead": "Gemini CLI uses the native Gemini API (/v1beta). gw-link serves a compatible /v1beta endpoint: point GOOGLE_GEMINI_BASE_URL at the gateway root, put your console-issued key in GEMINI_API_KEY, and use Gemini models from the terminal on the same account as Claude Code and Codex.",
+    "guideTitle": "How to connect Gemini CLI",
+    "benefits": [
+      {
+        "title": "Native Gemini protocol",
+        "text": "gw-link serves /v1beta directly and accepts x-goog-api-key auth, so Gemini CLI needs no format translation."
+      },
+      {
+        "title": "One account across tools",
+        "text": "Claude Code, Codex and Gemini CLI share one gw-link account, each with its own key and one balance."
+      },
+      {
+        "title": "Just two settings",
+        "text": "GOOGLE_GEMINI_BASE_URL and GEMINI_API_KEY — add them to your shell profile to make them permanent."
+      }
+    ],
+    "steps": [
+      "Create a key in the gw-link console (Gemini group) and open Use Key → Gemini CLI.",
+      "Set GOOGLE_GEMINI_BASE_URL=https://gw-link.com (no /v1beta) and GEMINI_API_KEY.",
+      "Run gemini; if asked how to authenticate, choose Use Gemini API Key.",
+      "Send a message to confirm the model responds."
+    ],
+    "snippets": [
+      {
+        "title": "macOS / Linux shell",
+        "lang": "bash",
+        "code": "export GOOGLE_GEMINI_BASE_URL=\"https://gw-link.com\"\nexport GEMINI_API_KEY=\"sk-your-gw-link-key\"\ngemini",
+        "note": "Optional: export GEMINI_MODEL=<model> to set a default; use a model your console lists."
+      }
+    ],
+    "faq": [
+      {
+        "q": "Should GOOGLE_GEMINI_BASE_URL include /v1beta?",
+        "a": "No. Gemini CLI appends /v1beta/models/... itself; use https://gw-link.com."
+      },
+      {
+        "q": "Do I need to sign in with a Google account?",
+        "a": "No. With GEMINI_API_KEY set, Gemini CLI authenticates with that key — the one issued by gw-link."
+      },
+      {
+        "q": "Is an API gateway a good fit for Gemini CLI?",
+        "a": "Yes, especially when a team wants one place to manage keys, quotas and spend across several AI coding tools."
+      }
     ]
   },
   {
@@ -89,20 +526,125 @@
     "changefreq": "weekly",
     "priority": "0.9",
     "lang": "zh-CN",
-    "title": "OpenAI Compatible API Gateway for AI Coding - gw-link",
-    "description": "gw-link 提供 OpenAI-compatible API Gateway，支持 Claude Code、Codex、Gemini CLI、VS Code 与自动化脚本统一接入。",
+    "updated": "2026-10-02",
+    "title": "OpenAI 兼容 API 中转：base_url 替换即用 - gw-link",
+    "description": "gw-link 提供 OpenAI 兼容的 /v1/chat/completions、/v1/responses、/v1/embeddings、/v1/images 接口，OpenAI SDK 与各类客户端替换 base_url 和 API Key 即可使用。",
     "kicker": "OpenAI Compatible API Gateway",
-    "h1": "OpenAI Compatible API Gateway for AI Coding",
-    "lead": "用 OpenAI 兼容协议统一接入 Claude、GPT、Gemini 等模型，让 CLI、IDE 插件和脚本保持一致配置。",
-    "guideTitle": "适用场景",
+    "h1": "OpenAI 兼容 API 网关：替换 base_url 即可接入",
+    "lead": "大多数 AI 应用、SDK 和客户端都支持自定义 OpenAI base URL。把它设为 https://gw-link.com/v1，API Key 填 gw-link 的 sk- 密钥，现有代码无需其它改动；同一网关还提供 Anthropic 与 Gemini 原生接口。",
+    "guideTitle": "接入步骤",
     "benefits": [
-      { "title": "兼容生态", "text": "大量 AI 工具支持 OpenAI 风格 endpoint，迁移成本低。" },
-      { "title": "统一治理", "text": "集中管理 Key、模型、计费、错误与访问策略。" },
-      { "title": "面向开发者", "text": "重点服务 Claude Code、Codex、VS Code 和自动化编码工作流。" }
+      {
+        "title": "完整的 OpenAI 接口",
+        "text": "支持 /v1/chat/completions、/v1/responses、/v1/embeddings、/v1/images/generations 与 /v1/models，覆盖对话、Agent、向量和图像场景。"
+      },
+      {
+        "title": "多协议同一入口",
+        "text": "同一域名下还提供 Anthropic /v1/messages 与 Gemini /v1beta 原生接口，不同工具各取所需。"
+      },
+      {
+        "title": "统一治理",
+        "text": "按 Key 设置额度、按分组控制可用模型，用量与费用在控制台集中查看。"
+      }
     ],
-    "steps": ["确认工具支持 OpenAI-compatible endpoint。", "替换 base_url 与 API Key。", "设置模型名并完成测试。"],
+    "steps": [
+      "在 gw-link 控制台创建 API Key。",
+      "把客户端或 SDK 的 base URL 设为 https://gw-link.com/v1。",
+      "API Key 填入 sk- 开头的密钥，模型名从 /v1/models 中选择。",
+      "发送一次测试请求确认返回正常。"
+    ],
+    "snippets": [
+      {
+        "title": "curl",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/chat/completions \\\n  -H \"Authorization: Bearer sk-你的gw-link密钥\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"gpt-5.5\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}'"
+      },
+      {
+        "title": "Python（openai SDK）",
+        "lang": "python",
+        "code": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"https://gw-link.com/v1\", api_key=\"sk-你的gw-link密钥\")\nresp = client.chat.completions.create(\n    model=\"gpt-5.5\",\n    messages=[{\"role\": \"user\", \"content\": \"你好\"}],\n)\nprint(resp.choices[0].message.content)"
+      }
+    ],
     "faq": [
-      { "q": "OpenAI compatible 是什么意思？", "a": "指工具可以用类似 OpenAI API 的 endpoint、Key 和请求格式接入网关。" }
+      {
+        "q": "OpenAI compatible 是什么意思？",
+        "a": "指接口路径、请求体和返回格式与 OpenAI API 一致。任何能填写自定义 base URL 的 OpenAI 客户端都能直接接入，只需替换 base_url 与 API Key。"
+      },
+      {
+        "q": "Cherry Studio、Chatbox、Cline、Continue 等客户端能用吗？",
+        "a": "可以。在客户端里选择 OpenAI 或 OpenAI 兼容服务商，Base URL 填 https://gw-link.com/v1（部分客户端只需填 https://gw-link.com），API Key 填 gw-link 密钥。"
+      },
+      {
+        "q": "鉴权头用哪个？",
+        "a": "标准的 Authorization: Bearer sk-... 即可，网关同时兼容 x-api-key 与 x-goog-api-key。"
+      },
+      {
+        "q": "怎么知道有哪些模型？",
+        "a": "调用 GET https://gw-link.com/v1/models，返回的就是当前 Key 可用的模型 ID。"
+      }
+    ]
+  },
+  {
+    "path": "/en/openai-compatible-api-gateway",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "OpenAI-Compatible API Gateway: Swap the base_url - gw-link",
+    "description": "gw-link serves OpenAI-compatible chat, responses, embeddings and images endpoints. Point the OpenAI SDK or any client at it by changing base_url and API key.",
+    "kicker": "OpenAI Compatible API Gateway",
+    "h1": "OpenAI-Compatible API Gateway: Change the Base URL and Go",
+    "lead": "Most AI apps, SDKs and clients let you set a custom OpenAI base URL. Set it to https://gw-link.com/v1, use your gw-link sk- key, and existing code keeps working. The same gateway also serves the native Anthropic and Gemini APIs.",
+    "guideTitle": "Setup",
+    "benefits": [
+      {
+        "title": "Full OpenAI surface",
+        "text": "/v1/chat/completions, /v1/responses, /v1/embeddings, /v1/images/generations and /v1/models — chat, agents, embeddings and images."
+      },
+      {
+        "title": "Several protocols, one host",
+        "text": "The same domain also serves Anthropic /v1/messages and Gemini /v1beta natively, so each tool uses what it expects."
+      },
+      {
+        "title": "Central control",
+        "text": "Per-key spending caps, per-group model access, and usage and cost in one console."
+      }
+    ],
+    "steps": [
+      "Create an API key in the gw-link console.",
+      "Set your client's or SDK's base URL to https://gw-link.com/v1.",
+      "Use your sk- key as the API key and pick a model ID from /v1/models.",
+      "Send a test request to confirm it works."
+    ],
+    "snippets": [
+      {
+        "title": "curl",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/chat/completions \\\n  -H \"Authorization: Bearer sk-your-gw-link-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"gpt-5.5\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
+      },
+      {
+        "title": "Python (openai SDK)",
+        "lang": "python",
+        "code": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"https://gw-link.com/v1\", api_key=\"sk-your-gw-link-key\")\nresp = client.chat.completions.create(\n    model=\"gpt-5.5\",\n    messages=[{\"role\": \"user\", \"content\": \"hello\"}],\n)\nprint(resp.choices[0].message.content)"
+      }
+    ],
+    "faq": [
+      {
+        "q": "What does OpenAI-compatible mean?",
+        "a": "The paths, request bodies and responses match the OpenAI API, so any OpenAI client with a custom base URL works after you swap base_url and API key."
+      },
+      {
+        "q": "Do Cherry Studio, Chatbox, Cline or Continue work?",
+        "a": "Yes. Choose the OpenAI or OpenAI-compatible provider, set the base URL to https://gw-link.com/v1 (some clients want just https://gw-link.com) and paste your gw-link key."
+      },
+      {
+        "q": "Which auth header should I use?",
+        "a": "Standard Authorization: Bearer sk-... The gateway also accepts x-api-key and x-goog-api-key."
+      },
+      {
+        "q": "How do I see available models?",
+        "a": "Call GET https://gw-link.com/v1/models — it returns the model IDs your key can use."
+      }
     ]
   },
   {
@@ -110,20 +652,117 @@
     "changefreq": "weekly",
     "priority": "0.85",
     "lang": "zh-CN",
-    "title": "GPT-Image-2 API 使用指南 - gw-link",
-    "description": "通过 gw-link 使用 GPT-Image-2 API，支持文生图、图生图和自动化内容生成工作流。",
+    "updated": "2026-10-02",
+    "title": "GPT-Image-2 API 调用教程：文生图与图生图 - gw-link",
+    "description": "通过 gw-link 调用 GPT-Image-2：/v1/images/generations 文生图、/v1/images/edits 图生图，附 curl 与 Python 示例。",
     "kicker": "GPT-Image-2 API",
     "h1": "GPT-Image-2 API：文生图与图生图接入指南",
-    "lead": "gw-link 可作为图像生成 API 的统一入口，服务产品图、教程图、社交媒体图和自动化内容生产。",
+    "lead": "gw-link 提供 OpenAI 兼容的图像接口：POST /v1/images/generations 根据提示词生成图片，POST /v1/images/edits 基于参考图编辑或重绘，model 填 gpt-image-2。适合产品图、教程配图和批量内容生产。",
     "guideTitle": "图像 API 接入步骤",
     "benefits": [
-      { "title": "文生图", "text": "通过 prompt 生成产品图、教程配图和营销素材。" },
-      { "title": "图生图", "text": "基于参考图进行风格化、重绘或局部编辑。" },
-      { "title": "自动化友好", "text": "适合脚本、工作流和内容生产管线调用。" }
+      {
+        "title": "文生图",
+        "text": "用 /v1/images/generations 根据提示词生成产品图、教程配图和营销素材，返回 base64 图片数据。"
+      },
+      {
+        "title": "图生图 / 局部编辑",
+        "text": "用 /v1/images/edits 上传参考图（multipart/form-data），做风格化、重绘或局部修改。"
+      },
+      {
+        "title": "适合自动化",
+        "text": "标准 OpenAI 图像接口，可直接用 openai SDK 在脚本、工作流和服务端批量调用。"
+      }
     ],
-    "steps": ["创建支持图像模型的 API Key。", "调用 images generations 或 edits endpoint。", "保存生成图并接入发布流程。"],
+    "steps": [
+      "在 gw-link 控制台创建 Key，所选分组需开通图像生成权限。",
+      "调用 /v1/images/generations（文生图）或 /v1/images/edits（图生图），model 设为 gpt-image-2。",
+      "解码返回的 b64_json 并保存为图片文件。",
+      "按需接入自己的发布或审核流程。"
+    ],
+    "snippets": [
+      {
+        "title": "curl 文生图",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/images/generations \\\n  -H \"Authorization: Bearer sk-你的gw-link密钥\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"gpt-image-2\",\"prompt\":\"一只在键盘上打盹的橘猫，产品摄影风格\",\"size\":\"1024x1024\"}'"
+      },
+      {
+        "title": "Python 保存图片",
+        "lang": "python",
+        "code": "import base64\nfrom openai import OpenAI\n\nclient = OpenAI(base_url=\"https://gw-link.com/v1\", api_key=\"sk-你的gw-link密钥\")\nimg = client.images.generate(\n    model=\"gpt-image-2\",\n    prompt=\"极简风格的 API 网关架构示意图\",\n    size=\"1024x1024\",\n)\nwith open(\"out.png\", \"wb\") as f:\n    f.write(base64.b64decode(img.data[0].b64_json))"
+      }
+    ],
     "faq": [
-      { "q": "GPT-Image-2 可以自动化调用吗？", "a": "可以，适合通过脚本或服务端工作流批量生成图片。" }
+      {
+        "q": "GPT-Image-2 可以自动化批量调用吗？",
+        "a": "可以。接口与 OpenAI 图像 API 一致，适合通过脚本或服务端工作流批量生成。"
+      },
+      {
+        "q": "返回的是图片链接还是数据？",
+        "a": "GPT-Image 系列返回 base64 编码的图片数据（data[0].b64_json），解码后即可保存为 PNG。"
+      },
+      {
+        "q": "请求返回无权限怎么办？",
+        "a": "确认 Key 所属分组已开通图像生成，并且模型列表（/v1/models）中包含 gpt-image-2。"
+      }
+    ]
+  },
+  {
+    "path": "/en/gpt-image-2-api",
+    "changefreq": "weekly",
+    "priority": "0.75",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "GPT-Image-2 API Tutorial: Text-to-Image & Edits - gw-link",
+    "description": "Call GPT-Image-2 through gw-link: /v1/images/generations for text-to-image and /v1/images/edits for image editing, with curl and Python examples.",
+    "kicker": "GPT-Image-2 API",
+    "h1": "GPT-Image-2 API: Text-to-Image and Image Editing Guide",
+    "lead": "gw-link serves the OpenAI-compatible image endpoints: POST /v1/images/generations creates images from a prompt and POST /v1/images/edits edits or restyles a reference image, with model set to gpt-image-2. Good for product shots, tutorial graphics and batch content.",
+    "guideTitle": "How to call the image API",
+    "benefits": [
+      {
+        "title": "Text-to-image",
+        "text": "/v1/images/generations turns a prompt into product shots, tutorial art or marketing visuals, returned as base64 image data."
+      },
+      {
+        "title": "Image edits",
+        "text": "/v1/images/edits takes a reference image (multipart/form-data) for restyling, redraws or local edits."
+      },
+      {
+        "title": "Automation-ready",
+        "text": "Standard OpenAI image API, so the openai SDK works in scripts, pipelines and backend jobs."
+      }
+    ],
+    "steps": [
+      "Create a key in the gw-link console on a group with image generation enabled.",
+      "Call /v1/images/generations or /v1/images/edits with model set to gpt-image-2.",
+      "Decode the returned b64_json and save it as an image file.",
+      "Wire it into your publishing or review pipeline."
+    ],
+    "snippets": [
+      {
+        "title": "curl text-to-image",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/images/generations \\\n  -H \"Authorization: Bearer sk-your-gw-link-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"gpt-image-2\",\"prompt\":\"an orange cat napping on a keyboard, product photography\",\"size\":\"1024x1024\"}'"
+      },
+      {
+        "title": "Python, save the image",
+        "lang": "python",
+        "code": "import base64\nfrom openai import OpenAI\n\nclient = OpenAI(base_url=\"https://gw-link.com/v1\", api_key=\"sk-your-gw-link-key\")\nimg = client.images.generate(\n    model=\"gpt-image-2\",\n    prompt=\"minimal diagram of an API gateway architecture\",\n    size=\"1024x1024\",\n)\nwith open(\"out.png\", \"wb\") as f:\n    f.write(base64.b64decode(img.data[0].b64_json))"
+      }
+    ],
+    "faq": [
+      {
+        "q": "Can GPT-Image-2 be called in batch?",
+        "a": "Yes. It is the standard OpenAI image API, suited to scripts and backend workflows."
+      },
+      {
+        "q": "Do I get a URL or image data?",
+        "a": "GPT-Image models return base64 image data (data[0].b64_json); decode it and save as PNG."
+      },
+      {
+        "q": "I get a permission error — why?",
+        "a": "Make sure your key's group has image generation enabled and that /v1/models lists gpt-image-2."
+      }
     ]
   },
   {
@@ -131,20 +770,119 @@
     "changefreq": "weekly",
     "priority": "0.8",
     "lang": "zh-CN",
-    "title": "CC Switch 多 Provider/Key/模型配置指南 - gw-link",
-    "description": "用 CC Switch 和 gw-link 管理多个 Provider、API Key 与模型配置，让 Claude Code 和 Codex 共用统一模型配置中心。",
+    "updated": "2026-10-02",
+    "title": "CC Switch 配置教程：Claude Code / Codex 一键切换 - gw-link",
+    "description": "用 CC Switch 管理 gw-link 的 Claude Code 与 Codex 配置：控制台一键「导入到 CCS」，或手动添加 Provider，在多个 Key、节点与模型间快速切换。",
     "kicker": "CC Switch Provider Config",
-    "h1": "CC Switch：多 Provider、Key 与模型配置中心",
-    "lead": "结合 gw-link，把 Claude Code、Codex 等工具的 Provider、API Key 和模型选择集中管理。",
-    "guideTitle": "配置建议",
+    "h1": "CC Switch 配置 gw-link：多 Provider、Key 与模型一键切换",
+    "lead": "CC Switch 是一个管理 Claude Code、Codex 等 AI 编程工具配置的桌面应用，可以在多个 Provider 之间一键切换。gw-link 控制台的 API 密钥页内置「导入到 CCS」按钮，点击即可把 Key 与 base_url 写入 CC Switch。",
+    "guideTitle": "配置步骤",
     "benefits": [
-      { "title": "多 Provider", "text": "把不同模型服务抽象成可切换配置。" },
-      { "title": "多 Key 管理", "text": "减少手动切换环境变量和本地配置文件。" },
-      { "title": "Claude/Codex 共用", "text": "让常用 AI 编程工具共享一致的模型配置策略。" }
+      {
+        "title": "一键导入",
+        "text": "在 gw-link「API 密钥」页点击「导入到 CCS」，通过 ccswitch:// 协议把 Provider 配置直接写入 CC Switch。"
+      },
+      {
+        "title": "多节点、多 Key 切换",
+        "text": "可以把 gw-link.com 与 gw-link.ai 两个节点、或不同分组的 Key 各存为一个 Provider，按需切换。"
+      },
+      {
+        "title": "不再手改配置文件",
+        "text": "CC Switch 负责改写 ~/.claude/settings.json 与 ~/.codex 下的配置，避免手动编辑出错。"
+      }
     ],
-    "steps": ["在 gw-link 创建统一 API Key。", "在 CC Switch 中添加 Provider 配置。", "为 Claude Code 和 Codex 选择对应模型。"],
+    "steps": [
+      "安装 CC Switch 桌面应用。",
+      "在 gw-link 控制台「API 密钥」页，点击目标 Key 的「导入到 CCS」。",
+      "如未弹出导入窗口，可在 CC Switch 中手动新增 Provider，填入下方配置。",
+      "在 CC Switch 中启用该 Provider，然后重新打开 Claude Code 或 Codex。"
+    ],
+    "snippets": [
+      {
+        "title": "手动添加 Claude Code Provider",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-你的gw-link密钥\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}",
+        "note": "CC Switch 的 Claude Code Provider 配置即 settings.json 的 env 内容。"
+      },
+      {
+        "title": "手动添加 Codex Provider（config.toml）",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true"
+      }
+    ],
     "faq": [
-      { "q": "CC Switch 是单独模型吗？", "a": "不是。它更适合作为多 Provider、Key 和模型配置中心。" }
+      {
+        "q": "CC Switch 是一个模型吗？",
+        "a": "不是。它是配置管理工具，负责在多个 Provider、Key 和模型配置之间切换，模型调用仍然经由 gw-link。"
+      },
+      {
+        "q": "点击「导入到 CCS」没有反应？",
+        "a": "说明 CC Switch 未安装或 ccswitch:// 协议未注册。安装后重试，或按上方配置在 CC Switch 中手动添加。"
+      },
+      {
+        "q": "可以同时保存国内和海外节点吗？",
+        "a": "可以。分别以 https://gw-link.com 与 https://gw-link.ai 为 base_url 建两个 Provider，网络环境变化时一键切换。"
+      }
+    ]
+  },
+  {
+    "path": "/en/cc-switch-provider-config",
+    "changefreq": "weekly",
+    "priority": "0.7",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "CC Switch Setup for gw-link: Claude Code & Codex - gw-link",
+    "description": "Manage gw-link configs for Claude Code and Codex with CC Switch: one-click Import to CCS from the console, then switch keys, endpoints and models.",
+    "kicker": "CC Switch Provider Config",
+    "h1": "CC Switch with gw-link: Switch Providers, Keys and Models in One Click",
+    "lead": "CC Switch is a desktop app that manages configuration for AI coding tools such as Claude Code and Codex and switches between providers in one click. The gw-link API Keys page has a built-in Import to CCS button that writes the key and base URL into CC Switch for you.",
+    "guideTitle": "Setup",
+    "benefits": [
+      {
+        "title": "One-click import",
+        "text": "On the gw-link API Keys page, click Import to CCS to push the provider config into CC Switch via the ccswitch:// protocol."
+      },
+      {
+        "title": "Multiple endpoints and keys",
+        "text": "Save gw-link.com and gw-link.ai, or keys from different groups, as separate providers and switch as needed."
+      },
+      {
+        "title": "No hand-edited files",
+        "text": "CC Switch rewrites ~/.claude/settings.json and the files under ~/.codex, so you don't edit them by hand."
+      }
+    ],
+    "steps": [
+      "Install the CC Switch desktop app.",
+      "In the gw-link console, open API Keys and click Import to CCS on the key you want.",
+      "If no import dialog appears, add a provider in CC Switch manually with the config below.",
+      "Enable the provider in CC Switch, then reopen Claude Code or Codex."
+    ],
+    "snippets": [
+      {
+        "title": "Manual Claude Code provider",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-your-gw-link-key\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}",
+        "note": "A CC Switch Claude Code provider is the env block of settings.json."
+      },
+      {
+        "title": "Manual Codex provider (config.toml)",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true"
+      }
+    ],
+    "faq": [
+      {
+        "q": "Is CC Switch a model?",
+        "a": "No. It's a configuration manager that switches between providers, keys and model settings; model calls still go through gw-link."
+      },
+      {
+        "q": "Import to CCS does nothing — why?",
+        "a": "CC Switch isn't installed or the ccswitch:// handler isn't registered. Install it and retry, or add the provider manually."
+      },
+      {
+        "q": "Can I keep both endpoints?",
+        "a": "Yes. Create one provider with https://gw-link.com and another with https://gw-link.ai, then switch when your network changes."
+      }
     ]
   },
   {
@@ -152,20 +890,117 @@
     "changefreq": "weekly",
     "priority": "0.75",
     "lang": "zh-CN",
-    "title": "Claude Code vs Codex：API 与工作流对比 - gw-link",
-    "description": "对比 Claude Code 与 Codex 在 API Gateway、CLI、IDE、模型选择和团队管理方面的差异，并说明如何用 gw-link 统一接入。",
+    "updated": "2026-10-02",
+    "title": "Claude Code vs Codex：协议、配置与工作流对比 - gw-link",
+    "description": "对比 Claude Code 与 Codex CLI 的 API 协议、配置文件、base_url 写法与适用场景，并说明如何用一个 gw-link 账户同时接入两者。",
     "kicker": "Claude Code vs Codex",
-    "h1": "Claude Code vs Codex：AI 编程工具接入对比",
-    "lead": "Claude Code 和 Codex 各有适用场景，但都可以通过 gw-link 使用统一 OpenAI 兼容 API Gateway。",
-    "guideTitle": "选择建议",
+    "h1": "Claude Code vs Codex：API 协议、配置与工作流对比",
+    "lead": "Claude Code（Anthropic）与 Codex CLI（OpenAI）都是终端里的 AI 编程 Agent，但使用不同的 API 协议和配置方式。了解差异可以少踩配置坑，也便于团队让两者共存。",
+    "guideTitle": "选择与共存建议",
     "benefits": [
-      { "title": "Claude Code", "text": "适合代码理解、重构、复杂上下文和交互式开发。" },
-      { "title": "Codex", "text": "适合 CLI、自动化脚本和开发者命令行工作流。" },
-      { "title": "gw-link", "text": "统一两者的 API Key、模型路由和成本管理。" }
+      {
+        "title": "Claude Code",
+        "text": "Anthropic Messages API（/v1/messages）；配置 ANTHROPIC_BASE_URL（不带 /v1）与 ANTHROPIC_AUTH_TOKEN，写在 ~/.claude/settings.json；使用 Claude 系列模型。"
+      },
+      {
+        "title": "Codex CLI",
+        "text": "OpenAI Responses API（/v1/responses）；配置 ~/.codex/config.toml（base_url 带 /v1，wire_api = \"responses\"）与 auth.json；使用 GPT 系列模型。"
+      },
+      {
+        "title": "gw-link 统一接入",
+        "text": "两种协议由同一网关提供，一个账户为两个工具分别签发 Key，余额、额度与用量统一管理。"
+      }
     ],
-    "steps": ["明确团队主要工作流。", "为不同工具配置同一 gw-link 入口。", "按任务选择模型和成本策略。"],
+    "steps": [
+      "确定团队主要使用的工具与模型偏好，两者可以同时安装。",
+      "Claude Code：设置 ANTHROPIC_BASE_URL=https://gw-link.com 与 Key。",
+      "Codex：在 config.toml 中设置 base_url=https://gw-link.com/v1 与 wire_api=\"responses\"。",
+      "为两个工具分别创建 Key，便于按工具统计用量与成本。"
+    ],
+    "snippets": [
+      {
+        "title": "Claude Code（~/.claude/settings.json）",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-你的gw-link密钥\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}"
+      },
+      {
+        "title": "Codex（~/.codex/config.toml）",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true"
+      }
+    ],
     "faq": [
-      { "q": "Claude Code 和 Codex 是否必须二选一？", "a": "不需要。通过 gw-link 可以让两者共存并统一管理。" }
+      {
+        "q": "Claude Code 和 Codex 必须二选一吗？",
+        "a": "不需要。两者配置文件互不干扰，可以通过同一个 gw-link 账户同时使用。"
+      },
+      {
+        "q": "两者的 base_url 写法有什么区别？",
+        "a": "Claude Code 填根地址 https://gw-link.com（客户端自动拼接 /v1/messages）；Codex 必须填 https://gw-link.com/v1（客户端只拼接 /responses）。"
+      },
+      {
+        "q": "能用同一个 Key 吗？",
+        "a": "Key 的可用模型由其所属分组决定。通常建议为 Claude Code 与 Codex 各建一个对应分组的 Key，便于分别统计。"
+      }
+    ]
+  },
+  {
+    "path": "/en/compare/claude-code-vs-codex",
+    "changefreq": "weekly",
+    "priority": "0.7",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "Claude Code vs Codex: Protocol, Config & Workflow - gw-link",
+    "description": "Compare Claude Code and Codex CLI: API protocol, config files, base URL rules and use cases — and how to run both from one gw-link account.",
+    "kicker": "Claude Code vs Codex",
+    "h1": "Claude Code vs Codex: API Protocol, Configuration and Workflow",
+    "lead": "Claude Code (Anthropic) and Codex CLI (OpenAI) are both terminal AI coding agents, but they use different API protocols and configuration. Knowing the differences avoids setup mistakes and lets a team run both side by side.",
+    "guideTitle": "Choosing and running both",
+    "benefits": [
+      {
+        "title": "Claude Code",
+        "text": "Anthropic Messages API (/v1/messages); set ANTHROPIC_BASE_URL (no /v1) and ANTHROPIC_AUTH_TOKEN in ~/.claude/settings.json; uses Claude models."
+      },
+      {
+        "title": "Codex CLI",
+        "text": "OpenAI Responses API (/v1/responses); configure ~/.codex/config.toml (base_url with /v1, wire_api = \"responses\") plus auth.json; uses GPT models."
+      },
+      {
+        "title": "One gateway for both",
+        "text": "gw-link serves both protocols, so one account issues a key per tool and tracks balance, caps and usage together."
+      }
+    ],
+    "steps": [
+      "Decide which tool and models your team prefers — installing both is fine.",
+      "Claude Code: set ANTHROPIC_BASE_URL=https://gw-link.com and your key.",
+      "Codex: set base_url = https://gw-link.com/v1 and wire_api = \"responses\" in config.toml.",
+      "Create a key per tool so usage and cost are tracked separately."
+    ],
+    "snippets": [
+      {
+        "title": "Claude Code (~/.claude/settings.json)",
+        "lang": "json",
+        "code": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://gw-link.com\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-your-gw-link-key\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}"
+      },
+      {
+        "title": "Codex (~/.codex/config.toml)",
+        "lang": "toml",
+        "code": "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\nreview_model = \"gpt-5.5\"\ndisable_response_storage = true\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://gw-link.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true"
+      }
+    ],
+    "faq": [
+      {
+        "q": "Do I have to pick one?",
+        "a": "No. Their config files don't conflict, and both can run on the same gw-link account."
+      },
+      {
+        "q": "How do the base URLs differ?",
+        "a": "Claude Code uses the root https://gw-link.com (it appends /v1/messages). Codex needs https://gw-link.com/v1 (it only appends /responses)."
+      },
+      {
+        "q": "Can they share one key?",
+        "a": "A key's models are set by its group. Usually create one key per tool on the matching group so usage is tracked separately."
+      }
     ]
   },
   {
@@ -173,20 +1008,127 @@
     "changefreq": "weekly",
     "priority": "0.9",
     "lang": "zh-CN",
-    "title": "gw-link 30 秒接入指南",
-    "description": "gw-link 快速开始：创建 API Key，配置 base_url，接入 Claude Code、Codex、Gemini CLI 或 VS Code 插件。",
+    "updated": "2026-10-02",
+    "title": "gw-link 快速开始：3 分钟接入 Claude Code / Codex / Gemini CLI",
+    "description": "gw-link 快速开始：注册、创建 API Key、复制对应工具的配置并验证，Claude Code、Codex、Gemini CLI 与 OpenAI SDK 的配置一览。",
     "kicker": "Quick Start",
-    "h1": "gw-link 30 秒接入指南",
-    "lead": "从创建 API Key 到完成首个请求，按三步完成 AI API Gateway 接入。",
+    "h1": "gw-link 快速开始：3 分钟完成接入",
+    "lead": "从注册到完成第一次请求只需要三步：创建 API Key、把工具的 base_url 指向 gw-link、发送测试请求。控制台的「使用密钥」会按工具生成可直接复制的配置。",
     "guideTitle": "三步开始",
     "benefits": [
-      { "title": "创建 Key", "text": "登录控制台创建用于 CLI 或 IDE 的 API Key。" },
-      { "title": "替换 endpoint", "text": "把工具的 base_url 指向 gw-link。" },
-      { "title": "验证模型", "text": "运行一次测试请求确认配置生效。" }
+      {
+        "title": "1. 创建 Key",
+        "text": "登录控制台，在「API 密钥」页新建 Key，并选择对应平台的分组（Claude / OpenAI / Gemini 等）。"
+      },
+      {
+        "title": "2. 配置工具",
+        "text": "点击「使用密钥」，选择 Claude Code、Codex、Gemini CLI 或 OpenCode 标签页，复制生成的配置。"
+      },
+      {
+        "title": "3. 验证",
+        "text": "用 /v1/models 检查 Key 与网络，再在工具里发送一条消息。"
+      }
     ],
-    "steps": ["登录或注册 gw-link。", "创建 API Key 并选择模型。", "复制 base_url 到 Claude Code、Codex 或 Gemini CLI。"],
+    "steps": [
+      "注册并登录 gw-link，充值余额或开通订阅。",
+      "创建 API Key，选择分组。",
+      "复制「使用密钥」中的配置到对应工具。",
+      "运行下方 curl 命令，看到模型列表即表示接入成功。"
+    ],
+    "snippets": [
+      {
+        "title": "验证 Key",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-你的gw-link密钥\""
+      },
+      {
+        "title": "Claude Code",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-你的gw-link密钥\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "Gemini CLI",
+        "lang": "bash",
+        "code": "export GOOGLE_GEMINI_BASE_URL=\"https://gw-link.com\"\nexport GEMINI_API_KEY=\"sk-你的gw-link密钥\"\ngemini"
+      }
+    ],
     "faq": [
-      { "q": "最快多久能接入？", "a": "如果工具支持 OpenAI-compatible endpoint，通常只需要几十秒完成配置。" }
+      {
+        "q": "最快多久能接入？",
+        "a": "已安装 Claude Code、Codex 或 Gemini CLI 的情况下，复制配置并验证通常只需要几分钟。"
+      },
+      {
+        "q": "gw-link.com 和 gw-link.ai 用哪个？",
+        "a": "两者功能相同：gw-link.com 为主节点（三网优化），gw-link.ai 为美国节点，选择从你的网络访问更快的那个即可。"
+      },
+      {
+        "q": "base_url 到底带不带 /v1？",
+        "a": "Claude Code 与 Gemini CLI 填根地址 https://gw-link.com；Codex 与 OpenAI SDK 填 https://gw-link.com/v1。"
+      }
+    ]
+  },
+  {
+    "path": "/en/docs/quick-start",
+    "changefreq": "weekly",
+    "priority": "0.8",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "gw-link Quick Start: Claude Code, Codex & Gemini CLI",
+    "description": "gw-link quick start: sign up, create an API key, copy the config for your tool and verify. Claude Code, Codex, Gemini CLI and OpenAI SDK settings at a glance.",
+    "kicker": "Quick Start",
+    "h1": "gw-link Quick Start: Connected in 3 Minutes",
+    "lead": "Three steps from sign-up to your first request: create an API key, point your tool's base URL at gw-link, and send a test request. The console's Use Key dialog generates copy-paste config for each tool.",
+    "guideTitle": "Three steps",
+    "benefits": [
+      {
+        "title": "1. Create a key",
+        "text": "Log in, open API Keys, create a key and choose the group for your platform (Claude / OpenAI / Gemini, etc.)."
+      },
+      {
+        "title": "2. Configure your tool",
+        "text": "Click Use Key, pick the Claude Code, Codex, Gemini CLI or OpenCode tab and copy the generated config."
+      },
+      {
+        "title": "3. Verify",
+        "text": "Check the key and network with /v1/models, then send a message from your tool."
+      }
+    ],
+    "steps": [
+      "Sign up and log in to gw-link, then top up or subscribe.",
+      "Create an API key and choose its group.",
+      "Copy the config from Use Key into your tool.",
+      "Run the curl command below; a model list means you're connected."
+    ],
+    "snippets": [
+      {
+        "title": "Verify your key",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-your-gw-link-key\""
+      },
+      {
+        "title": "Claude Code",
+        "lang": "bash",
+        "code": "export ANTHROPIC_BASE_URL=\"https://gw-link.com\"\nexport ANTHROPIC_AUTH_TOKEN=\"sk-your-gw-link-key\"\nexport CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nclaude"
+      },
+      {
+        "title": "Gemini CLI",
+        "lang": "bash",
+        "code": "export GOOGLE_GEMINI_BASE_URL=\"https://gw-link.com\"\nexport GEMINI_API_KEY=\"sk-your-gw-link-key\"\ngemini"
+      }
+    ],
+    "faq": [
+      {
+        "q": "How fast can I get set up?",
+        "a": "With Claude Code, Codex or Gemini CLI already installed, copying the config and verifying usually takes a few minutes."
+      },
+      {
+        "q": "gw-link.com or gw-link.ai?",
+        "a": "They work the same: gw-link.com is the primary endpoint and gw-link.ai is the US endpoint. Use whichever is faster from your network."
+      },
+      {
+        "q": "Does the base URL include /v1?",
+        "a": "Claude Code and Gemini CLI use the root https://gw-link.com; Codex and the OpenAI SDK use https://gw-link.com/v1."
+      }
     ]
   },
   {
@@ -194,20 +1136,125 @@
     "changefreq": "weekly",
     "priority": "0.7",
     "lang": "zh-CN",
-    "title": "gw-link 常见问题与排障",
-    "description": "排查 gw-link 接入 Claude Code、Codex、Gemini CLI 时的 API Key、base_url、模型名、网络和权限问题。",
+    "updated": "2026-10-02",
+    "title": "gw-link 排障：401、403、404、429 错误原因与解决 - gw-link",
+    "description": "排查 Claude Code、Codex、Gemini CLI 接入 gw-link 时的 401 Key 无效、403 余额不足、404 路径错误、429 额度用尽与模型不存在等问题。",
     "kicker": "Troubleshooting",
-    "h1": "gw-link 常见问题与排障",
-    "lead": "遇到 401、404、模型不存在、base_url 配置错误或请求失败时，按清单快速定位问题。",
-    "guideTitle": "排障清单",
+    "h1": "gw-link 常见错误与排障清单",
+    "lead": "绝大多数接入问题来自三类原因：Key、base_url 路径、模型名。先用 /v1/models 验证 Key 与网络，再按错误码对照下面的清单定位。",
+    "guideTitle": "排障顺序",
     "benefits": [
-      { "title": "认证错误", "text": "检查 API Key 是否复制完整、是否仍然有效。" },
-      { "title": "地址错误", "text": "确认 base_url 指向 gw-link 的 OpenAI 兼容入口。" },
-      { "title": "模型错误", "text": "确认工具配置的模型名在 gw-link 中可用。" }
+      {
+        "title": "401 INVALID_API_KEY",
+        "text": "Key 错误、已删除或复制不完整；也可能是终端读到了旧的环境变量。重新复制 Key 并打开新终端。"
+      },
+      {
+        "title": "403 INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND",
+        "text": "余额不足需充值；Key 所属分组是订阅分组但账户没有有效订阅时，需要开通订阅或换用余额分组的 Key。"
+      },
+      {
+        "title": "429 API_KEY_QUOTA_EXHAUSTED",
+        "text": "该 Key 设置的额度已用完，可在控制台调高额度或换用其它 Key；短时间请求过多也会返回 429，稍后重试。"
+      },
+      {
+        "title": "404 / 路径错误",
+        "text": "Claude Code、Gemini CLI 的 base_url 不要带 /v1；Codex、OpenAI SDK 的 base_url 必须带 /v1。"
+      }
     ],
-    "steps": ["先用最小请求验证 Key。", "检查 base_url 是否包含正确路径。", "确认模型名和权限配置。"],
+    "steps": [
+      "运行 curl https://gw-link.com/v1/models 验证 Key 与网络。",
+      "核对 base_url 是否符合所用工具的要求（是否带 /v1）。",
+      "确认模型名出现在 /v1/models 返回的列表中。",
+      "在控制台检查余额、订阅状态与 Key 额度。"
+    ],
+    "snippets": [
+      {
+        "title": "第一步：验证 Key",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-你的gw-link密钥\"",
+        "note": "返回 JSON 模型列表即 Key 有效；401 为 Key 问题；超时或连接失败为网络问题，可换用 https://gw-link.ai 测试。"
+      }
+    ],
     "faq": [
-      { "q": "401 一般是什么原因？", "a": "通常是 API Key 错误、过期、权限不足或工具读取了旧环境变量。" }
+      {
+        "q": "401 一般是什么原因？",
+        "a": "通常是 API Key 错误、已删除、复制时缺了字符，或工具读取了旧的环境变量。gw-link 的 Key 以 sk- 开头。"
+      },
+      {
+        "q": "提示模型不存在怎么办？",
+        "a": "模型名必须出现在 Key 所属分组的可用模型中，调用 /v1/models 查看准确的模型 ID，并检查工具里配置的模型名是否拼写一致。"
+      },
+      {
+        "q": "返回 503 是什么意思？",
+        "a": "表示网关或上游暂时繁忙，属于临时性错误，稍后重试即可；持续出现请联系客服。"
+      },
+      {
+        "q": "Claude Code 报 404？",
+        "a": "多半是 ANTHROPIC_BASE_URL 写成了 https://gw-link.com/v1，导致请求变成 /v1/v1/messages。改为 https://gw-link.com。"
+      }
+    ]
+  },
+  {
+    "path": "/en/docs/troubleshooting",
+    "changefreq": "weekly",
+    "priority": "0.6",
+    "lang": "en",
+    "updated": "2026-10-02",
+    "title": "gw-link Troubleshooting: Fix 401, 403, 404 & 429 Errors",
+    "description": "Fix common gw-link errors in Claude Code, Codex and Gemini CLI: 401 invalid key, 403 insufficient balance, 404 wrong path, 429 quota exhausted, unknown model.",
+    "kicker": "Troubleshooting",
+    "h1": "gw-link Error Reference and Troubleshooting Checklist",
+    "lead": "Almost every setup problem comes down to the key, the base URL path or the model name. Verify the key and network with /v1/models first, then match the error code below.",
+    "guideTitle": "Troubleshooting order",
+    "benefits": [
+      {
+        "title": "401 INVALID_API_KEY",
+        "text": "The key is wrong, deleted or truncated, or your terminal still has an old environment variable. Re-copy the key and open a new terminal."
+      },
+      {
+        "title": "403 INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND",
+        "text": "Top up if your balance is empty. If the key's group is subscription-only and you have no active subscription, subscribe or use a key on a balance group."
+      },
+      {
+        "title": "429 API_KEY_QUOTA_EXHAUSTED",
+        "text": "The key's spending cap is used up — raise it in the console or use another key. Too many requests in a short time also return 429; retry later."
+      },
+      {
+        "title": "404 / wrong path",
+        "text": "Claude Code and Gemini CLI base URLs must not include /v1; Codex and OpenAI SDK base URLs must."
+      }
+    ],
+    "steps": [
+      "Run curl https://gw-link.com/v1/models to check the key and network.",
+      "Check the base URL matches your tool's rule (with or without /v1).",
+      "Confirm the model ID appears in the /v1/models list.",
+      "Check balance, subscription status and key caps in the console."
+    ],
+    "snippets": [
+      {
+        "title": "Step 1: verify the key",
+        "lang": "bash",
+        "code": "curl https://gw-link.com/v1/models \\\n  -H \"Authorization: Bearer sk-your-gw-link-key\"",
+        "note": "A JSON model list means the key is valid; 401 is a key problem; timeouts mean a network problem — try https://gw-link.ai."
+      }
+    ],
+    "faq": [
+      {
+        "q": "What usually causes a 401?",
+        "a": "A wrong, deleted or truncated API key, or a tool reading an old environment variable. gw-link keys start with sk-."
+      },
+      {
+        "q": "It says the model doesn't exist — what now?",
+        "a": "The model must be available to your key's group. Call /v1/models for the exact IDs and check the spelling in your tool."
+      },
+      {
+        "q": "What does a 503 mean?",
+        "a": "The gateway or upstream is temporarily busy. It's transient — retry shortly, and contact support if it persists."
+      },
+      {
+        "q": "Claude Code returns 404?",
+        "a": "Most likely ANTHROPIC_BASE_URL is https://gw-link.com/v1, producing /v1/v1/messages. Change it to https://gw-link.com."
+      }
     ]
   },
   {
@@ -215,252 +1262,93 @@
     "changefreq": "weekly",
     "priority": "0.8",
     "lang": "zh-CN",
-    "title": "gw-link Pricing - AI API Gateway",
-    "description": "查看 gw-link 的 AI API Gateway 定价入口，适合 Claude Code、Codex、Gemini CLI、GPT-Image-2 API 与团队 AI 编码场景。",
+    "updated": "2026-10-02",
+    "title": "gw-link 价格与计费方式：余额按量与订阅额度 - gw-link",
+    "description": "了解 gw-link 的计费方式：余额按实际用量扣费、订阅分组按日/周/月额度使用，每个 API Key 可单独设置额度上限，适合个人与团队 AI 编程。",
     "kicker": "Pricing",
-    "h1": "gw-link 定价：面向 AI 编程 API Gateway",
-    "lead": "根据团队规模、调用量和模型选择，使用 gw-link 管理 Claude Code、Codex、Gemini CLI 等工具的 API 成本。",
+    "h1": "gw-link 价格与计费方式",
+    "lead": "gw-link 支持两种用法：充值余额后按实际调用用量扣费，或开通订阅后在套餐额度内使用。具体模型价格与套餐请在首页定价区或控制台查看。",
     "guideTitle": "成本管理建议",
     "benefits": [
-      { "title": "按需使用", "text": "围绕真实调用量管理成本。" },
-      { "title": "团队透明", "text": "让 Key、模型和用量更容易审计。" },
-      { "title": "工具统一", "text": "多个 AI 编程工具走同一成本管理入口。" }
+      {
+        "title": "余额按量计费",
+        "text": "每次请求按模型与实际 Token 用量从余额扣费，用多少付多少，余额不足时请求返回 403 INSUFFICIENT_BALANCE。"
+      },
+      {
+        "title": "订阅额度",
+        "text": "订阅分组可设置日、周、月用量上限，适合使用量稳定的个人与团队。"
+      },
+      {
+        "title": "按 Key 控制成本",
+        "text": "为每个工具或成员创建独立 Key 并设置额度上限，用尽后该 Key 返回 429，不影响其它 Key。"
+      }
     ],
-    "steps": ["选择适合的账户和额度。", "为不同工具创建独立 Key。", "定期查看用量并优化模型选择。"],
-    "faq": [
-      { "q": "适合团队使用吗？", "a": "适合。统一 Key、模型和用量管理是 gw-link 的核心场景。" }
-    ]
-  },
-  {
-    "path": "/en/claude-code-api-gateway",
-    "changefreq": "weekly",
-    "priority": "0.95",
-    "lang": "en",
-    "title": "Claude Code API Gateway - gw-link",
-    "description": "gw-link gives Claude Code an OpenAI-compatible API gateway. Set your base_url and API key once to reach Claude, GPT and Gemini models through a single stable endpoint.",
-    "kicker": "Claude Code API Gateway",
-    "h1": "Claude Code API Gateway: One base_url for Every Model",
-    "lead": "Connect Claude Code to a unified AI API gateway with gw-link, and manage model routing, API keys, billing and reliable upstreams in one place.",
-    "guideTitle": "Connect Claude Code",
-    "benefits": [
-      { "title": "OpenAI compatible", "text": "Keep the familiar base_url and API key setup so migrating Claude Code costs almost nothing." },
-      { "title": "One model entry point", "text": "Use Claude, GPT and Gemini behind a single endpoint instead of scattered per-provider config." },
-      { "title": "Built for teams", "text": "Issue keys, watch usage and control spend from one console — ideal for dev teams and AI coding." }
+    "steps": [
+      "在首页定价区或控制台查看模型价格与订阅套餐。",
+      "选择充值余额或开通订阅。",
+      "为不同工具、成员创建独立 Key 并设置额度。",
+      "定期在控制台查看用量，按任务选择性价比更高的模型。"
     ],
-    "steps": ["Sign in to the gw-link console and create an API key.", "Point Claude Code's base_url at gw-link.", "Pick a model and send one minimal request to verify."],
     "faq": [
-      { "q": "Can Claude Code use gw-link?", "a": "Yes. gw-link exposes an OpenAI-compatible API gateway that fits Claude Code's base_url / API key setup." },
-      { "q": "Do I need to change my code?", "a": "Usually you only swap the base_url and API key; the exact steps depend on how Claude Code is configured." }
-    ]
-  },
-  {
-    "path": "/en/claude-code-base-url",
-    "changefreq": "weekly",
-    "priority": "0.9",
-    "lang": "en",
-    "title": "Claude Code base_url Setup Guide - gw-link",
-    "description": "Learn how to configure the Claude Code base_url with gw-link and reach AI coding models through one OpenAI-compatible API gateway.",
-    "kicker": "Claude Code base_url",
-    "h1": "Claude Code base_url Configuration Guide",
-    "lead": "gw-link lets Claude Code use a single base_url, so you stop switching between providers, keys and models.",
-    "guideTitle": "Recommended setup",
-    "benefits": [
-      { "title": "Simple config", "text": "It comes down to three things: base_url, API key and model name." },
-      { "title": "Lower switching cost", "text": "Every model is reached through the gw-link gateway, so the tool-side config stays stable." },
-      { "title": "Easier debugging", "text": "Watch requests, errors and usage in one place to locate issues faster." }
-    ],
-    "steps": ["Copy the OpenAI-compatible endpoint from gw-link.", "Point Claude Code's base_url at gw-link.", "Save the API key and run one test request."],
-    "faq": [
-      { "q": "What should the base_url be?", "a": "Use the value shown in your console after deployment — typically gw-link's OpenAI-compatible /v1 endpoint." }
-    ]
-  },
-  {
-    "path": "/en/codex-api-gateway",
-    "changefreq": "weekly",
-    "priority": "0.9",
-    "lang": "en",
-    "title": "Codex API Gateway - gw-link",
-    "description": "gw-link provides an OpenAI-compatible API gateway for Codex CLI and AI coding workflows, with unified API key, model and cost management.",
-    "kicker": "Codex API Gateway",
-    "h1": "Codex API Gateway for CLI and IDE Workflows",
-    "lead": "Connect Codex CLI, IDE plugins and automation scripts to gw-link and manage models and calls through one API gateway.",
-    "guideTitle": "Connect Codex",
-    "benefits": [
-      { "title": "CLI friendly", "text": "Works with the env-var / API key style used by Codex CLI, scripts and automation jobs." },
-      { "title": "Multi-model routing", "text": "Pick the right model per task while keeping the tool-side integration unchanged." },
-      { "title": "Transparent cost", "text": "Track call volume and spend in one place to keep budgets under control." }
-    ],
-    "steps": ["Create a key in gw-link.", "Point Codex's API endpoint at gw-link.", "Run a simple prompt to verify the response."],
-    "faq": [
-      { "q": "Can Codex and Claude Code share gw-link?", "a": "Yes. Both connect through the same OpenAI-compatible endpoint." }
-    ]
-  },
-  {
-    "path": "/en/gemini-cli-api-gateway",
-    "changefreq": "weekly",
-    "priority": "0.85",
-    "lang": "en",
-    "title": "Gemini CLI API Gateway - gw-link",
-    "description": "Use gw-link to unify API access and model management for Gemini CLI, Claude Code, Codex and other AI coding tools.",
-    "kicker": "Gemini CLI API Gateway",
-    "h1": "Gemini CLI API Gateway: Unified Access and Models",
-    "lead": "Manage the Gemini CLI API entry point with gw-link and share one gateway with Claude Code and Codex.",
-    "guideTitle": "Connect Gemini CLI",
-    "benefits": [
-      { "title": "Single entry point", "text": "Bring Gemini CLI into the same AI API gateway and cut down scattered config." },
-      { "title": "Consistent across tools", "text": "Claude Code, Codex and Gemini CLI can share one integration strategy." },
-      { "title": "Team control", "text": "Unify keys, quotas and model selection." }
-    ],
-    "steps": ["Create a gw-link API key.", "Configure the Gemini CLI endpoint.", "Run a test request and check the model response."],
-    "faq": [
-      { "q": "Is Gemini CLI a good fit for an API gateway?", "a": "Yes, especially when a team needs unified keys, models and cost management." }
-    ]
-  },
-  {
-    "path": "/en/openai-compatible-api-gateway",
-    "changefreq": "weekly",
-    "priority": "0.9",
-    "lang": "en",
-    "title": "OpenAI Compatible API Gateway for AI Coding - gw-link",
-    "description": "gw-link offers an OpenAI-compatible API gateway for Claude Code, Codex, Gemini CLI, VS Code and automation scripts under one integration.",
-    "kicker": "OpenAI Compatible API Gateway",
-    "h1": "OpenAI Compatible API Gateway for AI Coding",
-    "lead": "Reach Claude, GPT and Gemini through the OpenAI-compatible protocol so your CLI, IDE plugins and scripts keep one consistent config.",
-    "guideTitle": "Where it fits",
-    "benefits": [
-      { "title": "Compatible ecosystem", "text": "Many AI tools speak the OpenAI-style endpoint, so migration cost stays low." },
-      { "title": "Unified governance", "text": "Manage keys, models, billing, errors and access policy in one place." },
-      { "title": "Developer focused", "text": "Built for Claude Code, Codex, VS Code and automated coding workflows." }
-    ],
-    "steps": ["Confirm your tool supports an OpenAI-compatible endpoint.", "Swap in the base_url and API key.", "Set the model name and run a test."],
-    "faq": [
-      { "q": "What does OpenAI compatible mean?", "a": "It means a tool can connect using an OpenAI-style endpoint, key and request format." }
-    ]
-  },
-  {
-    "path": "/en/gpt-image-2-api",
-    "changefreq": "weekly",
-    "priority": "0.85",
-    "lang": "en",
-    "title": "GPT-Image-2 API Guide - gw-link",
-    "description": "Use the GPT-Image-2 API through gw-link for text-to-image, image-to-image and automated content generation workflows.",
-    "kicker": "GPT-Image-2 API",
-    "h1": "GPT-Image-2 API: Text-to-Image and Image-to-Image Guide",
-    "lead": "gw-link can act as a single entry point for image generation APIs — product shots, tutorial figures, social media images and automated content pipelines.",
-    "guideTitle": "Connect the image API",
-    "benefits": [
-      { "title": "Text to image", "text": "Generate product shots, tutorial figures and marketing assets from a prompt." },
-      { "title": "Image to image", "text": "Restyle, redraw or locally edit based on a reference image." },
-      { "title": "Automation friendly", "text": "Fits scripts, workflows and content-production pipelines." }
-    ],
-    "steps": ["Create an API key with access to image models.", "Call the images generations or edits endpoint.", "Save the output and wire it into your publishing flow."],
-    "faq": [
-      { "q": "Can GPT-Image-2 be called programmatically?", "a": "Yes — it suits batch image generation via scripts or server-side workflows." }
-    ]
-  },
-  {
-    "path": "/en/cc-switch-provider-config",
-    "changefreq": "weekly",
-    "priority": "0.8",
-    "lang": "en",
-    "title": "CC Switch Multi Provider/Key/Model Config Guide - gw-link",
-    "description": "Use CC Switch with gw-link to manage multiple providers, API keys and model configs, giving Claude Code and Codex one shared model config center.",
-    "kicker": "CC Switch Provider Config",
-    "h1": "CC Switch: A Config Center for Providers, Keys and Models",
-    "lead": "Pair CC Switch with gw-link to centrally manage providers, API keys and model choices for Claude Code, Codex and more.",
-    "guideTitle": "Configuration tips",
-    "benefits": [
-      { "title": "Multiple providers", "text": "Abstract different model services into switchable configurations." },
-      { "title": "Multiple keys", "text": "Avoid manually swapping environment variables and local config files." },
-      { "title": "Shared by Claude/Codex", "text": "Let common AI coding tools share one consistent model-config strategy." }
-    ],
-    "steps": ["Create a unified API key in gw-link.", "Add the provider config in CC Switch.", "Select the matching model for Claude Code and Codex."],
-    "faq": [
-      { "q": "Is CC Switch a standalone model?", "a": "No. It works better as a config center for providers, keys and models." }
-    ]
-  },
-  {
-    "path": "/en/compare/claude-code-vs-codex",
-    "changefreq": "weekly",
-    "priority": "0.75",
-    "lang": "en",
-    "title": "Claude Code vs Codex: API and Workflow Comparison - gw-link",
-    "description": "Compare Claude Code and Codex across API gateway, CLI, IDE, model choice and team management, and see how gw-link unifies access to both.",
-    "kicker": "Claude Code vs Codex",
-    "h1": "Claude Code vs Codex: AI Coding Tool Comparison",
-    "lead": "Claude Code and Codex each have their strengths, but both can run through one OpenAI-compatible API gateway with gw-link.",
-    "guideTitle": "How to choose",
-    "benefits": [
-      { "title": "Claude Code", "text": "Great for code understanding, refactoring, large context and interactive development." },
-      { "title": "Codex", "text": "Great for CLI, automation scripts and command-line developer workflows." },
-      { "title": "gw-link", "text": "Unifies API keys, model routing and cost management for both." }
-    ],
-    "steps": ["Clarify your team's main workflow.", "Configure both tools against the same gw-link endpoint.", "Pick models and a cost strategy per task."],
-    "faq": [
-      { "q": "Do I have to pick only one of Claude Code or Codex?", "a": "No. With gw-link the two can coexist and be managed together." }
-    ]
-  },
-  {
-    "path": "/en/docs/quick-start",
-    "changefreq": "weekly",
-    "priority": "0.9",
-    "lang": "en",
-    "title": "gw-link 30-Second Quick Start",
-    "description": "gw-link quick start: create an API key, set your base_url, and connect Claude Code, Codex, Gemini CLI or a VS Code plugin.",
-    "kicker": "Quick Start",
-    "h1": "gw-link 30-Second Quick Start",
-    "lead": "From creating an API key to your first request, connect to the AI API gateway in three steps.",
-    "guideTitle": "Three steps",
-    "benefits": [
-      { "title": "Create a key", "text": "Sign in to the console and create an API key for your CLI or IDE." },
-      { "title": "Swap the endpoint", "text": "Point your tool's base_url at gw-link." },
-      { "title": "Verify the model", "text": "Run one test request to confirm the setup works." }
-    ],
-    "steps": ["Sign in or register for gw-link.", "Create an API key and pick a model.", "Copy the base_url into Claude Code, Codex or Gemini CLI."],
-    "faq": [
-      { "q": "How fast can I connect?", "a": "If your tool supports an OpenAI-compatible endpoint, setup usually takes only a few dozen seconds." }
-    ]
-  },
-  {
-    "path": "/en/docs/troubleshooting",
-    "changefreq": "weekly",
-    "priority": "0.7",
-    "lang": "en",
-    "title": "gw-link Troubleshooting and FAQ",
-    "description": "Troubleshoot API key, base_url, model name, network and permission issues when connecting Claude Code, Codex or Gemini CLI to gw-link.",
-    "kicker": "Troubleshooting",
-    "h1": "gw-link Troubleshooting and FAQ",
-    "lead": "When you hit 401, 404, missing-model, wrong base_url or failed requests, work through this checklist to locate the problem fast.",
-    "guideTitle": "Troubleshooting checklist",
-    "benefits": [
-      { "title": "Auth errors", "text": "Check the API key is copied in full and still valid." },
-      { "title": "Address errors", "text": "Confirm the base_url points at gw-link's OpenAI-compatible endpoint." },
-      { "title": "Model errors", "text": "Confirm the model name configured in your tool is available in gw-link." }
-    ],
-    "steps": ["Verify the key with a minimal request first.", "Check the base_url includes the correct path.", "Confirm the model name and permission settings."],
-    "faq": [
-      { "q": "What usually causes a 401?", "a": "Typically a wrong or expired API key, insufficient permission, or a tool reading a stale environment variable." }
+      {
+        "q": "适合团队使用吗？",
+        "a": "适合。按成员或项目分配 Key、设置额度并集中查看用量，是 gw-link 的核心场景。"
+      },
+      {
+        "q": "余额快用完会提醒吗？",
+        "a": "支持低余额提醒，余额低于阈值时会发送通知，避免工作中途中断。"
+      },
+      {
+        "q": "在哪里看具体价格？",
+        "a": "首页的定价区与控制台展示各模型的实时价格和订阅套餐，以页面显示为准。"
+      }
     ]
   },
   {
     "path": "/en/pricing",
     "changefreq": "weekly",
-    "priority": "0.8",
+    "priority": "0.7",
     "lang": "en",
-    "title": "gw-link Pricing - AI API Gateway",
-    "description": "See gw-link's AI API gateway pricing entry point for Claude Code, Codex, Gemini CLI, the GPT-Image-2 API and team AI coding.",
+    "updated": "2026-10-02",
+    "title": "gw-link Pricing: Pay-as-You-Go Balance & Subscriptions",
+    "description": "How gw-link billing works: pay-as-you-go from your balance, or subscription groups with daily/weekly/monthly quotas, plus per-key spending caps for teams.",
     "kicker": "Pricing",
-    "h1": "gw-link Pricing for an AI Coding API Gateway",
-    "lead": "Manage API cost for Claude Code, Codex, Gemini CLI and more with gw-link, based on team size, call volume and model choice.",
-    "guideTitle": "Cost management tips",
+    "h1": "gw-link Pricing and Billing",
+    "lead": "gw-link offers two ways to pay: top up a balance and pay for actual usage, or subscribe and use the plan's quota. See current model prices and plans in the pricing section of the homepage or in the console.",
+    "guideTitle": "Keeping costs under control",
     "benefits": [
-      { "title": "Pay for what you use", "text": "Manage cost around real call volume." },
-      { "title": "Team transparency", "text": "Make keys, models and usage easier to audit." },
-      { "title": "One entry for all tools", "text": "Route multiple AI coding tools through one cost-management entry point." }
+      {
+        "title": "Pay as you go",
+        "text": "Each request is charged from your balance by model and actual token usage; when the balance runs out, requests return 403 INSUFFICIENT_BALANCE."
+      },
+      {
+        "title": "Subscription quotas",
+        "text": "Subscription groups can have daily, weekly and monthly usage caps — good for steady individual or team usage."
+      },
+      {
+        "title": "Per-key caps",
+        "text": "Give each tool or teammate its own key with a spending cap; an exhausted key returns 429 without affecting the others."
+      }
     ],
-    "steps": ["Choose the right account and quota.", "Create separate keys for different tools.", "Review usage regularly and tune model choice."],
+    "steps": [
+      "Check model prices and plans on the homepage or in the console.",
+      "Top up your balance or subscribe.",
+      "Create separate keys per tool or teammate and set caps.",
+      "Review usage regularly and pick cost-effective models per task."
+    ],
     "faq": [
-      { "q": "Is it suitable for teams?", "a": "Yes. Unified keys, models and usage management is a core gw-link use case." }
+      {
+        "q": "Is it suitable for teams?",
+        "a": "Yes. Issuing keys per person or project, capping them and reviewing usage centrally is the core use case."
+      },
+      {
+        "q": "Will I be warned before my balance runs out?",
+        "a": "Yes, low-balance notifications are sent when your balance drops below a threshold, so work isn't interrupted."
+      },
+      {
+        "q": "Where can I see exact prices?",
+        "a": "The pricing section on the homepage and the console show current per-model prices and plans."
+      }
     ]
   }
 ]
