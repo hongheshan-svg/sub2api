@@ -979,6 +979,7 @@ export default {
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
+        typesafe: 'TypeSafe / Jev',
         composite: 'Composite',
         kiro: 'Kiro',
       },
