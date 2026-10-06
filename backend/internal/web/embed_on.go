@@ -75,6 +75,10 @@ type FrontendServer struct {
 	settings    PublicSettingsProvider
 	overrideDir string // local file override directory
 	landing     map[string]LandingPage
+	landingList []LandingPage // landing pages in JSON order (related-link order)
+	// homeDescription is index.html's <meta name="description">, reused as the
+	// homepage og:description instead of the (usually terse) site subtitle.
+	homeDescription string
 
 	// overrideDirExists/overrideDirCheckedAt 缓存"覆盖目录本身是否存在"这一判断，避免绝大多数
 	// 从未配置本地覆盖文件的部署里，每个静态资源请求都对 overrideDir 做一次真实的磁盘 os.Stat。
@@ -112,13 +116,15 @@ func NewFrontendServer(settingsProvider PublicSettingsProvider) (*FrontendServer
 	loadEmbeddedLanding()
 
 	return &FrontendServer{
-		distFS:      distFS,
-		fileServer:  http.FileServer(http.FS(distFS)),
-		baseHTML:    baseHTML,
-		cache:       cache,
-		settings:    settingsProvider,
-		overrideDir: filepath.Join("data", "public"),
-		landing:     embeddedLandingMap,
+		distFS:          distFS,
+		fileServer:      http.FileServer(http.FS(distFS)),
+		baseHTML:        baseHTML,
+		cache:           cache,
+		settings:        settingsProvider,
+		overrideDir:     filepath.Join("data", "public"),
+		landing:         embeddedLandingMap,
+		landingList:     embeddedLandingList,
+		homeDescription: metaDescription(baseHTML),
 	}, nil
 }
 
@@ -248,6 +254,7 @@ func (s *FrontendServer) serveIndexHTMLForPath(c *gin.Context, routePath string)
 }
 
 func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []byte {
+	settingsJSON = externalizeSiteLogo(settingsJSON)
 	configScript := []byte(`<script nonce="` + NonceHTMLPlaceholder + `">window.__APP_CONFIG__=` + string(settingsJSON) + `;</script>`)
 
 	var cfg struct {
@@ -262,11 +269,18 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 
 	var headInject []byte
 	if isLanding {
-		headInject = BuildLandingHead(page, cfg.FrontendURL, HreflangLinksFor(page, s.landing, cfg.FrontendURL))
+		site := LandingSite{Name: cfg.SiteName, BaseURL: cfg.FrontendURL, Logo: cfg.SiteLogo}
+		headInject = BuildLandingHead(page, site, HreflangLinksFor(page, s.landing, cfg.FrontendURL))
 	} else {
+		homeTitle := htmlpkg.UnescapeString(currentTitle(s.baseHTML))
+		if cfg.SiteName == "" || !strings.Contains(homeTitle, cfg.SiteName) {
+			homeTitle = "" // a generic static title; let BuildSEOHead derive one from the site name
+		}
 		headInject = BuildSEOHead(SEOInput{
 			SiteName:     cfg.SiteName,
 			SiteSubtitle: cfg.SiteSubtitle,
+			Title:        homeTitle,
+			Description:  s.homeDescription,
 			BaseURL:      cfg.FrontendURL,
 			Logo:         cfg.SiteLogo,
 			Lang:         "zh-CN",
@@ -297,13 +311,17 @@ func (s *FrontendServer) injectForPath(routePath string, settingsJSON []byte) []
 		result = setTitle(result, page.Title)
 		result = setMetaDescription(result, page.Description)
 		result = setHtmlLang(result, langOf(page))
-		body := RenderLandingBody(page)
+		// The landing body below is the no-JS content; the generic homepage
+		// <noscript> would add a second, possibly wrong-language <h1>.
+		result = removeNoscript(result)
+		body := RenderLandingBody(page, LandingLinksFor(page, s.landingList, s.landing))
 		appDiv := []byte(`<div id="app"></div>`)
 		replacement := append([]byte(`<div id="app">`), body...)
 		replacement = append(replacement, []byte(`</div>`)...)
 		result = bytes.Replace(result, appDiv, replacement, 1)
 	} else {
 		result = injectSiteTitle(result, settingsJSON)
+		result = injectIntoNoscript(result, RenderGuideLinks(s.landingList))
 	}
 	// Apply custom branding favicon before the browser paints the static default.
 	result = injectSiteFavicon(result, settingsJSON)
@@ -349,6 +367,89 @@ func removeStaticHomeFAQ(htmlBytes []byte) []byte {
 		}
 		search = end
 	}
+}
+
+// externalizeSiteLogo rewrites a data: URI site_logo in the injected settings
+// JSON to its SiteLogoHref URL, so the page references the image instead of
+// embedding it (see SiteLogoHref). Other settings pass through untouched.
+func externalizeSiteLogo(settingsJSON []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(settingsJSON, &m); err != nil {
+		return settingsJSON
+	}
+	raw, ok := m["site_logo"]
+	if !ok {
+		return settingsJSON
+	}
+	var logo string
+	if err := json.Unmarshal(raw, &logo); err != nil || !isDataImageURI(logo) {
+		return settingsJSON
+	}
+	href, err := json.Marshal(SiteLogoHref(logo))
+	if err != nil {
+		return settingsJSON
+	}
+	m["site_logo"] = href
+	out, err := json.Marshal(m)
+	if err != nil {
+		return settingsJSON
+	}
+	return out
+}
+
+// metaDescription returns the unescaped content of the first
+// <meta name="description" content="…"> tag, or "" when absent.
+func metaDescription(htmlBytes []byte) string {
+	marker := []byte(`<meta name="description" content="`)
+	start := bytes.Index(htmlBytes, marker)
+	if start == -1 {
+		return ""
+	}
+	valStart := start + len(marker)
+	rel := bytes.IndexByte(htmlBytes[valStart:], '"')
+	if rel == -1 {
+		return ""
+	}
+	return htmlpkg.UnescapeString(string(htmlBytes[valStart : valStart+rel]))
+}
+
+// removeNoscript drops the first <noscript>…</noscript> block (and the
+// whitespace after it).
+func removeNoscript(htmlBytes []byte) []byte {
+	start := bytes.Index(htmlBytes, []byte("<noscript>"))
+	if start == -1 {
+		return htmlBytes
+	}
+	rel := bytes.Index(htmlBytes[start:], []byte("</noscript>"))
+	if rel == -1 {
+		return htmlBytes
+	}
+	end := start + rel + len("</noscript>")
+	for end < len(htmlBytes) && (htmlBytes[end] == '\n' || htmlBytes[end] == ' ' || htmlBytes[end] == '\t' || htmlBytes[end] == '\r') {
+		end++
+	}
+	var buf bytes.Buffer
+	buf.Write(htmlBytes[:start])
+	buf.Write(htmlBytes[end:])
+	return buf.Bytes()
+}
+
+// injectIntoNoscript inserts fragment right before the first </noscript>.
+func injectIntoNoscript(htmlBytes, fragment []byte) []byte {
+	if len(fragment) == 0 {
+		return htmlBytes
+	}
+	closeTag := []byte("</noscript>")
+	idx := bytes.Index(htmlBytes, closeTag)
+	if idx == -1 {
+		return htmlBytes
+	}
+	var buf bytes.Buffer
+	buf.Grow(len(htmlBytes) + len(fragment))
+	buf.Write(htmlBytes[:idx])
+	buf.Write(fragment)
+	buf.Write(htmlBytes[idx:])
+	return buf.Bytes()
 }
 
 // setMetaDescription replaces the content value of the static
@@ -470,6 +571,8 @@ func safeImageURL(value string) string {
 
 // injectSiteTitle replaces the static <title> in HTML with the configured site name.
 // This ensures the browser tab shows the correct title before JS executes.
+// A static title that already names the site is a deliberate, keyword-rich
+// homepage title in index.html and is kept as-is.
 func injectSiteTitle(html, settingsJSON []byte) []byte {
 	var cfg struct {
 		SiteName string `json:"site_name"`
@@ -477,7 +580,20 @@ func injectSiteTitle(html, settingsJSON []byte) []byte {
 	if err := json.Unmarshal(settingsJSON, &cfg); err != nil || cfg.SiteName == "" {
 		return html
 	}
+	if current := currentTitle(html); current != "" && strings.Contains(htmlpkg.UnescapeString(current), cfg.SiteName) {
+		return html
+	}
 	return setTitle(html, htmlpkg.EscapeString(cfg.SiteName)+" - AI API Gateway")
+}
+
+// currentTitle returns the raw contents of the first <title>…</title>.
+func currentTitle(html []byte) string {
+	start := bytes.Index(html, []byte("<title>"))
+	end := bytes.Index(html, []byte("</title>"))
+	if start == -1 || end == -1 || end <= start {
+		return ""
+	}
+	return string(html[start+len("<title>") : end])
 }
 
 // replaceNoncePlaceholder replaces the nonce placeholder with actual nonce value
@@ -556,7 +672,9 @@ func shouldBypassEmbeddedFrontend(path string) bool {
 		strings.HasPrefix(trimmed, "/videos/") ||
 		trimmed == "/robots.txt" ||
 		trimmed == "/sitemap.xml" ||
-		trimmed == "/llms.txt"
+		trimmed == "/llms.txt" ||
+		trimmed == "/llms-full.txt" ||
+		trimmed == SiteLogoPath
 }
 
 func serveIndexHTML(c *gin.Context, fsys fs.FS) {

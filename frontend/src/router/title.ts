@@ -2,6 +2,7 @@ import { i18n } from '@/i18n'
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import type { CustomMenuItem } from '@/types'
 import type { SiteBillingMode } from '@/utils/siteBillingMode'
+import { getSeoPageTitle } from '@/utils/seoPageTitle'
 
 /**
  * 统一生成页面标题，避免多处写入 document.title 产生覆盖冲突。
@@ -63,11 +64,16 @@ export function resolveRouteMetaKeys(
 }
 
 export function resolveRouteDocumentTitle(
-  route: Pick<RouteLocationNormalizedLoaded, 'name' | 'params' | 'meta'>,
+  route: Pick<RouteLocationNormalizedLoaded, 'name' | 'params' | 'meta'> & { path?: string },
   siteName: string | undefined,
   customMenuItems: CustomMenuItem[] = [],
   options: RouteTitleOptions = {},
 ): string {
+  // SEO landing pages keep their own full title (see utils/seoPageTitle).
+  const seoTitle = getSeoPageTitle(route.path)
+  if (seoTitle) {
+    return seoTitle
+  }
   const id = typeof route.params.id === 'string' ? route.params.id : ''
   const menuItem = route.name === 'CustomPage' && id
     ? customMenuItems.find((item) => item.id === id)

@@ -392,6 +392,9 @@
     <!-- ── FOOTER ── -->
     <footer class="home-footer">
       <div class="home-footer__container">
+        <nav class="home-footer__guides" :aria-label="isZh ? '使用指南' : 'Guides'">
+          <router-link v-for="guide in footerGuides" :key="guide.path" :to="guide.path">{{ guide.label }}</router-link>
+        </nav>
         <div class="home-footer__bottom">
           <p>&copy; {{ currentYear }} {{ brandName }}. {{ t('home.footer.allRightsReserved') }}</p>
           <div class="home-footer__links">
@@ -468,6 +471,24 @@ const isAdmin = computed(() => authStore.isAdmin)
 const dashboardPath = computed(() => (isAdmin.value ? '/admin/dashboard' : '/dashboard'))
 const currentYear = computed(() => new Date().getFullYear())
 const isZh = computed(() => locale.value.startsWith('zh'))
+
+// Crawlable links from the homepage to the SEO guide pages
+// (frontend/public/seo/landing-pages.json; English copies live under /en).
+const footerGuides = computed(() => {
+  const zh = isZh.value
+  const prefix = zh ? '' : '/en'
+  return [
+    { path: `${prefix}/docs/quick-start`, label: zh ? '快速开始' : 'Quick start' },
+    { path: `${prefix}/claude-code-api-gateway`, label: 'Claude Code' },
+    { path: `${prefix}/claude-code-base-url`, label: zh ? 'Claude Code 配置' : 'Claude Code setup' },
+    { path: `${prefix}/codex-api-gateway`, label: 'Codex' },
+    { path: `${prefix}/gemini-cli-api-gateway`, label: 'Gemini CLI' },
+    { path: `${prefix}/cc-switch-provider-config`, label: 'CC Switch' },
+    { path: `${prefix}/gpt-image-2-api`, label: 'GPT-Image-2 API' },
+    { path: `${prefix}/compare/claude-code-vs-codex`, label: 'Claude Code vs Codex' },
+    { path: `${prefix}/docs/troubleshooting`, label: zh ? '排障' : 'Troubleshooting' }
+  ]
+})
 
 // ── theme ───────────────────────────────────────────────────────────────────
 const isDark = ref(document.documentElement.classList.contains('dark'))
@@ -1850,6 +1871,22 @@ onUnmounted(() => {
 }
 .home-footer__links a:hover { color: #4f8cff; }
 .home-footer__links span { font-size: 0.8125rem; color: #9ca3af; }
+
+.home-footer__guides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.dark .home-footer__guides { border-color: rgba(255,255,255,0.06); }
+.home-footer__guides a {
+  font-size: 0.8125rem;
+  color: #6b7280;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.home-footer__guides a:hover { color: #4f8cff; }
 
 /* ── ENTERPRISE PARTNERS ─────────────────────────────────────────────────── */
 .partners-section {
