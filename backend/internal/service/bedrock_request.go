@@ -72,6 +72,21 @@ func claude55BedrockGeoPrefix(modelID, region string) string {
 	}
 }
 
+// fableBedrockGeoPrefix 返回 Fable 5 / 5.1 在给定源区域可用的跨区域推理前缀。
+// 它们在 bedrock-runtime 上没有 In-Region 部署，Geo 配置只有 us（美国、加拿大
+// 源区域；Fable 5.1 另有 GovCloud），其余商业区域只能走 Global。
+// 参见 AWS 模型卡片的 Regional availability。
+func fableBedrockGeoPrefix(region string) string {
+	switch {
+	case strings.HasPrefix(region, "us-gov"):
+		return "us-gov" // GovCloud 没有 Global；Fable 5 在 GovCloud 不可用
+	case strings.HasPrefix(region, "us-"), strings.HasPrefix(region, "ca-"):
+		return "us"
+	default:
+		return "global"
+	}
+}
+
 // AdjustBedrockModelRegionPrefix 将模型 ID 的区域前缀替换为与当前 AWS Region 匹配的前缀
 // 例如 region=eu-west-1 时，"us.anthropic.claude-opus-4-6-v1" → "eu.anthropic.claude-opus-4-6-v1"
 // 特殊值 region="global" 强制使用 global. 前缀
@@ -82,6 +97,8 @@ func AdjustBedrockModelRegionPrefix(modelID, region string) string {
 		targetPrefix = "global"
 	case isClaude55SignedThinkingModel(modelID):
 		targetPrefix = claude55BedrockGeoPrefix(modelID, region)
+	case isBedrockFable5(modelID):
+		targetPrefix = fableBedrockGeoPrefix(region)
 	default:
 		targetPrefix = BedrockCrossRegionPrefix(region)
 	}
@@ -157,9 +174,9 @@ func normalizeBedrockModelID(modelID string) (normalized string, shouldAdjustReg
 	if mapped, exists := domain.DefaultBedrockModelMapping[modelID]; exists {
 		return mapped, true, true
 	}
-	// An explicitly configured global profile for a 5.5 model is kept as chosen
-	// rather than rewritten to the account region's geography profile.
-	if strings.HasPrefix(modelID, "global.") && isClaude55SignedThinkingModel(modelID) {
+	// An explicitly configured global profile for a 5.5 or Fable model is kept as
+	// chosen rather than rewritten to the account region's geography profile.
+	if strings.HasPrefix(modelID, "global.") && (isClaude55SignedThinkingModel(modelID) || isBedrockFable5(modelID)) {
 		return modelID, false, true
 	}
 	if isRegionalBedrockModelID(modelID) {
