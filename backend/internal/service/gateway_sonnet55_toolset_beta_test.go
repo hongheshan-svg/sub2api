@@ -24,6 +24,7 @@ func TestSonnet55ToolsetDropsLegacyStreamingBeta(t *testing.T) {
 		{"browser toolset", "claude-sonnet-5-5", "browser_toolset_20260801", true},
 		{"legacy computer", "claude-sonnet-5-5", "computer_20251124", false},
 		{"older model", "claude-sonnet-5", "computer_toolset_20260801", false},
+		{"haiku 5.5 computer toolset", "claude-haiku-5-5", "computer_toolset_20260801", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"model":"` + tc.model + `","tools":[{"type":"` + tc.toolType + `"}],"messages":[{"role":"user","content":"hi"}]}`)

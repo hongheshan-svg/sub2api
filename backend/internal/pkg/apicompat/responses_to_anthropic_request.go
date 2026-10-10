@@ -16,7 +16,8 @@ import (
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55)
+	isHaiku55 := claude.IsHaiku55(req.Model)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55 || isHaiku55)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +55,10 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 			return nil, fmt.Errorf("convert tool_choice: %w", err)
 		}
 		out.ToolChoice = tc
+	}
+
+	if isHaiku55 {
+		return applyHaiku55Thinking(out, req)
 	}
 
 	// The 5.5 models reject manual thinking and forced tool use. Sonnet 5.5
@@ -119,6 +124,39 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		}
 	}
 
+	return out, nil
+}
+
+// applyHaiku55Thinking maps reasoning effort onto Haiku 5.5's adaptive thinking.
+// Unlike the other 5.5 models it accepts forced tool_choice, and it allows
+// disabled thinking at effort high or below, which OpenAI's "none" maps to.
+// Manual budgets and non-default sampling parameters are rejected upstream.
+func applyHaiku55Thinking(out *AnthropicRequest, req *ResponsesRequest) (*AnthropicRequest, error) {
+	if req.Temperature != nil && req.TopP != nil {
+		return nil, fmt.Errorf("claude-haiku-5-5 does not support setting both temperature and top_p")
+	}
+	if req.Temperature != nil && *req.Temperature != 1 {
+		return nil, fmt.Errorf("claude-haiku-5-5 does not support non-default temperature")
+	}
+	if req.TopP != nil && *req.TopP != 0.99 {
+		return nil, fmt.Errorf("claude-haiku-5-5 does not support non-default top_p")
+	}
+	effort := "medium"
+	if req.Reasoning != nil && req.Reasoning.Effort != "" {
+		effort = req.Reasoning.Effort
+	}
+	if effort == "none" {
+		out.Thinking = &AnthropicThinking{Type: "disabled"}
+		out.OutputConfig = &AnthropicOutputConfig{Effort: "low"}
+		return out, nil
+	}
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		return nil, fmt.Errorf("%s does not support reasoning effort %q; use low, medium, high, xhigh or max", req.Model, effort)
+	}
+	out.Thinking = &AnthropicThinking{Type: "adaptive"}
+	out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
 	return out, nil
 }
 
