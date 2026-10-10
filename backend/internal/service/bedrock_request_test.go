@@ -482,8 +482,14 @@ func TestBedrockCrossRegionPrefix(t *testing.T) {
 }
 
 func TestResolveBedrockModelID(t *testing.T) {
-	t.Run("sonnet 5.5 uses the global inference profile in every region", func(t *testing.T) {
-		for _, region := range []string{"us-east-1", "eu-west-1", "ap-southeast-2"} {
+	t.Run("sonnet 5.5 uses its geo profile and falls back to global", func(t *testing.T) {
+		for region, want := range map[string]string{
+			"us-east-1":      "us.anthropic.claude-sonnet-5-5",
+			"eu-west-1":      "eu.anthropic.claude-sonnet-5-5",
+			"ap-southeast-2": "au.anthropic.claude-sonnet-5-5",
+			"ap-northeast-1": "global.anthropic.claude-sonnet-5-5", // no jp profile
+			"ap-south-1":     "global.anthropic.claude-sonnet-5-5",
+		} {
 			account := &Account{
 				Platform: PlatformAnthropic,
 				Type:     AccountTypeBedrock,
@@ -493,7 +499,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 			}
 			modelID, ok := ResolveBedrockModelID(account, "claude-sonnet-5-5")
 			require.True(t, ok, region)
-			assert.Equal(t, "global.anthropic.claude-sonnet-5-5", modelID, region)
+			assert.Equal(t, want, modelID, region)
 		}
 	})
 
@@ -1186,4 +1192,96 @@ func TestSanitizeBedrockCCBetaTokens(t *testing.T) {
 		assert.Contains(t, []string{tokens[0].String(), tokens[1].String()}, "computer-use-2025-11-24")
 		assert.Contains(t, []string{tokens[0].String(), tokens[1].String()}, "context-1m-2025-08-07")
 	})
+}
+
+func TestResolveBedrockModelIDClaude55GeoProfiles(t *testing.T) {
+	cases := map[string]string{
+		"us-east-1":      "us",
+		"us-west-2":      "us",
+		"ca-central-1":   "us",
+		"eu-west-1":      "eu",
+		"eu-west-2":      "eu",
+		"ap-northeast-1": "jp",
+		"ap-northeast-3": "jp",
+		"ap-southeast-2": "au",
+		"ap-southeast-4": "au",
+		"us-gov-west-1":  "us-gov",
+		// No geo profile for these source regions: use the global profile.
+		"ap-south-1":     "global",
+		"ap-southeast-1": "global",
+		"ap-northeast-2": "global",
+		"sa-east-1":      "global",
+		"me-central-1":   "global",
+	}
+	for _, model := range []string{"claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"} {
+		for region, prefix := range cases {
+			if prefix == "jp" && model == "claude-sonnet-5-5" {
+				prefix = "global" // Sonnet 5.5 has no jp geo profile
+			}
+			account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+				Credentials: map[string]any{"aws_region": region}}
+			modelID, ok := ResolveBedrockModelID(account, model)
+			require.True(t, ok, model+"/"+region)
+			assert.Equal(t, prefix+".anthropic."+model, modelID, model+"/"+region)
+		}
+
+		// An explicitly configured global profile is kept as chosen.
+		explicitGlobal := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "eu-west-1",
+				"model_mapping": map[string]any{"alias": "global.anthropic." + model}}}
+		modelID, ok := ResolveBedrockModelID(explicitGlobal, "alias")
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+
+		forced := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "eu-west-1", "aws_force_global": "true"}}
+		modelID, ok = ResolveBedrockModelID(forced, model)
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+
+		// An explicit regional mapping is adjusted with the same geo rules.
+		mapped := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "ap-south-1",
+				"model_mapping": map[string]any{"alias": "us.anthropic." + model}}}
+		modelID, ok = ResolveBedrockModelID(mapped, "alias")
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+	}
+
+	// Older models keep the generic prefix mapping (apac for other Asia Pacific regions).
+	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+		Credentials: map[string]any{"aws_region": "ap-south-1"}}
+	modelID, ok := ResolveBedrockModelID(account, "claude-opus-4-8")
+	require.True(t, ok)
+	assert.Equal(t, "apac.anthropic.claude-opus-4-8-v1", modelID)
+}
+
+func TestPrepareBedrockClaude55PreservesEffort(t *testing.T) {
+	input := []byte(`{"model":"claude-opus-5-5","max_tokens":1024,"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hello"}]}`)
+	for _, modelID := range []string{"us.anthropic.claude-opus-5-5", "global.anthropic.claude-haiku-5-5"} {
+		result, err := PrepareBedrockRequestBodyWithTokens(input, modelID, nil, false)
+		require.NoError(t, err, modelID)
+		assert.Equal(t, "high", gjson.GetBytes(result, "output_config.effort").String(), modelID)
+	}
+}
+
+func TestSanitizeBedrockThinkingClaude55(t *testing.T) {
+	enabled := []byte(`{"thinking":{"type":"enabled","budget_tokens":2048}}`)
+	disabled := []byte(`{"thinking":{"type":"disabled"},"output_config":{"effort":"low"}}`)
+
+	for _, modelID := range []string{"us.anthropic.claude-opus-5-5", "eu.anthropic.claude-haiku-5-5"} {
+		result := sanitizeBedrockThinking(enabled, modelID)
+		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String(), modelID)
+		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists(), modelID)
+	}
+
+	// Opus 5.5 cannot disable thinking: drop the field so it runs adaptive.
+	result := sanitizeBedrockThinking(disabled, "us.anthropic.claude-opus-5-5")
+	assert.False(t, gjson.GetBytes(result, "thinking").Exists())
+	require.NoError(t, validateClaude55Request(result, "us.anthropic.claude-opus-5-5"))
+
+	// Haiku 5.5 accepts disabled thinking at effort high or below.
+	result = sanitizeBedrockThinking(disabled, "us.anthropic.claude-haiku-5-5")
+	assert.Equal(t, "disabled", gjson.GetBytes(result, "thinking.type").String())
+	require.NoError(t, validateClaude55Request(result, "us.anthropic.claude-haiku-5-5"))
 }

@@ -190,6 +190,10 @@ var DefaultBedrockModelMapping = map[string]string{
 	"claude-fable-5-1": "anthropic.claude-fable-5-1",
 	"claude-fable-5":   "anthropic.claude-fable-5",
 	// Claude Opus
+	// The 5.5 models only offer us/eu/jp/au geo profiles (Sonnet 5.5: no jp,
+	// none has apac); the region adjustment switches to the global profile in
+	// other source regions (claude55BedrockGeoPrefix in bedrock_request.go).
+	"claude-opus-5-5":          "us.anthropic.claude-opus-5-5",
 	"claude-opus-5":            "us.anthropic.claude-opus-5-v1",
 	"claude-opus-4-8":          "us.anthropic.claude-opus-4-8-v1",
 	"claude-opus-4-7":          "us.anthropic.claude-opus-4-7-v1",
@@ -200,8 +204,7 @@ var DefaultBedrockModelMapping = map[string]string{
 	"claude-opus-4-1":          "us.anthropic.claude-opus-4-1-20250805-v1:0",
 	"claude-opus-4-20250514":   "us.anthropic.claude-opus-4-20250514-v1:0",
 	// Claude Sonnet
-	// Sonnet 5.5 is available on bedrock-runtime through Global inference only.
-	"claude-sonnet-5-5":          "global.anthropic.claude-sonnet-5-5",
+	"claude-sonnet-5-5":          "us.anthropic.claude-sonnet-5-5",
 	"claude-sonnet-5":            "us.anthropic.claude-sonnet-5-v1",
 	"claude-sonnet-4-6-thinking": "us.anthropic.claude-sonnet-4-6",
 	"claude-sonnet-4-6":          "us.anthropic.claude-sonnet-4-6",
@@ -210,6 +213,7 @@ var DefaultBedrockModelMapping = map[string]string{
 	"claude-sonnet-4-5-20250929": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-sonnet-4-20250514":   "us.anthropic.claude-sonnet-4-20250514-v1:0",
 	// Claude Haiku
+	"claude-haiku-5-5":          "us.anthropic.claude-haiku-5-5",
 	"claude-haiku-4-5":          "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 }

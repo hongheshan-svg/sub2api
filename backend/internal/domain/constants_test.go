@@ -112,7 +112,9 @@ func TestDefaultBedrockModelMapping_ContainsNewClaudeModels(t *testing.T) {
 		"claude-fable-5-1":  "anthropic.claude-fable-5-1",
 		"claude-fable-5":    "anthropic.claude-fable-5",
 		"claude-opus-4-8":   "us.anthropic.claude-opus-4-8-v1",
-		"claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5",
+		"claude-sonnet-5-5": "us.anthropic.claude-sonnet-5-5",
+		"claude-opus-5-5":   "us.anthropic.claude-opus-5-5",
+		"claude-haiku-5-5":  "us.anthropic.claude-haiku-5-5",
 	}
 	for from, want := range cases {
 		got, ok := DefaultBedrockModelMapping[from]

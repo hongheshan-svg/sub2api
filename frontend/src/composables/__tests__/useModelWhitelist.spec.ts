@@ -98,13 +98,20 @@ describe('useModelWhitelist', () => {
       expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'claude-sonnet-5-5' })
     ]))
     expect(getPresetMappingsByPlatform('bedrock')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'global.anthropic.claude-sonnet-5-5' })
+      expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'us.anthropic.claude-sonnet-5-5' })
     ]))
   })
 
   it('Claude Haiku 5.5 预设使用官方模型 ID', () => {
     expect(getPresetMappingsByPlatform('claude')).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'claude-haiku-5-5' })
+    ]))
+  })
+
+  it('Bedrock 预设包含 Opus 5.5 与 Haiku 5.5 的跨区域推理配置', () => {
+    expect(getPresetMappingsByPlatform('bedrock')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'us.anthropic.claude-opus-5-5' }),
+      expect.objectContaining({ label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'us.anthropic.claude-haiku-5-5' })
     ]))
   })
 
