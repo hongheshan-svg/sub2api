@@ -66,6 +66,8 @@ const antigravityModels = [
   // Claude 4.5+ 系列
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-opus-4-6',
   'claude-opus-4-6-thinking',
   'claude-opus-4-7',
@@ -98,6 +100,7 @@ const antigravityModels = [
 // Kiro（Amazon Q Developer / CodeWhisperer）—— 与后端 kiro.DefaultModels() 保持一致
 const kiroModels = [
   'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5',
+  'claude-opus-5.5', 'claude-sonnet-5.5',
   'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4.8', 'claude-opus-4.7', 'claude-opus-4.6', 'claude-opus-4.5',
   // Claude Code 走 /v1/messages 用上面的 claude-* 系列；Codex 走
   // /backend-api/codex/responses 用下面这三个 gpt-5.6-* 系列——两个端点
@@ -371,6 +374,8 @@ const antigravityPresetMappings = [
   { label: 'Claude→Sonnet', from: 'claude-*', to: 'claude-sonnet-4-5', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
   { label: 'Fable 5.1', from: 'claude-fable-5-1', to: 'claude-fable-5-1', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
   { label: 'Fable 5', from: 'claude-fable-5', to: 'claude-fable-5', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
+  { label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'claude-opus-5-5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
+  { label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'claude-sonnet-5-5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'Sonnet→Sonnet', from: 'claude-sonnet-*', to: 'claude-sonnet-4-5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'Opus→Opus', from: 'claude-opus-*', to: 'claude-opus-4-6-thinking', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'Haiku→Sonnet', from: 'claude-haiku-*', to: 'claude-sonnet-4-5', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
@@ -417,8 +422,10 @@ const kiroPresetMappings = [
   { label: 'Sonnet 4', from: 'claude-sonnet-4', to: 'claude-sonnet-4', color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400' },
   { label: 'Sonnet 4.5', from: 'claude-sonnet-4.5', to: 'claude-sonnet-4.5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'Sonnet 4.6', from: 'claude-sonnet-4.6', to: 'claude-sonnet-4.6', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
+  { label: 'Sonnet 5.5', from: 'claude-sonnet-5.5', to: 'claude-sonnet-5.5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'Sonnet 5', from: 'claude-sonnet-5', to: 'claude-sonnet-5', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'Haiku 4.5', from: 'claude-haiku-4.5', to: 'claude-haiku-4.5', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
+  { label: 'Opus 5.5', from: 'claude-opus-5.5', to: 'claude-opus-5.5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'Opus 4.5', from: 'claude-opus-4.5', to: 'claude-opus-4.5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'Opus 4.6', from: 'claude-opus-4.6', to: 'claude-opus-4.6', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },

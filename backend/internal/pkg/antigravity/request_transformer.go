@@ -101,6 +101,12 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		if targetModel != webSearchFallbackModel {
 			targetModel = webSearchFallbackModel
 		}
+	} else {
+		effort := ""
+		if claudeReq.OutputConfig != nil {
+			effort = claudeReq.OutputConfig.Effort
+		}
+		targetModel = antigravityClaude55UpstreamModel(targetModel, effort)
 	}
 
 	// 检测是否启用 thinking
@@ -221,6 +227,8 @@ type modelInfo struct {
 var modelInfoMap = map[string]modelInfo{
 	"claude-fable-5-1":  {DisplayName: "Claude Fable 5.1", CanonicalID: "claude-fable-5-1"},
 	"claude-fable-5":    {DisplayName: "Claude Fable 5", CanonicalID: "claude-fable-5"},
+	"claude-opus-5-5":   {DisplayName: "Claude Opus 5.5", CanonicalID: "claude-opus-5-5"},
+	"claude-sonnet-5-5": {DisplayName: "Claude Sonnet 5.5", CanonicalID: "claude-sonnet-5-5"},
 	"claude-opus-4-8":   {DisplayName: "Claude Opus 4.8", CanonicalID: "claude-opus-4-8"},
 	"claude-opus-4-7":   {DisplayName: "Claude Opus 4.7", CanonicalID: "claude-opus-4-7"},
 	"claude-opus-4-5":   {DisplayName: "Claude Opus 4.5", CanonicalID: "claude-opus-4-5-20250929"},
@@ -652,6 +660,30 @@ func maxOutputTokensLimit(model string) int {
 	return maxOutputTokensUpperBound
 }
 
+// Antigravity 上的 Claude 5.5 按 effort 拆成 <base>-low / -medium / -high 三个上游
+// 模型（依据第三方实现 decolua/9router，待真实账号验证）。网关层只映射到基础 ID，
+// 计费与限流按基础 ID 进行；这里按 output_config.effort 选出上游模型，xhigh / max
+// 收敛到 high，未指定时用 high（与 Antigravity 客户端的 "Thinking" 选项一致）。
+func antigravityClaude55UpstreamModel(model, effort string) string {
+	if model != "claude-opus-5-5" && model != "claude-sonnet-5-5" {
+		return model
+	}
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low":
+		return model + "-low"
+	case "medium":
+		return model + "-medium"
+	default:
+		return model + "-high"
+	}
+}
+
+// isAntigravityClaude55Model 判断（含 effort 后缀的）上游模型是否为 Claude 5.5。
+func isAntigravityClaude55Model(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.HasPrefix(lower, "claude-opus-5-5") || strings.HasPrefix(lower, "claude-sonnet-5-5")
+}
+
 // isAntigravityOpusHighTierModel 判断是否为高阶 Opus 模型（4.6+），
 // 用于 adaptive thinking 时覆写为高预算。
 func isAntigravityOpusHighTierModel(model string) bool {
@@ -692,6 +724,10 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		if req.Thinking.Type == "adaptive" && isAntigravityOpusHighTierModel(req.Model) {
 			budget = ClaudeAdaptiveHighThinkingBudgetTokens
 		}
+		// Claude 5.5 拒绝手动预算，思考深度由 effort 后缀决定：只用动态预算。
+		if isAntigravityClaude55Model(req.Model) {
+			budget = -1
+		}
 
 		// 正预算需要做上限与 max_tokens 约束；动态预算（-1）直接透传给上游。
 		if budget > 0 {
@@ -714,8 +750,8 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		config.MaxOutputTokens = maxLimit
 	}
 
-	// 其他参数
-	if !isReasoning {
+	// 其他参数（Claude 5.5 拒绝非默认采样参数，不转发）
+	if !isReasoning && !isAntigravityClaude55Model(req.Model) {
 		if req.Temperature != nil {
 			config.Temperature = req.Temperature
 		}

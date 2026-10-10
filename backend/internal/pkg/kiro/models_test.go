@@ -166,3 +166,26 @@ func TestDefaultModelsStaysInSyncWithAliasTargets(t *testing.T) {
 			"kiroModelAliases 的映射目标 %q 必须出现在 DefaultModels() 里", target)
 	}
 }
+
+// 待真实账号验证（2026-10-11）：Opus 5.5 / Sonnet 5.5 依据 Kiro 官方 changelog 与
+// 第三方实现收录，尚未经 ListAvailableModels 核实；核实后并入
+// TestMapModelOpusFamilyRequiresRealVerification，被证伪则连同别名一起移除。
+func TestMapModelClaude55PendingVerification(t *testing.T) {
+	t.Parallel()
+
+	for requested, want := range map[string]string{
+		"claude-opus-5-5":          "claude-opus-5.5",
+		"claude-sonnet-5-5":        "claude-sonnet-5.5",
+		"claude-opus-5-5-20260922": "claude-opus-5.5",
+		"claude-opus-5.5":          "claude-opus-5.5",
+		"claude-sonnet-5.5":        "claude-sonnet-5.5",
+	} {
+		mapped, ok := MapModel(requested)
+		require.True(t, ok, requested)
+		require.Equal(t, want, mapped, requested)
+	}
+
+	// 没有任何 Kiro 上线 Haiku 5.5 的证据，别名形态维持拒绝。
+	_, ok := MapModel("claude-haiku-5-5")
+	require.False(t, ok)
+}

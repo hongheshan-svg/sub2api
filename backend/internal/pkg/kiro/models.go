@@ -69,6 +69,12 @@ var kiroModelAliases = map[string]string{
 	"claude-opus-4-6":   "claude-opus-4.6",
 	"claude-opus-4-7":   "claude-opus-4.7",
 	"claude-opus-4-8":   "claude-opus-4.8",
+	// 待真实账号验证（2026-10-11）：Kiro 官方 changelog 宣布了 Opus 5.5 /
+	// Sonnet 5.5（实验性，Pro 及以上，us-east-1 / eu-central-1）。Opus 5.5 的
+	// 点号形态有第三方实现 hank9999/kiro.rs 佐证；Sonnet 5.5 只按 Kiro 现有
+	// 命名规律推断。验证后删去这段说明；若被证伪，按上面的教训移除。
+	"claude-opus-5-5":   "claude-opus-5.5",
+	"claude-sonnet-5-5": "claude-sonnet-5.5",
 	// 非 Claude 系，点号原生形态本身就等于请求形态——kiroNativeName 的
 	// 透传正则只认 "claude-" 前缀，这三个必须显式收录才能透传，跟
 	// claude-opus-5/claude-sonnet-5（同样无小数点、regex 也不认）是同一
@@ -140,6 +146,8 @@ func DefaultModels() []string {
 		"claude-sonnet-4.5",
 		"claude-sonnet-4",
 		"claude-haiku-4.5",
+		"claude-opus-5.5",
+		"claude-sonnet-5.5",
 		"claude-opus-5",
 		"claude-sonnet-5",
 		"claude-opus-4.8",

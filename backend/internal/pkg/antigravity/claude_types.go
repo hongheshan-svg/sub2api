@@ -20,6 +20,13 @@ type ClaudeRequest struct {
 	Tools       []ClaudeTool    `json:"tools,omitempty"`
 	Thinking    *ThinkingConfig `json:"thinking,omitempty"`
 	Metadata    *ClaudeMetadata `json:"metadata,omitempty"`
+	// OutputConfig 只读取 effort：Claude 5.5 在 Antigravity 上按 effort 选上游模型。
+	OutputConfig *ClaudeOutputConfig `json:"output_config,omitempty"`
+}
+
+// ClaudeOutputConfig Claude output_config（仅 effort）
+type ClaudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // ClaudeMessage Claude 消息
@@ -169,6 +176,8 @@ type modelDef struct {
 var claudeModels = []modelDef{
 	{ID: "claude-fable-5-1", DisplayName: "Claude Fable 5.1", CreatedAt: "2026-09-01T00:00:00Z"},
 	{ID: "claude-fable-5", DisplayName: "Claude Fable 5", CreatedAt: "2026-06-09T00:00:00Z"},
+	{ID: "claude-opus-5-5", DisplayName: "Claude Opus 5.5", CreatedAt: "2026-09-22T00:00:00Z"},
+	{ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5", CreatedAt: "2026-09-28T00:00:00Z"},
 	{ID: "claude-opus-4-5-thinking", DisplayName: "Claude Opus 4.5 Thinking", CreatedAt: "2025-11-01T00:00:00Z"},
 	{ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5", CreatedAt: "2025-09-29T00:00:00Z"},
 	{ID: "claude-sonnet-4-5-thinking", DisplayName: "Claude Sonnet 4.5 Thinking", CreatedAt: "2025-09-29T00:00:00Z"},

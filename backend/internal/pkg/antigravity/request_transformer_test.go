@@ -694,3 +694,55 @@ func TestToolConfigAlwaysPresent(t *testing.T) {
 		})
 	}
 }
+
+// Claude 5.5 在 Antigravity 上按 effort 拆成 -low/-medium/-high 上游模型（依据第三方
+// 实现，待真实账号验证）：网关层只映射到基础 ID，转换时按 output_config.effort 选择。
+func TestTransformClaude55SelectsEffortVariant(t *testing.T) {
+	temperature := 0.2
+	for _, base := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
+		for effort, want := range map[string]string{
+			"low":    base + "-low",
+			"medium": base + "-medium",
+			"high":   base + "-high",
+			"xhigh":  base + "-high",
+			"max":    base + "-high",
+			"":       base + "-high",
+		} {
+			claudeReq := &ClaudeRequest{
+				Model:       base,
+				MaxTokens:   4096,
+				Messages:    []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+				Thinking:    &ThinkingConfig{Type: "enabled", BudgetTokens: 8000},
+				Temperature: &temperature,
+			}
+			if effort != "" {
+				claudeReq.OutputConfig = &ClaudeOutputConfig{Effort: effort}
+			}
+			body, err := TransformClaudeToGemini(claudeReq, "project-1", base)
+			require.NoError(t, err)
+			var req V1InternalRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			require.Equal(t, want, req.Model, "%s effort=%q", base, effort)
+			require.NotNil(t, req.Request.GenerationConfig)
+			require.NotNil(t, req.Request.GenerationConfig.ThinkingConfig)
+			// 手动预算被忽略，只用动态预算；采样参数不转发。
+			require.Equal(t, -1, req.Request.GenerationConfig.ThinkingConfig.ThinkingBudget)
+			require.Nil(t, req.Request.GenerationConfig.Temperature)
+		}
+	}
+
+	// 其它模型不受影响：effort 不改模型名，Opus 4.8 adaptive 仍覆写为高预算。
+	claudeReq := &ClaudeRequest{
+		Model:        "claude-opus-4-8",
+		MaxTokens:    64000,
+		Messages:     []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		Thinking:     &ThinkingConfig{Type: "adaptive"},
+		OutputConfig: &ClaudeOutputConfig{Effort: "low"},
+	}
+	body, err := TransformClaudeToGemini(claudeReq, "project-1", "claude-opus-4-8")
+	require.NoError(t, err)
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Equal(t, "claude-opus-4-8", req.Model)
+	require.Equal(t, ClaudeAdaptiveHighThinkingBudgetTokens, req.Request.GenerationConfig.ThinkingConfig.ThinkingBudget)
+}

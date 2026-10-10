@@ -114,8 +114,14 @@ const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
 	// Claude 白名单
-	"claude-fable-5-1":           "claude-fable-5-1",         // 官方模型
-	"claude-fable-5":             "claude-fable-5",           // 官方模型
+	"claude-fable-5-1": "claude-fable-5-1", // 官方模型
+	"claude-fable-5":   "claude-fable-5",   // 官方模型
+	// Claude 5.5：上游按 effort 拆成 -low/-medium/-high，由请求转换按 output_config.effort
+	// 选择（antigravity.antigravityClaude55UpstreamModel），这里只映射到基础 ID。待真实账号验证。
+	"claude-opus-5-5":            "claude-opus-5-5",
+	"claude-opus-5-5-thinking":   "claude-opus-5-5",
+	"claude-sonnet-5-5":          "claude-sonnet-5-5",
+	"claude-sonnet-5-5-thinking": "claude-sonnet-5-5",
 	"claude-opus-4-8":            "claude-opus-4-8",          // 官方模型
 	"claude-opus-4-7":            "claude-opus-4-7",          // 官方模型
 	"claude-opus-4-6-thinking":   "claude-opus-4-6-thinking", // 官方模型
