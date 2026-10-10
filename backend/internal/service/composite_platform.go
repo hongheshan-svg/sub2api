@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
@@ -203,12 +204,8 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 	return decision, decision.Matched, nil
 }
 
+// isConcreteRequestPlatform 报告 platform 是否为组合分组可解析到的具体平台
+// （fork：不含 kiro，见 domain.IsCompositeMemberPlatform）。
 func isConcreteRequestPlatform(platform string) bool {
-	switch platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok,
-		PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe:
-		return true
-	default:
-		return false
-	}
+	return domain.IsCompositeMemberPlatform(platform)
 }

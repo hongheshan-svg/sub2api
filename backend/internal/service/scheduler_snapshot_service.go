@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
@@ -608,18 +609,18 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 			continue
 		}
 		accountGroupIDs := s.normalizeGroupIDs(account.GroupIDs)
-		switch account.Platform {
-		case PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe:
+		switch {
+		case account.Platform == PlatformKiro:
+			// kiro 只能混入 anthropic（协议层不认识 Gemini），不清理 gemini 快照。
+			addPlatformGroups(PlatformKiro, accountGroupIDs)
+			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
+		case account.Platform != PlatformAntigravity && isConcreteRequestPlatform(account.Platform):
 			addPlatformGroups(account.Platform, accountGroupIDs)
-		case PlatformAntigravity:
+		case account.Platform == PlatformAntigravity:
 			// 批量更新可能刚关闭 mixed_scheduling，仍需清理两个兼容平台的旧快照。
 			addPlatformGroups(PlatformAntigravity, accountGroupIDs)
 			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
 			addPlatformGroups(PlatformGemini, accountGroupIDs)
-		case PlatformKiro:
-			// kiro 只能混入 anthropic（协议层不认识 Gemini），不清理 gemini 快照。
-			addPlatformGroups(PlatformKiro, accountGroupIDs)
-			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
 		default:
 			return s.rebuildByGroupIDs(ctx, rebuildGroupIDs, "account_bulk_change", seen)
 		}
@@ -832,15 +833,11 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	return s.rebuildBuckets(ctx, buckets, reason)
 }
 
-// schedulerSnapshotPlatforms 之前漏掉了 PlatformKiro（I6）——Kiro 账号的
-// model_rate_limits/账号级冷却变更因此从未触发过这里驱动的调度快照失效，
-// 只能等下一次全量同步才会被调度器看到。上游同步新增了 PlatformOpenCodeGo，
-// 与本 fork 的 kiro 补丁一起并入，数组从 [10]string 扩到 [11]string；之后 upstream 又新增
-// PlatformTypeSafe，扩到 [12]string。所有
-// 调用点都是 range 遍历或 `platforms[:]...` 全切片展开（数组长度对两者都不
-// 敏感，go build 会在假设有误时立刻报错）。
-func schedulerSnapshotPlatforms() [12]string {
-	return [12]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe, PlatformKiro}
+// schedulerSnapshotPlatforms 返回需要维护调度快照的全部具体平台（平台清单）。
+// fork：kiro 不参与组合分组、不在 CompositePrecedencePlatformIDs 中，这里单独追加——
+// 漏掉它会让 Kiro 账号的冷却变更永远不触发调度快照失效（I6）。
+func schedulerSnapshotPlatforms() []string {
+	return append(domain.CompositePrecedencePlatformIDs(), PlatformKiro)
 }
 
 // 生命周期辅助函数有意排除 group0；full rebuild 构造 group0 canonical 集时必须显式调用 canonical helper。
