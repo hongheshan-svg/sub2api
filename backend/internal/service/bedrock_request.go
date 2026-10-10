@@ -47,11 +47,12 @@ func BedrockCrossRegionPrefix(region string) string {
 	}
 }
 
-// claude55BedrockGeoPrefix 返回 Opus 5.5 / Haiku 5.5 在给定源区域可用的跨区域推理前缀。
-// 这两个模型在 bedrock-runtime 上只有 us / eu / jp / au（及 GovCloud）Geo 推理配置，
-// 没有 apac；其余源区域（孟买、新加坡、首尔、圣保罗、中东等）只能走 Global。
-// 大阪、墨尔本分别是 jp、au 配置的源区域。参见 AWS 模型卡片的 Regional availability。
-func claude55BedrockGeoPrefix(region string) string {
+// claude55BedrockGeoPrefix 返回 5.5 模型在给定源区域可用的跨区域推理前缀。
+// 它们在 bedrock-runtime 上只有 us / eu / jp / au（及 GovCloud）Geo 推理配置，
+// 没有 apac，Sonnet 5.5 也没有 jp；其余源区域（孟买、新加坡、首尔、圣保罗、
+// 中东等）只能走 Global。大阪、墨尔本分别是 jp、au 配置的源区域。
+// 参见 AWS 模型卡片的 Regional availability。
+func claude55BedrockGeoPrefix(modelID, region string) string {
 	switch {
 	case strings.HasPrefix(region, "us-gov"):
 		return "us-gov" // GovCloud 只有 Geo 配置，没有 Global
@@ -60,6 +61,9 @@ func claude55BedrockGeoPrefix(region string) string {
 	case strings.HasPrefix(region, "eu-"):
 		return "eu"
 	case region == "ap-northeast-1", region == "ap-northeast-3":
+		if claude.IsSonnet55(modelID) {
+			return "global" // Sonnet 5.5 没有 jp 配置
+		}
 		return "jp"
 	case region == "ap-southeast-2", region == "ap-southeast-4":
 		return "au"
@@ -76,8 +80,8 @@ func AdjustBedrockModelRegionPrefix(modelID, region string) string {
 	switch {
 	case region == "global":
 		targetPrefix = "global"
-	case claude.IsOpus55(modelID) || claude.IsHaiku55(modelID):
-		targetPrefix = claude55BedrockGeoPrefix(region)
+	case isClaude55SignedThinkingModel(modelID):
+		targetPrefix = claude55BedrockGeoPrefix(modelID, region)
 	default:
 		targetPrefix = BedrockCrossRegionPrefix(region)
 	}
@@ -151,15 +155,11 @@ func normalizeBedrockModelID(modelID string) (normalized string, shouldAdjustReg
 		return "", false, false
 	}
 	if mapped, exists := domain.DefaultBedrockModelMapping[modelID]; exists {
-		// Sonnet 5.5 currently has only a global inference profile on
-		// bedrock-runtime. A caller's AWS region selects the endpoint, but must
-		// not rewrite the profile ID to a regional one that does not exist.
-		if mapped == "global.anthropic.claude-sonnet-5-5" {
-			return mapped, false, true
-		}
 		return mapped, true, true
 	}
-	if modelID == "global.anthropic.claude-sonnet-5-5" {
+	// An explicitly configured global profile for a 5.5 model is kept as chosen
+	// rather than rewritten to the account region's geography profile.
+	if strings.HasPrefix(modelID, "global.") && isClaude55SignedThinkingModel(modelID) {
 		return modelID, false, true
 	}
 	if isRegionalBedrockModelID(modelID) {

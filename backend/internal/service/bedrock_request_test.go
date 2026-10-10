@@ -482,8 +482,14 @@ func TestBedrockCrossRegionPrefix(t *testing.T) {
 }
 
 func TestResolveBedrockModelID(t *testing.T) {
-	t.Run("sonnet 5.5 uses the global inference profile in every region", func(t *testing.T) {
-		for _, region := range []string{"us-east-1", "eu-west-1", "ap-southeast-2"} {
+	t.Run("sonnet 5.5 uses its geo profile and falls back to global", func(t *testing.T) {
+		for region, want := range map[string]string{
+			"us-east-1":      "us.anthropic.claude-sonnet-5-5",
+			"eu-west-1":      "eu.anthropic.claude-sonnet-5-5",
+			"ap-southeast-2": "au.anthropic.claude-sonnet-5-5",
+			"ap-northeast-1": "global.anthropic.claude-sonnet-5-5", // no jp profile
+			"ap-south-1":     "global.anthropic.claude-sonnet-5-5",
+		} {
 			account := &Account{
 				Platform: PlatformAnthropic,
 				Type:     AccountTypeBedrock,
@@ -493,7 +499,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 			}
 			modelID, ok := ResolveBedrockModelID(account, "claude-sonnet-5-5")
 			require.True(t, ok, region)
-			assert.Equal(t, "global.anthropic.claude-sonnet-5-5", modelID, region)
+			assert.Equal(t, want, modelID, region)
 		}
 	})
 
@@ -1207,8 +1213,11 @@ func TestResolveBedrockModelIDClaude55GeoProfiles(t *testing.T) {
 		"sa-east-1":      "global",
 		"me-central-1":   "global",
 	}
-	for _, model := range []string{"claude-opus-5-5", "claude-haiku-5-5"} {
+	for _, model := range []string{"claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"} {
 		for region, prefix := range cases {
+			if prefix == "jp" && model == "claude-sonnet-5-5" {
+				prefix = "global" // Sonnet 5.5 has no jp geo profile
+			}
 			account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
 				Credentials: map[string]any{"aws_region": region}}
 			modelID, ok := ResolveBedrockModelID(account, model)
@@ -1216,9 +1225,17 @@ func TestResolveBedrockModelIDClaude55GeoProfiles(t *testing.T) {
 			assert.Equal(t, prefix+".anthropic."+model, modelID, model+"/"+region)
 		}
 
+		// An explicitly configured global profile is kept as chosen.
+		explicitGlobal := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "eu-west-1",
+				"model_mapping": map[string]any{"alias": "global.anthropic." + model}}}
+		modelID, ok := ResolveBedrockModelID(explicitGlobal, "alias")
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+
 		forced := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
 			Credentials: map[string]any{"aws_region": "eu-west-1", "aws_force_global": "true"}}
-		modelID, ok := ResolveBedrockModelID(forced, model)
+		modelID, ok = ResolveBedrockModelID(forced, model)
 		require.True(t, ok)
 		assert.Equal(t, "global.anthropic."+model, modelID)
 

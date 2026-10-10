@@ -98,7 +98,7 @@ describe('useModelWhitelist', () => {
       expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'claude-sonnet-5-5' })
     ]))
     expect(getPresetMappingsByPlatform('bedrock')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'global.anthropic.claude-sonnet-5-5' })
+      expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5-5', to: 'us.anthropic.claude-sonnet-5-5' })
     ]))
   })
 
