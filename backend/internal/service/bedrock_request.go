@@ -47,14 +47,38 @@ func BedrockCrossRegionPrefix(region string) string {
 	}
 }
 
+// claude55BedrockGeoPrefix 返回 Opus 5.5 / Haiku 5.5 在给定源区域可用的跨区域推理前缀。
+// 这两个模型在 bedrock-runtime 上只有 us / eu / jp / au（及 GovCloud）Geo 推理配置，
+// 没有 apac；其余源区域（孟买、新加坡、首尔、圣保罗、中东等）只能走 Global。
+// 大阪、墨尔本分别是 jp、au 配置的源区域。参见 AWS 模型卡片的 Regional availability。
+func claude55BedrockGeoPrefix(region string) string {
+	switch {
+	case strings.HasPrefix(region, "us-gov"):
+		return "us-gov" // GovCloud 只有 Geo 配置，没有 Global
+	case strings.HasPrefix(region, "us-"), strings.HasPrefix(region, "ca-"):
+		return "us"
+	case strings.HasPrefix(region, "eu-"):
+		return "eu"
+	case region == "ap-northeast-1", region == "ap-northeast-3":
+		return "jp"
+	case region == "ap-southeast-2", region == "ap-southeast-4":
+		return "au"
+	default:
+		return "global"
+	}
+}
+
 // AdjustBedrockModelRegionPrefix 将模型 ID 的区域前缀替换为与当前 AWS Region 匹配的前缀
 // 例如 region=eu-west-1 时，"us.anthropic.claude-opus-4-6-v1" → "eu.anthropic.claude-opus-4-6-v1"
 // 特殊值 region="global" 强制使用 global. 前缀
 func AdjustBedrockModelRegionPrefix(modelID, region string) string {
 	var targetPrefix string
-	if region == "global" {
+	switch {
+	case region == "global":
 		targetPrefix = "global"
-	} else {
+	case claude.IsOpus55(modelID) || claude.IsHaiku55(modelID):
+		targetPrefix = claude55BedrockGeoPrefix(region)
+	default:
 		targetPrefix = BedrockCrossRegionPrefix(region)
 	}
 
@@ -249,10 +273,11 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	// 参考 litellm: _convert_output_format_to_inline_schema()
 	body = convertOutputFormatToInlineSchema(body)
 
-	// InvokeModel accepts output_config.effort for Sonnet 5.5. Keep just that
+	// InvokeModel accepts output_config.effort for the 5.5 models (Opus 5.5
+	// cannot disable thinking, so effort is its only control). Keep just that
 	// field; output_config.format has already been inlined above, and older
 	// models retain the existing output_config stripping behavior.
-	if claude.IsSonnet55(modelID) {
+	if isClaude55SignedThinkingModel(modelID) {
 		if effort := gjson.GetBytes(body, "output_config.effort"); effort.Exists() {
 			body, err = sjson.SetRawBytes(body, "output_config", []byte(`{"effort":`+effort.Raw+`}`))
 		} else {
@@ -731,6 +756,8 @@ const defaultThinkingBudgetTokens = 10000
 
 // sanitizeBedrockThinking 修复 thinking 字段的 Bedrock 兼容性问题：
 //   - Sonnet 5.5: enabled 改为 adaptive；disabled 改为 between_tools
+//   - Opus 5.5: enabled 改为 adaptive；disabled 删除（thinking 不能关闭）
+//   - Haiku 5.5: enabled 改为 adaptive（disabled 保留）
 //   - Fable 5: 仅使用 always-on adaptive thinking，不支持手动 budget_tokens
 //   - Opus 4.7+: 仅支持 "adaptive"，将 "enabled" 转换为 "adaptive" 并移除 budget_tokens
 //   - 其他模型: "enabled" 必须带 budget_tokens，缺失时补充默认值
@@ -762,6 +789,27 @@ func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		case "disabled":
 			body, _ = sjson.SetBytes(body, "thinking.type", "between_tools")
+		}
+		return body
+	}
+
+	if claude.IsOpus55(modelID) {
+		// Opus 5.5 不能关闭 thinking：enabled 改 adaptive，disabled 删除（省略即 adaptive）。
+		switch thinkingType {
+		case "enabled":
+			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+		case "disabled":
+			body, _ = sjson.DeleteBytes(body, "thinking")
+		}
+		return body
+	}
+
+	if claude.IsHaiku55(modelID) {
+		// Haiku 5.5 拒绝手动 budget_tokens；disabled 在 effort ≤ high 时合法，保留。
+		if thinkingType == "enabled" {
+			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		}
 		return body
 	}

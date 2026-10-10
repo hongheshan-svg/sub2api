@@ -108,6 +108,13 @@ describe('useModelWhitelist', () => {
     ]))
   })
 
+  it('Bedrock 预设包含 Opus 5.5 与 Haiku 5.5 的跨区域推理配置', () => {
+    expect(getPresetMappingsByPlatform('bedrock')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'us.anthropic.claude-opus-5-5' }),
+      expect.objectContaining({ label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'us.anthropic.claude-haiku-5-5' })
+    ]))
+  })
+
   it('xAI 模型列表包含 Grok 4.5 官方模型和别名', () => {
     const models = getModelsByPlatform('grok')
 
