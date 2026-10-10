@@ -84,9 +84,9 @@ describe('useModelWhitelist', () => {
     expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
     expect(getModelsByPlatform('claude')).toContain('claude-opus-5-5')
-    expect(getModelsByPlatform('antigravity')).not.toContain('claude-opus-5-5')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-opus-5-5')
     expect(getModelsByPlatform('claude')).toContain('claude-sonnet-5-5')
-    expect(getModelsByPlatform('antigravity')).not.toContain('claude-sonnet-5-5')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-sonnet-5-5')
     expect(getModelsByPlatform('claude')).toContain('claude-haiku-5-5')
     expect(getModelsByPlatform('antigravity')).not.toContain('claude-haiku-5-5')
     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
@@ -105,6 +105,15 @@ describe('useModelWhitelist', () => {
   it('Claude Haiku 5.5 预设使用官方模型 ID', () => {
     expect(getPresetMappingsByPlatform('claude')).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'claude-haiku-5-5' })
+    ]))
+  })
+
+  it('Kiro 列表与预设包含 Opus 5.5 / Sonnet 5.5 的点号形态', () => {
+    expect(getModelsByPlatform('kiro')).toEqual(expect.arrayContaining(['claude-opus-5.5', 'claude-sonnet-5.5']))
+    expect(getModelsByPlatform('kiro')).not.toContain('claude-haiku-5.5')
+    expect(getPresetMappingsByPlatform('kiro')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Opus 5.5', from: 'claude-opus-5.5', to: 'claude-opus-5.5' }),
+      expect.objectContaining({ label: 'Sonnet 5.5', from: 'claude-sonnet-5.5', to: 'claude-sonnet-5.5' })
     ]))
   })
 
@@ -223,6 +232,7 @@ describe('useModelWhitelist', () => {
 
     // 2026-09-06：opus-4.5/4.6/4.7/4.8、sonnet-5 经真实账号权威接口
     // ListAvailableModels 核实后加入，与后端 kiro.DefaultModels() 同步更新。
+    // 2026-10-11：opus-5.5/sonnet-5.5 依据 Kiro 官方公告加入，待真实账号核实。
     // gpt-5.6-sol/terra/luna 走 /backend-api/codex/responses（Codex 端点），
     // 与上面的 claude-* 系列从不混用，见 kiro_gateway_service.go 的
     // kiroOutputProtocol 说明。
@@ -231,6 +241,8 @@ describe('useModelWhitelist', () => {
       'claude-sonnet-4.5',
       'claude-sonnet-4',
       'claude-haiku-4.5',
+      'claude-opus-5.5',
+      'claude-sonnet-5.5',
       'claude-opus-5',
       'claude-sonnet-5',
       'claude-opus-4.8',
