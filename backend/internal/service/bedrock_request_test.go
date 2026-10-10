@@ -564,7 +564,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 		assert.Equal(t, "eu.anthropic.claude-opus-4-8-v1", modelID)
 	})
 
-	t.Run("默认 Fable 5 映射使用官方 Bedrock 模型 ID", func(t *testing.T) {
+	t.Run("默认 Fable 5 映射在欧洲区域走 Global 推理配置", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformAnthropic,
 			Type:     AccountTypeBedrock,
@@ -575,10 +575,10 @@ func TestResolveBedrockModelID(t *testing.T) {
 
 		modelID, ok := ResolveBedrockModelID(account, "claude-fable-5")
 		require.True(t, ok)
-		assert.Equal(t, "anthropic.claude-fable-5", modelID)
+		assert.Equal(t, "global.anthropic.claude-fable-5", modelID)
 	})
 
-	t.Run("默认 Fable 5.1 映射使用官方 Bedrock 模型 ID", func(t *testing.T) {
+	t.Run("默认 Fable 5.1 映射在欧洲区域走 Global 推理配置", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformAnthropic,
 			Type:     AccountTypeBedrock,
@@ -589,7 +589,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 
 		modelID, ok := ResolveBedrockModelID(account, "claude-fable-5-1")
 		require.True(t, ok)
-		assert.Equal(t, "anthropic.claude-fable-5-1", modelID)
+		assert.Equal(t, "global.anthropic.claude-fable-5-1", modelID)
 	})
 
 	t.Run("force global rewrites anthropic regional model id", func(t *testing.T) {
@@ -1254,6 +1254,56 @@ func TestResolveBedrockModelIDClaude55GeoProfiles(t *testing.T) {
 	modelID, ok := ResolveBedrockModelID(account, "claude-opus-4-8")
 	require.True(t, ok)
 	assert.Equal(t, "apac.anthropic.claude-opus-4-8-v1", modelID)
+}
+
+func TestResolveBedrockModelIDFableGeoProfiles(t *testing.T) {
+	cases := map[string]string{
+		"us-east-1":     "us",
+		"us-west-2":     "us",
+		"ca-central-1":  "us",
+		"ca-west-1":     "us",
+		"us-gov-west-1": "us-gov",
+		// Fable has only the us geo profile: every other region uses global.
+		"eu-west-1":      "global",
+		"eu-central-1":   "global",
+		"ap-northeast-1": "global",
+		"ap-southeast-2": "global",
+		"ap-south-1":     "global",
+		"sa-east-1":      "global",
+		"mx-central-1":   "global",
+		"me-central-1":   "global",
+	}
+	for _, model := range []string{"claude-fable-5", "claude-fable-5-1"} {
+		for region, prefix := range cases {
+			account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+				Credentials: map[string]any{"aws_region": region}}
+			modelID, ok := ResolveBedrockModelID(account, model)
+			require.True(t, ok, model+"/"+region)
+			assert.Equal(t, prefix+".anthropic."+model, modelID, model+"/"+region)
+		}
+
+		// An explicitly configured global profile is kept as chosen.
+		explicitGlobal := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "us-east-1",
+				"model_mapping": map[string]any{"alias": "global.anthropic." + model}}}
+		modelID, ok := ResolveBedrockModelID(explicitGlobal, "alias")
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+
+		forced := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "us-east-1", "aws_force_global": "true"}}
+		modelID, ok = ResolveBedrockModelID(forced, model)
+		require.True(t, ok)
+		assert.Equal(t, "global.anthropic."+model, modelID)
+
+		// An explicit in-region model ID is passed through unchanged.
+		inRegion := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
+			Credentials: map[string]any{"aws_region": "us-east-1",
+				"model_mapping": map[string]any{"alias": "anthropic." + model}}}
+		modelID, ok = ResolveBedrockModelID(inRegion, "alias")
+		require.True(t, ok)
+		assert.Equal(t, "anthropic."+model, modelID)
+	}
 }
 
 func TestPrepareBedrockClaude55PreservesEffort(t *testing.T) {
