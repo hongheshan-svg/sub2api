@@ -580,7 +580,7 @@ func StripEmptyTextBlocks(body []byte) []byte {
 // isClaude55SignedThinkingModel identifies models whose default thinking mode
 // requires signed history to survive protocol conversion and request filtering.
 func isClaude55SignedThinkingModel(model string) bool {
-	return claude.IsOpus55(model) || claude.IsSonnet55(model)
+	return claude.IsOpus55(model) || claude.IsSonnet55(model) || claude.IsHaiku55(model)
 }
 
 // validateClaude55Request rejects settings that the upstream cannot honor.
@@ -588,6 +588,9 @@ func isClaude55SignedThinkingModel(model string) bool {
 func validateClaude55Request(body []byte, model string) error {
 	if !isClaude55SignedThinkingModel(model) {
 		return nil
+	}
+	if claude.IsHaiku55(model) {
+		return validateHaiku55Request(body)
 	}
 	isSonnet55 := claude.IsSonnet55(model)
 	switch gjson.GetBytes(body, "thinking.type").String() {
@@ -631,6 +634,39 @@ func validateClaude55Request(body []byte, model string) error {
 		if gjson.GetBytes(body, "top_k").Exists() {
 			return fmt.Errorf("claude-sonnet-5-5 does not support top_k")
 		}
+	}
+	return nil
+}
+
+// validateHaiku55Request applies Haiku 5.5's rules, which differ from the other
+// 5.5 models: forced tool_choice is accepted, and thinking can be disabled at
+// effort high or below. Manual budgets, between_tools and any non-default
+// sampling parameter are rejected; temperature and top_p cannot be combined.
+func validateHaiku55Request(body []byte) error {
+	switch gjson.GetBytes(body, "thinking.type").String() {
+	case "enabled":
+		return fmt.Errorf("claude-haiku-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
+	case "between_tools":
+		return fmt.Errorf("claude-haiku-5-5 does not support thinking.type=between_tools")
+	case "disabled":
+		effort := gjson.GetBytes(body, "output_config.effort").String()
+		if effort == "xhigh" || effort == "max" {
+			return fmt.Errorf("claude-haiku-5-5 thinking.type=disabled supports only low, medium or high effort")
+		}
+	}
+	temperature := gjson.GetBytes(body, "temperature")
+	topP := gjson.GetBytes(body, "top_p")
+	if temperature.Exists() && topP.Exists() {
+		return fmt.Errorf("claude-haiku-5-5 does not support setting both temperature and top_p")
+	}
+	if temperature.Exists() && (temperature.Type != gjson.Number || temperature.Float() != 1) {
+		return fmt.Errorf("claude-haiku-5-5 does not support non-default temperature")
+	}
+	if topP.Exists() && (topP.Type != gjson.Number || topP.Float() != 0.99) {
+		return fmt.Errorf("claude-haiku-5-5 does not support non-default top_p")
+	}
+	if gjson.GetBytes(body, "top_k").Exists() {
+		return fmt.Errorf("claude-haiku-5-5 does not support top_k")
 	}
 	return nil
 }

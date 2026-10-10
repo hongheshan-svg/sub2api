@@ -388,7 +388,7 @@ func TestFilterThinkingBlocksForRetry_DisablesThinkingAndPreservesAsText(t *test
 
 func TestClaude55FilterThinkingBlocksRemovesSignedChainAfterInvalidBlock(t *testing.T) {
 	input := []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"old","signature":""},{"type":"text","text":"answer"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"later","signature":"valid"},{"type":"redacted_thinking","data":"encrypted"},{"type":"text","text":"later answer"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"only thought","signature":"valid"}]}]}`)
-	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5"} {
+	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"} {
 		t.Run(model, func(t *testing.T) {
 			out := FilterThinkingBlocks(input, model)
 			require.False(t, gjson.GetBytes(out, "messages.0.content.#(type==thinking)").Exists())
@@ -398,6 +398,56 @@ func TestClaude55FilterThinkingBlocksRemovesSignedChainAfterInvalidBlock(t *test
 			require.Equal(t, "(assistant content removed)", gjson.GetBytes(out, "messages.2.content.0.text").String())
 		})
 	}
+}
+
+func TestValidateHaiku55Request(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"defaults", `{}`, ""},
+		{"adaptive xhigh", `{"thinking":{"type":"adaptive"},"output_config":{"effort":"xhigh"}}`, ""},
+		{"disabled at high", `{"thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`, ""},
+		{"disabled at default effort", `{"thinking":{"type":"disabled"}}`, ""},
+		{"forced tool_choice", `{"tool_choice":{"type":"tool","name":"lookup"}}`, ""},
+		{"any tool_choice", `{"tool_choice":{"type":"any"}}`, ""},
+		{"default temperature", `{"temperature":1}`, ""},
+		{"default top_p", `{"top_p":0.99}`, ""},
+		{"disabled at max", `{"thinking":{"type":"disabled"},"output_config":{"effort":"max"}}`, "only low, medium or high effort"},
+		{"disabled at xhigh", `{"thinking":{"type":"disabled"},"output_config":{"effort":"xhigh"}}`, "only low, medium or high effort"},
+		{"manual budget", `{"thinking":{"type":"enabled","budget_tokens":2048}}`, "requires adaptive thinking"},
+		{"between_tools", `{"thinking":{"type":"between_tools"}}`, "between_tools"},
+		{"zero temperature", `{"temperature":0}`, "non-default temperature"},
+		{"top_p of 1", `{"top_p":1}`, "non-default top_p"},
+		{"temperature and top_p", `{"temperature":1,"top_p":0.99}`, "both temperature and top_p"},
+		{"top_k", `{"top_k":5}`, "top_k"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, model := range []string{"claude-haiku-5-5", "anthropic/claude-haiku-5.5", "us.anthropic.claude-haiku-5-5"} {
+				err := validateClaude55Request([]byte(tc.body), model)
+				if tc.wantErr == "" {
+					require.NoError(t, err, model)
+				} else {
+					require.ErrorContains(t, err, tc.wantErr, model)
+				}
+			}
+		})
+	}
+	// Haiku 4.5 keeps accepting manual budgets and sampling parameters.
+	require.NoError(t, validateClaude55Request([]byte(`{"temperature":0,"top_k":5,"thinking":{"type":"enabled","budget_tokens":2048}}`), "claude-haiku-4-5"))
+}
+
+func TestHaiku55OAuthBodySkipsTemperatureWhenTopPPresent(t *testing.T) {
+	withTopP := []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"}],"top_p":0.99}`)
+	out, _ := normalizeClaudeOAuthRequestBody(withTopP, "claude-haiku-5-5", claudeOAuthNormalizeOptions{})
+	require.False(t, gjson.GetBytes(out, "temperature").Exists())
+	require.NoError(t, validateClaude55Request(out, "claude-haiku-5-5"))
+
+	plain := []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"}]}`)
+	out, _ = normalizeClaudeOAuthRequestBody(plain, "claude-haiku-5-5", claudeOAuthNormalizeOptions{})
+	require.Equal(t, float64(1), gjson.GetBytes(out, "temperature").Float())
+	require.NoError(t, validateClaude55Request(out, "claude-haiku-5-5"))
 }
 
 func TestSonnet55RetryKeepsBetweenToolsMode(t *testing.T) {
