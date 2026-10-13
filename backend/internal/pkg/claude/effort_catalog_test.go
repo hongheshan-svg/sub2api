@@ -18,10 +18,11 @@ func TestEffortLevelsForModel(t *testing.T) {
 		{model: "claude-opus-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
 		{model: "anthropic/claude-opus-5.5", want: []string{"low", "medium", "high", "xhigh", "max"}},
 		{model: "claude-sonnet-5-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
-		{model: "us.anthropic.claude-sonnet-5-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
-		{model: "claude-opus-4-5-20251101", want: []string{"low", "medium", "high"}},
 		{model: "claude-haiku-5-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
 		{model: "anthropic/claude-haiku-5.5", want: []string{"low", "medium", "high", "xhigh", "max"}},
+		{model: "us.anthropic.claude-haiku-5-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
+		{model: "us.anthropic.claude-sonnet-5-5", want: []string{"low", "medium", "high", "xhigh", "max"}},
+		{model: "claude-opus-4-5-20251101", want: []string{"low", "medium", "high"}},
 		{model: "claude-haiku-4-5-20251001", want: nil},
 		{model: "gpt-5.6", want: nil},
 	}
@@ -66,12 +67,12 @@ func TestIsHaiku55(t *testing.T) {
 		"claude-haiku-5-5",
 		"anthropic/claude-haiku-5.5",
 		"anthropic.claude-haiku-5-5",
-		"global.anthropic.claude-haiku-5-5",
 		"us.anthropic.claude-haiku-5-5",
+		"global.anthropic.claude-haiku-5-5-thinking",
 	} {
 		require.True(t, IsHaiku55(model), model)
 	}
-	for _, model := range []string{"claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-haiku-5-5-preview", "claude-sonnet-5-5"} {
+	for _, model := range []string{"claude-haiku-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"} {
 		require.False(t, IsHaiku55(model), model)
 	}
 }
