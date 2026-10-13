@@ -998,6 +998,7 @@ var ProviderSet = wire.NewSet(
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
+	NewNotificationService,
 	ProvidePaymentOrderExpiryService,
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
@@ -1029,10 +1030,17 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
 	return svc
 }
 
-// ProvidePaymentService creates PaymentService and attaches notification email delivery.
-func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService) *PaymentService {
+// ProvidePaymentService creates PaymentService and attaches notification email delivery
+// plus the fork-only invoice dependencies (in-app notifier, invoice settings, invoice
+// email sender, user lookup). These used to be hand-written into wire_gen.go and were
+// silently dropped whenever Wire regenerated it.
+func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService, notificationService *NotificationService, settingService *SettingService, emailService *EmailService, userService *UserService) *PaymentService {
 	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService)
 	svc.SetNotificationEmailService(notificationEmailService)
+	svc.SetInvoiceNotifier(notificationService)
+	svc.SetInvoiceSettingService(settingService)
+	svc.SetInvoiceEmailSender(emailService)
+	svc.SetUserService(userService)
 	return svc
 }
 
