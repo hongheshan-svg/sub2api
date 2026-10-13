@@ -35,3 +35,28 @@ func TestProvideTimingWheelService_Success(t *testing.T) {
 	}
 	svc.Stop()
 }
+
+// 发票依赖必须由 provider 注入：之前这几个 setter 只手写在 wire_gen.go 里，
+// 重新生成 Wire 后会被静默丢掉，编译照过但发票通知/邮件不再发出。
+func TestProvidePaymentService_WiresInvoiceDependencies(t *testing.T) {
+	notificationService := &NotificationService{}
+	settingService := &SettingService{}
+	emailService := &EmailService{}
+	userService := &UserService{}
+
+	svc := ProvidePaymentService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		notificationService, settingService, emailService, userService)
+
+	if svc.invoiceNotifier != notificationService {
+		t.Fatalf("invoiceNotifier 未注入")
+	}
+	if svc.invoiceSettingService != settingService {
+		t.Fatalf("invoiceSettingService 未注入")
+	}
+	if svc.invoiceEmailSender != emailService {
+		t.Fatalf("invoiceEmailSender 未注入")
+	}
+	if svc.userService != userService {
+		t.Fatalf("userService 未注入")
+	}
+}
