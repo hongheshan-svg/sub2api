@@ -106,7 +106,7 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		if claudeReq.OutputConfig != nil {
 			effort = claudeReq.OutputConfig.Effort
 		}
-		targetModel = antigravityClaude55UpstreamModel(targetModel, effort)
+		targetModel = antigravityClaude55UpstreamModel(claudeReq.Model, targetModel, effort)
 	}
 
 	// 检测是否启用 thinking
@@ -596,6 +596,7 @@ func buildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 					ID: block.ToolUseID,
 				},
 			})
+			parts = append(parts, extractToolResultInlineParts(block.Content)...)
 		}
 	}
 
@@ -646,6 +647,31 @@ func parseToolResultContent(content json.RawMessage, isError bool) string {
 	return string(content)
 }
 
+func extractToolResultInlineParts(content json.RawMessage) []GeminiPart {
+	if len(content) == 0 {
+		return nil
+	}
+	var innerBlocks []ContentBlock
+	if err := json.Unmarshal(content, &innerBlocks); err != nil {
+		return nil
+	}
+	var inlineParts []GeminiPart
+	for _, item := range innerBlocks {
+		if (item.Type == "image" || item.Type == "document") &&
+			item.Source != nil &&
+			item.Source.Type == "base64" &&
+			strings.TrimSpace(item.Source.Data) != "" {
+			inlineParts = append(inlineParts, GeminiPart{
+				InlineData: &GeminiInlineData{
+					MimeType: item.Source.MediaType,
+					Data:     item.Source.Data,
+				},
+			})
+		}
+	}
+	return inlineParts
+}
+
 // buildGenerationConfig 构建 generationConfig
 const (
 	defaultMaxOutputTokens    = 64000
@@ -660,21 +686,30 @@ func maxOutputTokensLimit(model string) int {
 	return maxOutputTokensUpperBound
 }
 
-// Antigravity 上的 Claude 5.5 按 effort 拆成 <base>-low / -medium / -high 三个上游
-// 模型（依据第三方实现 decolua/9router，待真实账号验证）。网关层只映射到基础 ID，
-// 计费与限流按基础 ID 进行；这里按 output_config.effort 选出上游模型，xhigh / max
-// 收敛到 high，未指定时用 high（与 Antigravity 客户端的 "Thinking" 选项一致）。
-func antigravityClaude55UpstreamModel(model, effort string) string {
-	if model != "claude-opus-5-5" && model != "claude-sonnet-5-5" {
-		return model
+// Antigravity 上的 Claude 5.5 按 effort 拆成 <base>-low / -medium / -high 三个上游模型，
+// 默认映射把基础 ID 指向 -high，计费按基础 ID 价格。fork 扩展：客户端请求基础 ID 且映射到
+// 默认的 -high 时，按 output_config.effort 选档（xhigh / max / 未指定收敛到 high）；映射目标
+// 仍是裸基础 ID（fork 旧版默认映射/预设持久化下来的条目，上游没有该模型）时同样选档。
+// 显式请求某一档或映射到其它模型时不改。
+func antigravityClaude55UpstreamModel(requestedModel, targetModel, effort string) string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	base := ""
+	for _, candidate := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
+		if targetModel == candidate || (targetModel == candidate+"-high" && requestedModel == candidate) {
+			base = candidate
+			break
+		}
+	}
+	if base == "" {
+		return targetModel
 	}
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low":
-		return model + "-low"
+		return base + "-low"
 	case "medium":
-		return model + "-medium"
+		return base + "-medium"
 	default:
-		return model + "-high"
+		return base + "-high"
 	}
 }
 

@@ -695,40 +695,117 @@ func TestToolConfigAlwaysPresent(t *testing.T) {
 	}
 }
 
-// Claude 5.5 在 Antigravity 上按 effort 拆成 -low/-medium/-high 上游模型（依据第三方
-// 实现，待真实账号验证）：网关层只映射到基础 ID，转换时按 output_config.effort 选择。
+func TestTransformClaudeToGemini_ToolResultImagesReachUpstream(t *testing.T) {
+	claudeReq := &ClaudeRequest{
+		Model: "claude-sonnet-4-5",
+		Messages: []ClaudeMessage{
+			{
+				Role: "assistant",
+				Content: json.RawMessage(`[
+					{"type":"tool_use","id":"toolu_img_1","name":"read_image","input":{"path":"colors.png"}}
+				]`),
+			},
+			{
+				Role: "user",
+				Content: json.RawMessage(`[
+					{
+						"type":"tool_result",
+						"tool_use_id":"toolu_img_1",
+						"content":[
+							{"type":"text","text":"loaded colors.png"},
+							{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+						]
+					},
+					{
+						"type":"tool_result",
+						"tool_use_id":"toolu_img_1",
+						"content":[
+							{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"d29ybGQ="}}
+						]
+					}
+				]`),
+			},
+		},
+	}
+
+	body, err := TransformClaudeToGeminiWithOptions(claudeReq, "project-1", "claude-sonnet-4-5", DefaultTransformOptions())
+	require.NoError(t, err)
+
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Len(t, req.Request.Contents, 2)
+
+	userParts := req.Request.Contents[1].Parts
+	require.Len(t, userParts, 4)
+
+	require.NotNil(t, userParts[0].FunctionResponse)
+	require.Equal(t, "read_image", userParts[0].FunctionResponse.Name)
+	require.Equal(t, "toolu_img_1", userParts[0].FunctionResponse.ID)
+	require.Equal(t, "loaded colors.png", userParts[0].FunctionResponse.Response["result"])
+
+	require.NotNil(t, userParts[1].InlineData)
+	require.Equal(t, "image/png", userParts[1].InlineData.MimeType)
+	require.Equal(t, "aGVsbG8=", userParts[1].InlineData.Data)
+
+	require.NotNil(t, userParts[2].FunctionResponse)
+	require.Equal(t, "read_image", userParts[2].FunctionResponse.Name)
+	require.Equal(t, "Command executed successfully.", userParts[2].FunctionResponse.Response["result"])
+
+	require.NotNil(t, userParts[3].InlineData)
+	require.Equal(t, "image/jpeg", userParts[3].InlineData.MimeType)
+	require.Equal(t, "d29ybGQ=", userParts[3].InlineData.Data)
+}
+
+// Claude 5.5 在 Antigravity 上按 effort 拆成 -low/-medium/-high 上游模型，默认映射把基础 ID
+// 指向 -high。fork 扩展：客户端请求基础 ID 时按 output_config.effort 选档；映射目标仍是裸
+// 基础 ID（fork 旧版默认映射/预设持久化下来的条目）时同样选档，避免把上游不存在的裸名发出去。
 func TestTransformClaude55SelectsEffortVariant(t *testing.T) {
 	temperature := 0.2
 	for _, base := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
-		for effort, want := range map[string]string{
-			"low":    base + "-low",
-			"medium": base + "-medium",
-			"high":   base + "-high",
-			"xhigh":  base + "-high",
-			"max":    base + "-high",
-			"":       base + "-high",
-		} {
-			claudeReq := &ClaudeRequest{
-				Model:       base,
-				MaxTokens:   4096,
-				Messages:    []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
-				Thinking:    &ThinkingConfig{Type: "enabled", BudgetTokens: 8000},
-				Temperature: &temperature,
+		for _, mapped := range []string{base + "-high", base} {
+			for effort, want := range map[string]string{
+				"low":    base + "-low",
+				"medium": base + "-medium",
+				"high":   base + "-high",
+				"xhigh":  base + "-high",
+				"max":    base + "-high",
+				"":       base + "-high",
+			} {
+				claudeReq := &ClaudeRequest{
+					Model:       base,
+					MaxTokens:   4096,
+					Messages:    []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+					Thinking:    &ThinkingConfig{Type: "enabled", BudgetTokens: 8000},
+					Temperature: &temperature,
+				}
+				if effort != "" {
+					claudeReq.OutputConfig = &ClaudeOutputConfig{Effort: effort}
+				}
+				body, err := TransformClaudeToGemini(claudeReq, "project-1", mapped)
+				require.NoError(t, err)
+				var req V1InternalRequest
+				require.NoError(t, json.Unmarshal(body, &req))
+				require.Equal(t, want, req.Model, "%s -> %s effort=%q", base, mapped, effort)
+				require.NotNil(t, req.Request.GenerationConfig)
+				require.NotNil(t, req.Request.GenerationConfig.ThinkingConfig)
+				// 手动预算被忽略，只用动态预算；采样参数不转发。
+				require.Equal(t, -1, req.Request.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				require.Nil(t, req.Request.GenerationConfig.Temperature)
 			}
-			if effort != "" {
-				claudeReq.OutputConfig = &ClaudeOutputConfig{Effort: effort}
-			}
-			body, err := TransformClaudeToGemini(claudeReq, "project-1", base)
-			require.NoError(t, err)
-			var req V1InternalRequest
-			require.NoError(t, json.Unmarshal(body, &req))
-			require.Equal(t, want, req.Model, "%s effort=%q", base, effort)
-			require.NotNil(t, req.Request.GenerationConfig)
-			require.NotNil(t, req.Request.GenerationConfig.ThinkingConfig)
-			// 手动预算被忽略，只用动态预算；采样参数不转发。
-			require.Equal(t, -1, req.Request.GenerationConfig.ThinkingConfig.ThinkingBudget)
-			require.Nil(t, req.Request.GenerationConfig.Temperature)
 		}
+
+		// 显式请求某一档时尊重请求，effort 不改写模型名。
+		claudeReq := &ClaudeRequest{
+			Model:        base + "-high",
+			MaxTokens:    4096,
+			Messages:     []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+			OutputConfig: &ClaudeOutputConfig{Effort: "low"},
+		}
+		body, err := TransformClaudeToGemini(claudeReq, "project-1", base+"-high")
+		require.NoError(t, err)
+		var req V1InternalRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		require.Equal(t, base+"-high", req.Model)
 	}
 
 	// 其它模型不受影响：effort 不改模型名，Opus 4.8 adaptive 仍覆写为高预算。

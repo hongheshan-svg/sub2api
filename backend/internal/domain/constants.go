@@ -114,14 +114,16 @@ const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
 	// Claude 白名单
-	"claude-fable-5-1": "claude-fable-5-1", // 官方模型
-	"claude-fable-5":   "claude-fable-5",   // 官方模型
-	// Claude 5.5：上游按 effort 拆成 -low/-medium/-high，由请求转换按 output_config.effort
-	// 选择（antigravity.antigravityClaude55UpstreamModel），这里只映射到基础 ID。待真实账号验证。
-	"claude-opus-5-5":            "claude-opus-5-5",
-	"claude-opus-5-5-thinking":   "claude-opus-5-5",
-	"claude-sonnet-5-5":          "claude-sonnet-5-5",
-	"claude-sonnet-5-5-thinking": "claude-sonnet-5-5",
+	"claude-fable-5-1":           "claude-fable-5-1",         // 官方模型
+	"claude-fable-5":             "claude-fable-5",           // 官方模型
+	"claude-opus-5-5":            "claude-opus-5-5-high",     // 简称映射
+	"claude-opus-5-5-high":       "claude-opus-5-5-high",     // 官方模型
+	"claude-opus-5-5-medium":     "claude-opus-5-5-medium",   // 官方模型
+	"claude-opus-5-5-low":        "claude-opus-5-5-low",      // 官方模型
+	"claude-sonnet-5-5":          "claude-sonnet-5-5-high",   // 简称映射
+	"claude-sonnet-5-5-high":     "claude-sonnet-5-5-high",   // 官方模型
+	"claude-sonnet-5-5-medium":   "claude-sonnet-5-5-medium", // 官方模型
+	"claude-sonnet-5-5-low":      "claude-sonnet-5-5-low",    // 官方模型
 	"claude-opus-4-8":            "claude-opus-4-8",          // 官方模型
 	"claude-opus-4-7":            "claude-opus-4-7",          // 官方模型
 	"claude-opus-4-6-thinking":   "claude-opus-4-6-thinking", // 官方模型
@@ -179,6 +181,11 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3.8-flash-low":    "gemini-3.8-flash-low",
 	"gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
 	"gemini-3.8-flash-tiered": "gemini-3.8-flash-tiered",
+	// Gemini 4 Argon tiered models
+	"gemini-4-argon":        "gemini-4-argon-high",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",
