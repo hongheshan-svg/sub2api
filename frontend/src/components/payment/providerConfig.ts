@@ -67,6 +67,12 @@ export const PAYMENT_MODE_POPUP = 'popup'
  * precreate→pagepay flow. */
 export const PAYMENT_MODE_REDIRECT = 'redirect'
 
+/** fork: EasyPay notifyConfirm 取值（后端只认 off 为关闭，其余按开启处理）；labelKey 由对话框翻译。 */
+export const EASYPAY_NOTIFY_CONFIRM_OPTIONS: TypeOption[] = [
+  { value: 'query', label: 'query', labelKey: 'admin.settings.payment.notifyConfirmQuery' },
+  { value: 'off', label: 'off', labelKey: 'admin.settings.payment.notifyConfirmOff' },
+]
+
 export const PAYMENT_CURRENCY_OPTIONS: TypeOption[] = [
   { value: 'CNY', label: 'CNY' },
   { value: 'HKD', label: 'HKD' },
@@ -131,6 +137,8 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
     { key: 'apiBase', label: '', sensitive: false },
     { key: 'cidAlipay', label: '', sensitive: false, optional: true },
     { key: 'cidWxpay', label: '', sensitive: false, optional: true },
+    // fork: 回调入账前是否调用易支付查单接口确认，支付FM 等没有 act=order 的平台需关闭。
+    { key: 'notifyConfirm', label: '', sensitive: false, defaultValue: 'query', hintKey: 'admin.settings.payment.field_notifyConfirmHint', options: EASYPAY_NOTIFY_CONFIRM_OPTIONS },
   ],
   alipay: [
     { key: 'appId', label: 'App ID', sensitive: false },
