@@ -411,7 +411,7 @@ func (e *EasyPay) queryOrder(ctx context.Context, outTradeNo string) (*easyPayQu
 // own order state (paid, amount, trade_no). The query is sent to this
 // instance's own apiBase with its own credentials.
 func (e *EasyPay) ConfirmNotification(ctx context.Context, n *payment.PaymentNotification) error {
-	if n == nil || n.Status != payment.NotificationStatusSuccess {
+	if n == nil || n.Status != payment.NotificationStatusSuccess || e.notifyConfirmDisabled() {
 		return nil
 	}
 	result, err := e.queryOrder(ctx, n.OrderID)
@@ -724,4 +724,8 @@ var easyPayNotifyAllowedParams = map[string]bool{
 	"param":        true,
 	"sign":         true,
 	"sign_type":    true,
+
+	// fork: 支付FM 签约类型回调的渠道订单号（参与签名）。它按字典序排在所有
+	// 下单字段之前，且取值同样不得含 & / =，无法拼接复用下单签名。
+	"channel_order_no": true,
 }
