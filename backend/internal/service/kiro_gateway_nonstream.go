@@ -128,7 +128,8 @@ func (s *KiroGatewayService) nonStreamToClient(
 	c.Data(http.StatusOK, "application/json", body)
 
 	return &ForwardResult{
-		Model:            inbound.Model,
+		// 与 streamToClient 同口径：计费按连字符名查价，见 kiro.AnthropicModelName。
+		Model:            kiro.AnthropicModelName(inbound.Model),
 		UpstreamModel:    upstreamModel,
 		Stream:           false,
 		Duration:         time.Since(startTime),

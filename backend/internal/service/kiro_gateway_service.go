@@ -494,7 +494,9 @@ func (s *KiroGatewayService) streamToClient(
 	usage := translator.Usage()
 	cache5m, cache1h := translator.PromptCacheCreationSplit()
 	return &ForwardResult{
-		Model:            inbound.Model,
+		// 计费按 Model 查价：点号名还原成连字符名，见 kiro.AnthropicModelName。
+		// 回给客户端的模型名（translator）和使用记录的 requested_model 不受影响。
+		Model:            kiro.AnthropicModelName(inbound.Model),
 		UpstreamModel:    upstreamModel,
 		Stream:           inbound.Stream,
 		Duration:         time.Since(startTime),

@@ -137,6 +137,21 @@ func MapModel(requested string) (mapped string, ok bool) {
 	return "", false
 }
 
+// AnthropicModelName 把 Kiro 点号原生名还原成 Anthropic 规范的连字符名
+// （claude-haiku-4.5 → claude-haiku-4-5），其余名字原样返回。
+//
+// 只用于计费/使用记录，不用于转发：价格表以连字符名为准，点号名只能靠按子串
+// 猜系列的兜底匹配，claude-haiku-4.5 会落到 Haiku 3 的 $0.25/$1.25（实价
+// $1/$5）。客户端按点号名请求并不少见——账号白名单的 Kiro 预设填的就是点号
+// 名，会原样出现在 /v1/models 里。
+func AnthropicModelName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if kiroNativeName.MatchString(normalized) {
+		return strings.Replace(normalized, ".", "-", 1)
+	}
+	return name
+}
+
 // DefaultModels 返回未从上游拉到模型清单时对外暴露的兜底列表——覆盖
 // kiroModelAliases 里全部已确认受支持的目标型号（保持与其同步，新增别名
 // 时这里也要加，否则 /v1/models 兜底列表会缺新模型）。
