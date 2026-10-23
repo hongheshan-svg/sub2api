@@ -9,7 +9,7 @@ overrides:
   form-data: '>=4.0.6'
   postcss@<8.5.18: '>=8.5.18'
   nanoid@<3.3.17: ~3.3.17
-  dompurify@<3.4.14: '>=3.4.14'
+  dompurify@<3.4.17: '>=3.4.17'
   source-map-js@<1.2.2: '>=1.2.2'
   follow-redirects@<1.16.1: '>=1.16.1'
 
@@ -36,8 +36,8 @@ importers:
         specifier: ^4.4.1
         version: 4.5.1
       dompurify:
-        specifier: ^3.4.14
-        version: 3.4.14
+        specifier: ^3.4.17
+        version: 3.4.17
       driver.js:
         specifier: ^1.4.0
         version: 1.4.0
@@ -1030,8 +1030,8 @@ packages:
     resolution: {integrity: sha512-yS+Q5i3hBf7GBkd4KG8a7eBNNWNGLTaEwwYWUijIYM7zrlYDM0BFXHjjPWlWZ1Rg7UaddZeIDmi9jF3HmqiQ2w==}
     engines: {node: '>=6.0.0'}
 
-  dompurify@3.4.14:
-    resolution: {integrity: sha512-dVoH9z+MY+C9IilgGCk3YfFqjLi3fChm2OiKJMzh6axrJ5qwxqWaZamgmHrpv22CN/KdbZJuGEGgfQoL00LTdg==}
+  dompurify@3.4.17:
+    resolution: {integrity: sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==}
 
   driver.js@1.4.0:
     resolution: {integrity: sha512-Gm64jm6PmcU+si21sQhBrTAM1JvUrR0QhNmjkprNLxohOBzul9+pNHXgQaT9lW84gwg9GMLB3NZGuGolsz5uew==}
@@ -2558,7 +2558,7 @@ snapshots:
 
   '@types/dompurify@3.2.0':
     dependencies:
-      dompurify: 3.4.14
+      dompurify: 3.4.17
 
   '@types/estree@1.0.8': {}
 
@@ -3064,7 +3064,7 @@ snapshots:
     dependencies:
       esutils: 2.0.3
 
-  dompurify@3.4.14:
+  dompurify@3.4.17:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
