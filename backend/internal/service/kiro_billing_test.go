@@ -3,11 +3,20 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -83,4 +92,47 @@ func rawJSONForBilling(t *testing.T, s string) json.RawMessage {
 	t.Helper()
 	require.True(t, json.Valid([]byte(s)))
 	return json.RawMessage(s)
+}
+
+// 客户端按 Kiro 点号名请求（账号白名单的 Kiro 预设用的就是点号名，会出现在
+// /v1/models 里）时，ForwardResult.Model 要还原成连字符名再计费：点号名在价格
+// 表里只能靠按子串猜系列的兜底，claude-haiku-4.5 会落到 Haiku 3 的
+// $0.25/$1.25（实价 $1/$5）。回给客户端的模型名、UpstreamModel 不变。
+func TestKiroDotModelRequestBillsByAnthropicName(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+	billing := NewBillingService(&config.Config{}, pricingSvc)
+
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			frames := kiroTestConcatFrames(
+				kiroTestEventFrame("assistantResponseEvent", `{"content":"Hello"}`),
+				kiroTestEventFrame("metadataEvent", `{"stopReason":"end_turn"}`),
+			)
+			srv, _ := kiroTestFakeUpstream(t, func(int) (int, []byte) { return http.StatusOK, frames })
+			svc := &KiroGatewayService{}
+			svc.callEndpointOverride = kiroTestOverrideCallingServer(srv)
+
+			body := []byte(fmt.Sprintf(`{"model":"claude-haiku-4.5","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":%v}`, stream))
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+			result, err := svc.ForwardUpstream(context.Background(), c, kiroTestOAuthAccount(500), body)
+			require.NoError(t, err)
+			require.Equal(t, "claude-haiku-4-5", result.Model)
+			require.Equal(t, "claude-haiku-4.5", result.UpstreamModel)
+			require.Contains(t, rec.Body.String(), `"model":"claude-haiku-4.5"`, "回给客户端的仍是它请求的名字")
+
+			pricing, err := billing.GetModelPricing(forwardResultBillingModel(result.Model, result.UpstreamModel))
+			require.NoError(t, err)
+			require.InDelta(t, 1e-6, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, 5e-6, pricing.OutputPricePerToken, 1e-12)
+		})
+	}
 }

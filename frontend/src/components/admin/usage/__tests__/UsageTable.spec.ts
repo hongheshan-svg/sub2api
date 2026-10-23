@@ -420,6 +420,60 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('claude-sonnet-4-20250514')
   })
 
+  it('treats Kiro dot model IDs as the same model as their hyphen form', () => {
+    const baseRow = {
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+    }
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          {
+            ...baseRow,
+            request_id: 'req-kiro-chain',
+            model: 'claude-opus-5-5',
+            upstream_model: 'claude-opus-5.5',
+            model_mapping_chain: 'claude-opus-5-5→claude-opus-5.5',
+          },
+          {
+            ...baseRow,
+            request_id: 'req-kiro-dated',
+            model: 'claude-sonnet-4-5-20250929',
+            upstream_model: 'claude-sonnet-4.5',
+            model_mapping_chain: 'claude-sonnet-4-5-20250929→claude-sonnet-4.5',
+          },
+        ],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).not.toContain('claude-opus-5.5')
+    const kiroModel = wrapper.find('[data-request-id="req-kiro-chain"] span[title]')
+    expect(kiroModel.text()).toBe('claude-opus-5-5')
+    expect(kiroModel.attributes('title')).toContain('claude-opus-5.5')
+    // 去掉日期后缀是真实的映射，照常显示上游名
+    expect(text).toContain('claude-sonnet-4-5-20250929')
+    expect(text).toContain('claude-sonnet-4.5')
+  })
+
   it('shows requested and forwarded reasoning effort separately when they differ', () => {
     const wrapper = mount(UsageTable, {
       props: {

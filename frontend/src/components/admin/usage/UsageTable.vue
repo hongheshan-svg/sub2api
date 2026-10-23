@@ -54,15 +54,15 @@
 
         <template #cell-model="{ row }">
           <div class="space-y-0.5 text-xs">
-            <div v-if="row.model_mapping_chain && row.model_mapping_chain.includes('→')" class="space-y-0.5">
-              <div v-for="(step, i) in row.model_mapping_chain.split('→')" :key="i"
+            <div v-if="modelMappingSteps(row).length > 1" class="space-y-0.5">
+              <div v-for="(step, i) in modelMappingSteps(row)" :key="i"
                    class="break-all"
                    :class="i === 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
                    :style="i > 0 ? `padding-left: ${i * 0.75}rem` : ''">
                 <span v-if="i > 0" class="mr-0.5">↳</span>{{ step }}
               </div>
             </div>
-            <div v-else-if="row.upstream_model && row.upstream_model !== row.model" class="space-y-0.5">
+            <div v-else-if="row.upstream_model && !sameModelId(row.upstream_model, row.model)" class="space-y-0.5">
               <div class="break-all font-medium text-gray-900 dark:text-white">
                 {{ row.model }}
               </div>
@@ -70,7 +70,7 @@
                 <span class="mr-0.5">↳</span>{{ row.upstream_model }}
               </div>
             </div>
-            <span v-else class="font-medium text-gray-900 dark:text-white">{{ row.model }}</span>
+            <span v-else class="font-medium text-gray-900 dark:text-white" :title="hiddenUpstreamModelTitle(row)">{{ row.model }}</span>
             <div
               v-if="row.upstream_model_mismatch === true && row.upstream_response_model"
               class="break-all pl-3 text-[11px]"
@@ -633,6 +633,22 @@ const hasReasoningEffortMapping = (row: AdminUsageLog): boolean => {
 }
 
 const sentUpstreamModel = (row: AdminUsageLog): string => row.upstream_model?.trim() || row.model?.trim() || ''
+
+// 版本号只差点号/连字符写法的视为同一个模型：Kiro 上游用 claude-opus-5.5，客户端请求和
+// 计费用 claude-opus-5-5，不再单独显示一行 ↳，实际上游名放进悬停提示。
+const modelIdKey = (model: string): string => model.trim().toLowerCase().replace(/\./g, '-')
+
+const sameModelId = (a: string, b: string): boolean => modelIdKey(a) === modelIdKey(b)
+
+const modelMappingSteps = (row: AdminUsageLog): string[] => {
+  const steps = (row.model_mapping_chain || '').split('→').map((step) => step.trim()).filter(Boolean)
+  return steps.filter((step, i) => i === 0 || !sameModelId(step, steps[i - 1]))
+}
+
+const hiddenUpstreamModelTitle = (row: AdminUsageLog): string | undefined => {
+  const upstream = row.upstream_model?.trim() || ''
+  return upstream && upstream !== row.model?.trim() ? `${t('usage.sentUpstreamModel')}: ${upstream}` : undefined
+}
 
 const normalizeModelVariant = (model: string): string => model
   .trim()

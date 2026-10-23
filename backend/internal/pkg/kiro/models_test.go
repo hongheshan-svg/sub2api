@@ -189,3 +189,28 @@ func TestMapModelClaude55PendingVerification(t *testing.T) {
 	_, ok := MapModel("claude-haiku-5-5")
 	require.False(t, ok)
 }
+
+// TestAnthropicModelName：Kiro 点号原生名还原成 Anthropic 连字符名，供计费按
+// 价格表的规范名查价；其余名字（连字符名、带日期后缀、无次版本号、非 Claude
+// 系）原样返回。
+func TestAnthropicModelName(t *testing.T) {
+	t.Parallel()
+
+	for in, want := range map[string]string{
+		"claude-haiku-4.5":           "claude-haiku-4-5",
+		"claude-opus-5.5":            "claude-opus-5-5",
+		"claude-sonnet-5.5":          "claude-sonnet-5-5",
+		"claude-haiku-5.5":           "claude-haiku-5-5",
+		"Claude-Sonnet-4.6":          "claude-sonnet-4-6",
+		" claude-opus-4.8 ":          "claude-opus-4-8",
+		"claude-opus-5-5":            "claude-opus-5-5",
+		"claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
+		"claude-opus-5":              "claude-opus-5",
+		"claude-sonnet-4":            "claude-sonnet-4",
+		"gpt-5.6-sol":                "gpt-5.6-sol",
+		"auto":                       "auto",
+		"":                           "",
+	} {
+		require.Equal(t, want, AnthropicModelName(in), in)
+	}
+}
