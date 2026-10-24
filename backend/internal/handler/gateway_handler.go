@@ -671,6 +671,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		}
 	}()
 
+	// 流式请求等上游响应期间给客户端发 ping，防止反向代理读超时（Cloudflare 524），
+	// 见 upstreamWaitPinger。发过 ping 后响应已是 200 的 SSE 流，后续错误走流内 error 事件。
+	upstreamPinger := startUpstreamWaitPinger(c, reqStream, h.upstreamWaitPingInterval())
+	defer upstreamPinger.close()
+
 	for {
 		fs := h.newFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
@@ -925,7 +930,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				requestCtx = service.WithForceCacheBilling(requestCtx)
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
+			// （ping 字节不计入，见 upstreamWaitPingWriter.Size）
 			writerSizeBeforeForward := c.Writer.Size()
+			upstreamPinger.resume()
 			switch {
 			case account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey:
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
@@ -933,6 +940,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				result, err = h.kiroGatewayService.ForwardUpstream(requestCtx, c, account, attemptBody)
 			default:
 				result, err = h.gatewayService.Forward(requestCtx, c, account, attemptParsedReq)
+			}
+			if upstreamPinger.pause() {
+				streamStarted = true
 			}
 
 			// 兜底释放串行锁（正常情况已通过回调提前释放）
@@ -2021,11 +2031,13 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
 			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
+			// 必须带 event: error 行：Anthropic SDK（Claude Code）按 event 名分发，
+			// 只有 data 行的帧会被整帧丢弃，客户端看不到这次错误。
 			errorCode := ""
 			if code != "" {
 				errorCode = `,"code":` + strconv.Quote(code)
 			}
-			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+			errorEvent := "event: error\n" + `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
@@ -2128,6 +2140,14 @@ func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 	}
 
 	return true
+}
+
+// upstreamWaitPingInterval 返回等上游期间的 ping 间隔，0 表示关闭。
+func (h *GatewayHandler) upstreamWaitPingInterval() time.Duration {
+	if h.cfg == nil || h.cfg.Gateway.UpstreamWaitPingInterval <= 0 {
+		return 0
+	}
+	return time.Duration(h.cfg.Gateway.UpstreamWaitPingInterval) * time.Second
 }
 
 // errorResponse 返回Claude API格式的错误响应

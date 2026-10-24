@@ -241,7 +241,7 @@ func TestGatewayAdmissionError_MessagesStreamingIncludesGatewayCode(t *testing.T
 		gatewayConcurrencyLimitCode, "Concurrency limit exceeded for account, please retry later", true)
 
 	body := w.Body.String()
-	assert.True(t, strings.HasPrefix(body, `data: {"type":"error"`))
+	assert.True(t, strings.HasPrefix(body, "event: error\n"+`data: {"type":"error"`), "got: %q", body)
 	payload := body[strings.Index(body, "{"):]
 	assert.Equal(t, "rate_limit_error", gjson.Get(payload, "error.type").String())
 	assert.Equal(t, gatewayConcurrencyLimitCode, gjson.Get(payload, "error.code").String())
@@ -257,15 +257,14 @@ func TestGatewayAdmissionError_BareResponsesFailedIncludesGatewayCode(t *testing
 	assert.Equal(t, gatewayQueueFullCode, errObj["code"])
 }
 
-// Gateway handler: /v1/messages preserves the legacy data:{type:error,...} format
-// (Anthropic spec accepts a type:"error" stream event).
-func TestGatewayHandleStreamingAwareError_MessagesStreamingKeepsLegacy(t *testing.T) {
+// Gateway handler: /v1/messages 的流内错误必须带 event: error 行。Anthropic SDK
+// （Claude Code）按 event 名分发，只有 data 行的帧会被整帧丢弃；data 行保持原格式。
+func TestGatewayHandleStreamingAwareError_MessagesStreamingEmitsErrorEvent(t *testing.T) {
 	c, w := newGinContextForEndpoint(t, EndpointMessages)
 	h := &GatewayHandler{}
 	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
 
-	body := w.Body.String()
-	assert.True(t, strings.HasPrefix(body, `data: {"type":"error"`), "got: %q", body)
+	assert.Equal(t, "event: error\n"+`data: {"type":"error","error":{"type":"upstream_error","message":"boom"}}`+"\n\n", w.Body.String())
 }
 
 // 项目里 /responses 注册在多组路由：/v1/responses（gateway）、裸 /responses（top-level）、

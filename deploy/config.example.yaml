@@ -499,6 +499,11 @@ gateway:
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10
+  # Ping interval (seconds) while a /v1/messages streaming request waits for the upstream response, 0=disable.
+  # Keeps reverse proxies (e.g. Cloudflare's 100-120s read timeout) from cutting a silent origin; HTTP status is fixed at 200 after the first ping
+  # /v1/messages 流式请求等上游响应期间给客户端发 ping 的间隔（秒），0=禁用。
+  # 防止反向代理（如 Cloudflare 的 100~120 秒读超时）因源站长时间无输出断开；首个 ping 后 HTTP 状态固化为 200
+  upstream_wait_ping_interval: 15
   # Image stream data interval timeout (seconds), 0=disable; independent from ordinary text streams
   # 图片流数据间隔超时（秒），0=禁用；独立于普通文本流式
   image_stream_data_interval_timeout: 900

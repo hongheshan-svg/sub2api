@@ -1067,7 +1067,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
 				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
 				disconnectMsg := "upstream stream disconnected: " + sanitizeStreamError(ev.err)
-				if !c.Writer.Written() {
+				// 用 Size()<0 而不是 !Written()：对 gin writer 二者等价，但 handler 等上游期间
+				// 发的 ping 会把 Written() 置真，Size() 已扣掉 ping 字节，只发过 ping 仍可换号。
+				if c.Writer.Size() < 0 {
 					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
 					body, _ := json.Marshal(map[string]any{
 						"type": "error",
