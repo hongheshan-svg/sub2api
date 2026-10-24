@@ -103,7 +103,7 @@ func TestScopedAdminRegisteredRoutesEnforceDefaultDenyAndAccountScope(t *testing
 			accountHandler := adminhandler.NewAccountHandler(&scopedRouteAccounts{t: t}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			r := gin.New()
 			RegisterAdminRoutes(r.Group("/api/v1"), &handler.Handlers{Admin: &handler.AdminHandlers{Account: accountHandler, Setting: adminhandler.NewSettingHandler(settings, nil, nil, nil, nil, nil, nil)}}, auth, middleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() }), middleware.StepUpAuthMiddleware(func(c *gin.Context) { c.Next() }), nil, nil)
-			RegisterPaymentRoutes(r.Group("/api/v1"), &handler.PaymentHandler{}, &handler.PaymentWebhookHandler{}, &adminhandler.PaymentHandler{}, middleware.JWTAuthMiddleware(func(c *gin.Context) { c.Next() }), auth, middleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() }), nil, nil, nil)
+			RegisterPaymentRoutes(r.Group("/api/v1"), &handler.PaymentHandler{}, &handler.PaymentWebhookHandler{}, &adminhandler.PaymentHandler{}, &adminhandler.InvoiceHandler{}, middleware.JWTAuthMiddleware(func(c *gin.Context) { c.Next() }), auth, middleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() }), nil, nil, nil)
 			for _, tc := range []struct{ method, path string }{
 				{"GET", "/api/v1/admin/accounts/1"},
 				{"GET", "/api/v1/admin/accounts/2"},
@@ -118,6 +118,9 @@ func TestScopedAdminRegisteredRoutesEnforceDefaultDenyAndAccountScope(t *testing
 				{"GET", "/api/v1/admin/payment/orders"},
 				{"POST", "/api/v1/admin/payment/orders/1/refund"},
 				{"PUT", "/api/v1/admin/payment/config"},
+				// fork：发票管理接口未登记进权限目录，受限密钥一律拒绝。
+				{"GET", "/api/v1/admin/payment/invoices"},
+				{"POST", "/api/v1/admin/payment/invoices/1/complete"},
 			} {
 				req := httptest.NewRequest(tc.method, tc.path, nil)
 				req.Header.Set("x-api-key", key)
