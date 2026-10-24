@@ -157,6 +157,7 @@ vite.config.js
 *.pdf
 !docs/**/*.pdf
 docs/*
+!docs/admin-api-keys.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
