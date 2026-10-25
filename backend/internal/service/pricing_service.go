@@ -1365,7 +1365,19 @@ func normalizeModelNameForPricing(model string) string {
 		}
 		return canonical
 	}
-	return normalizeAntigravityClaudeTierAlias(normalizeGeminiThinkingTierAlias(model))
+	return normalizeAntigravityClaudeTierAlias(normalizeGeminiThinkingTierAlias(normalizeClaudeDotVersion(model)))
+}
+
+// normalizeClaudeDotVersion maps dot-version Claude IDs (claude-haiku-4.5-20251001,
+// used by Kiro and Kiro relays) to Anthropic's hyphen form. The price card is keyed
+// by the hyphen name; the dot name only reaches substring family matching, which
+// bills claude-haiku-4.5 as Haiku 3. Other vendors use the dot as canonical spelling.
+// fork
+func normalizeClaudeDotVersion(model string) string {
+	if !strings.HasPrefix(model, "claude-") {
+		return model
+	}
+	return strings.ReplaceAll(model, ".", "-")
 }
 
 // normalizeAntigravityClaudeTierAlias maps Antigravity's Claude 5.5 thinking-tier

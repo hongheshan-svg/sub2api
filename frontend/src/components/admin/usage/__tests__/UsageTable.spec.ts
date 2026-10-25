@@ -596,6 +596,64 @@ describe('admin UsageTable tooltip', () => {
 		expect(text).toContain(expectedBadge)
 	})
 
+	// Kiro 中转站自报点号名（claude-haiku-4.5-20251001）。修复前写入的记录仍带
+	// upstream_model_mismatch=true，不应再标成不一致。
+	it('hides the upstream response marker when IDs differ only in dot vs hyphen', () => {
+		const wrapper = mount(UsageTable, {
+			props: {
+				data: [{
+					request_id: 'req-kiro-relay',
+					model: 'claude-haiku-4-5-20251001',
+					upstream_response_model: 'claude-haiku-4.5-20251001',
+					upstream_model_mismatch: true,
+				}],
+				loading: false,
+				columns: [],
+			},
+			global: {
+				stubs: {
+					DataTable: DataTableStub,
+					EmptyState: true,
+					Icon: true,
+					Teleport: true,
+				},
+			},
+		})
+
+		const text = wrapper.text()
+		expect(text).toContain('claude-haiku-4-5-20251001')
+		expect(text).not.toContain('claude-haiku-4.5-20251001')
+		expect(text).not.toContain('Different model')
+	})
+
+	it('treats a dot-version response without the date suffix as a version variant', () => {
+		const wrapper = mount(UsageTable, {
+			props: {
+				data: [{
+					request_id: 'req-kiro-variant',
+					model: 'claude-haiku-4-5-20251001',
+					upstream_response_model: 'claude-haiku-4.5',
+					upstream_model_mismatch: true,
+				}],
+				loading: false,
+				columns: [],
+			},
+			global: {
+				stubs: {
+					DataTable: DataTableStub,
+					EmptyState: true,
+					Icon: true,
+					Teleport: true,
+				},
+			},
+		})
+
+		const text = wrapper.text()
+		expect(text).toContain('claude-haiku-4.5')
+		expect(text).toContain('Possible version variant')
+		expect(text).not.toContain('Different model')
+	})
+
   it.each([
     {
       name: 'defaulted row',

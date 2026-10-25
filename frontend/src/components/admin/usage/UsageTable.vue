@@ -72,7 +72,7 @@
             </div>
             <span v-else class="font-medium text-gray-900 dark:text-white" :title="hiddenUpstreamModelTitle(row)">{{ row.model }}</span>
             <div
-              v-if="row.upstream_model_mismatch === true && row.upstream_response_model"
+              v-if="showsUpstreamResponseMismatch(row)"
               class="break-all pl-3 text-[11px]"
               :class="isLikelyModelVariant(row) ? 'text-amber-600 dark:text-amber-400' : 'text-orange-600 dark:text-orange-400'"
               :title="modelAuditTitle(row)"
@@ -650,9 +650,13 @@ const hiddenUpstreamModelTitle = (row: AdminUsageLog): string | undefined => {
   return upstream && upstream !== row.model?.trim() ? `${t('usage.sentUpstreamModel')}: ${upstream}` : undefined
 }
 
-const normalizeModelVariant = (model: string): string => model
-  .trim()
-  .toLowerCase()
+// 只差点号/连字符的不算不一致：后端已按同一口径判定，这里兜住修复前写入的记录。
+const showsUpstreamResponseMismatch = (row: AdminUsageLog): boolean => {
+  const response = row.upstream_response_model?.trim() || ''
+  return row.upstream_model_mismatch === true && response !== '' && !sameModelId(sentUpstreamModel(row), response)
+}
+
+const normalizeModelVariant = (model: string): string => modelIdKey(model)
   .replace(/-latest$/, '')
   .replace(/-\d{4}-\d{2}-\d{2}$/, '')
   .replace(/-\d{8}$/, '')
