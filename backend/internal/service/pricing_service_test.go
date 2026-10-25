@@ -819,6 +819,53 @@ func TestDefaultPricingIncludesGemini4ArgonRates(t *testing.T) {
 	require.Contains(t, pricingSvc.ListModelNamesByProvider("gemini"), "gemini-4-argon")
 }
 
+// Kiro 系上游（原生和第三方中转站）的 Claude 模型名用点号版本号，价格表以连字符名为准。
+// 点号名此前只能靠按子串猜系列，claude-haiku-4.5 会落到 Haiku 3 的 $0.25/$1.25（实价 $1/$5）。
+func TestPricingService_ClaudeDotVersionNamesUseHyphenPricing(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+
+	haiku := pricingSvc.GetModelPricing("claude-haiku-4.5-20251001")
+	require.NotNil(t, haiku)
+	require.InDelta(t, 1e-6, haiku.InputCostPerToken, 1e-15)
+	require.InDelta(t, 5e-6, haiku.OutputCostPerToken, 1e-15)
+
+	for _, tc := range []struct{ dot, hyphen string }{
+		{"claude-haiku-4.5", "claude-haiku-4-5"},
+		{"claude-haiku-4.5-20251001", "claude-haiku-4-5-20251001"},
+		{"claude-sonnet-4.5", "claude-sonnet-4-5"},
+		{"claude-sonnet-4.5-20250929", "claude-sonnet-4-5-20250929"},
+		{"claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"claude-opus-4.5", "claude-opus-4-5"},
+		{"claude-opus-4.6", "claude-opus-4-6"},
+		{"claude-opus-4.7", "claude-opus-4-7"},
+		{"claude-opus-4.8", "claude-opus-4-8"},
+		{"claude-opus-5.5", "claude-opus-5-5"},
+		{"claude-sonnet-5.5", "claude-sonnet-5-5"},
+	} {
+		t.Run(tc.dot, func(t *testing.T) {
+			want := pricingSvc.GetModelPricing(tc.hyphen)
+			got := pricingSvc.GetModelPricing(tc.dot)
+			require.NotNil(t, want)
+			require.NotNil(t, got)
+			require.InDelta(t, want.InputCostPerToken, got.InputCostPerToken, 1e-15)
+			require.InDelta(t, want.OutputCostPerToken, got.OutputCostPerToken, 1e-15)
+			require.InDelta(t, want.CacheReadInputTokenCost, got.CacheReadInputTokenCost, 1e-15)
+			require.InDelta(t, want.CacheCreationInputTokenCost, got.CacheCreationInputTokenCost, 1e-15)
+			require.Equal(t, pricingSvc.GetIdentifiedModelPricing(tc.hyphen) != nil, pricingSvc.GetIdentifiedModelPricing(tc.dot) != nil)
+		})
+	}
+
+	// 只改写 Claude：其它厂商的点号就是规范写法。
+	require.Equal(t, "gpt-5.4", normalizeModelNameForPricing("gpt-5.4"))
+	require.Equal(t, "gemini-2.5-pro", normalizeModelNameForPricing("gemini-2.5-pro"))
+}
+
 func TestDefaultPricingIncludesGrok47FastRates(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
 	require.NoError(t, err)

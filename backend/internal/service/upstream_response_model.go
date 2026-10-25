@@ -285,6 +285,11 @@ func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
 	if strings.EqualFold(sentModel, responseModel) {
 		return true
 	}
+	// fork：Kiro 系上游（原生和第三方中转站）用点号版本号自报 Claude 模型
+	// （claude-haiku-4.5-20251001），与请求的连字符名是同一个模型。
+	if strings.EqualFold(strings.ReplaceAll(sentModel, ".", "-"), strings.ReplaceAll(responseModel, ".", "-")) {
+		return true
+	}
 
 	// xAI reports the runtime build ID for these supported public aliases.
 	// Canonicalize only for mismatch auditing; keep the raw response model for

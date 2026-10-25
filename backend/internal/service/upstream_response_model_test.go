@@ -97,12 +97,44 @@ func TestUpstreamModelMismatchTreatsGrokBuildRuntimeIDsAsAliases(t *testing.T) {
 	}
 }
 
+// Kiro 系上游（原生和第三方中转站）用点号版本号自报 Claude 模型，与请求的
+// 连字符名是同一个模型，不应记为不一致。
+func TestUpstreamModelMismatchTreatsDotAndHyphenVersionsAsSameModel(t *testing.T) {
+	tests := []struct {
+		sentModel     string
+		responseModel string
+	}{
+		{sentModel: "claude-haiku-4-5-20251001", responseModel: "claude-haiku-4.5-20251001"},
+		{sentModel: "claude-opus-5-5", responseModel: "claude-opus-5.5"},
+		{sentModel: "claude-sonnet-4-6", responseModel: "CLAUDE-SONNET-4.6"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.responseModel, func(t *testing.T) {
+			mismatch := upstreamModelMismatch(tt.sentModel, tt.responseModel)
+
+			require.NotNil(t, mismatch)
+			require.False(t, *mismatch)
+		})
+	}
+}
+
 func TestUpstreamModelMismatchDoesNotCollapseDifferentModels(t *testing.T) {
 	tests := []struct {
 		name          string
 		sentModel     string
 		responseModel string
 	}{
+		{
+			name:          "dot version with dropped date stays a variant",
+			sentModel:     "claude-haiku-4-5-20251001",
+			responseModel: "claude-haiku-4.5",
+		},
+		{
+			name:          "different claude dot version",
+			sentModel:     "claude-opus-4-5",
+			responseModel: "claude-opus-4.6",
+		},
 		{
 			name:          "different grok versions",
 			sentModel:     "grok-4.5",
