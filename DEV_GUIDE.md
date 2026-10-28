@@ -47,7 +47,8 @@ npm install -g pnpm
 
 | Workflow | 触发条件 | 检查内容 |
 |----------|----------|----------|
-| **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.13 |
+| **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.13 + 部署脚本检查（`shell`，ubuntu） |
+| **apple-container-ci.yml**（fork） | push / pull_request 且改动 `deploy/apple-container.sh`、`deploy/tests/apple-container-test.sh`、`deploy/tests/fixtures/**`，或手动 `workflow_dispatch` | Apple container 脚本测试（macos-15） |
 | **security-scan.yml** | push, pull_request, 每周一 | govulncheck + gosec + pnpm audit |
 | **release.yml** | tag `v*`，或手动 `workflow_dispatch`（输入已存在的 tag，可选 `simple_release`） | 构建发布（PR 不触发） |
 
@@ -55,6 +56,7 @@ npm install -g pnpm
 
 - Go 版本必须是 **1.27.3**：三个 workflow 都用 `go-version-file: backend/go.mod` 取版本，随后硬断言 `go version | grep -q 'go1.27.3'`。升级 Go 时要同时改 `backend/go.mod`、`backend-ci.yml`（两处）、`release.yml`、`security-scan.yml` 里的这句断言，**以及三个 Dockerfile 里的 Go 构建镜像**（`Dockerfile` / `deploy/Dockerfile` 的 `ARG GOLANG_IMAGE`、`backend/Dockerfile` 的 `FROM golang:`）。前者漏了 CI 会在版本校验步骤直接失败；**后者漏了 CI 不会报，而是等到有人用这些 Dockerfile 构建时才失败**（`go.mod requires go >= X (running Y; GOTOOLCHAIN=local)`）。
 - 前端使用 `pnpm install --frozen-lockfile`，必须提交 `pnpm-lock.yaml`
+- **`shell` job 跑在 ubuntu，与上游不同**：上游把它放在 `macos-15`，但 macOS arm64 托管 runner 常因容量不足排不到（注解 `The job was not acquired by Runner of type hosted even after multiple attempts`，0 步骤、约 15 分钟后 cancelled，整个 CI 判失败）。fork 把需要 macOS 的 Apple container 检查（BSD `stat -f`、macOS 自带 bash 3.2）拆到 `apple-container-ci.yml`，按路径触发。同步上游时如果 `backend-ci.yml` 的 `shell` job 冲突，保留 fork 的 ubuntu 版本；上游如果在这个 job 里新增脚本，可移植的加到这里，依赖 macOS 的加到 `apple-container-ci.yml`。
 
 ### 本地测试命令
 

@@ -1,0 +1,34 @@
+name: Apple container
+
+# fork：从 backend-ci.yml 的 shell job 拆出。apple-container.sh 依赖 BSD stat 和
+# macOS 自带的 bash 3.2，只能在 macOS 上测；但 macos-15 托管 runner 常因容量不足
+# 排不到（"The job was not acquired by Runner of type hosted"），因此只在相关文件
+# 变动时触发，排不到时也只影响本 workflow，可在 Actions 页重跑或手动触发。
+on:
+  push:
+    branches: ['**']
+    paths:
+      - deploy/apple-container.sh
+      - deploy/tests/apple-container-test.sh
+      - deploy/tests/fixtures/**
+      - .github/workflows/apple-container-ci.yml
+  pull_request:
+    paths:
+      - deploy/apple-container.sh
+      - deploy/tests/apple-container-test.sh
+      - deploy/tests/fixtures/**
+      - .github/workflows/apple-container-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple-container:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check Apple container script
+        run: |
+          /bin/bash -n deploy/apple-container.sh
+          /bin/bash deploy/tests/apple-container-test.sh

@@ -8,14 +8,14 @@ permissions:
   contents: read
 
 jobs:
+  # fork：Apple container 检查移到 apple-container-ci.yml（仅相关文件变动时跑 macOS），
+  # 这里只留可移植脚本，避免 macos-15 排不到 runner 拖垮每次 CI。
   shell:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Check deployment scripts
         run: |
-          /bin/bash -n deploy/apple-container.sh
-          /bin/bash deploy/tests/apple-container-test.sh
           /bin/sh deploy/tests/docker-compose-security-test.sh
           /bin/sh deploy/tests/docker-compose-gateway-env-test.sh
           /bin/sh deploy/tests/docker-runtime-resources-test.sh
