@@ -291,6 +291,8 @@ export interface PublicSettings {
   invoice_vat_special_fee_rate: number
   invoice_service_category: string
   allow_user_view_error_requests?: boolean
+  /** True when the deployment configures MCP_PUBLIC_URL; MCP is disabled otherwise. */
+  mcp_enabled?: boolean
 }
 
 export interface AuthResponse {

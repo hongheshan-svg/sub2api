@@ -384,6 +384,7 @@ export const useAppStore = defineStore('app', () => {
         invoice_vat_special_fee_rate: 0.06,
         invoice_service_category: '技术服务费',
         allow_user_view_error_requests: false,
+        mcp_enabled: false,
       })
     }
 
