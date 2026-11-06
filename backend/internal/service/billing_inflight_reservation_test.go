@@ -449,19 +449,37 @@ func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
 	}
 	require.Zero(t, snap.reads.Load(), "priced models must never trigger account-mapping lookup")
 
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
+	// A process-wide HeapAlloc sample is noisy even with no other goroutines
+	// running: the same loop measures 0.3–5.8 MiB in isolation and once hit
+	// 8.07 MiB in CI. Every attempt uses fresh model names, so unbounded
+	// per-model growth exceeds the bound on each one; a single attempt under the
+	// bound is enough.
 	const n = 20000
-	for i := 0; i < n; i++ {
-		_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: fmt.Sprintf("rand-%d-%d", i, time.Now().UnixNano()), BodyBytes: 4000, MaxTokens: 1000})
-		require.False(t, priced)
+	const growthBound = int64(8 << 20)
+	var growth int64
+	attempts := 0
+	for attempts < 3 {
+		attempts++
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for i := 0; i < n; i++ {
+			_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: fmt.Sprintf("rand-%d-%d-%d", attempts, i, time.Now().UnixNano()), BodyBytes: 4000, MaxTokens: 1000})
+			require.False(t, priced)
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+		if attempts == 1 || delta < growth {
+			growth = delta
+		}
+		if growth < growthBound {
+			break
+		}
 	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
 	require.Zero(t, repo.dbCalls.Load(), "no direct DB query on the request path")
-	require.Equal(t, int64(n), snap.reads.Load(), "unpriced lookups read the scheduler snapshot only")
-	require.Less(t, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(8<<20), "no per-model cache growth")
+	require.Equal(t, int64(attempts*n), snap.reads.Load(), "unpriced lookups read the scheduler snapshot only")
+	require.Less(t, growth, growthBound, "no per-model cache growth")
 }
 
 // 无分组 API Key：使用调度器的未分组账号池，估算与计费回退的账号映射模型同口径。
