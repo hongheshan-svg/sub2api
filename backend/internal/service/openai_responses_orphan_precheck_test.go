@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -128,11 +129,26 @@ func TestOpenAIResponsesOrphanPrecheckCompatibilityErrors(t *testing.T) {
 func TestOpenAIResponsesOrphanPrecheckLargeEscapedContent(t *testing.T) {
 	body := []byte(`{"vendor":"` + strings.Repeat(`\n\"`, 1<<16) + `","input":[{"content":"` + strings.Repeat(`\n\"`, 1<<16) + `","type":"message"}]}`)
 	require.False(t, openAIResponsesInputMayNeedOrphanCleanup(body))
-	allocations := testing.AllocsPerRun(5, func() {
-		if openAIResponsesInputMayNeedOrphanCleanup(body) {
-			panic("unexpected cleanup candidate")
+	// AllocsPerRun counts process-wide mallocs. Earlier tests in this package leak
+	// polling goroutines (every ContentModerationService built with repos starts
+	// ~33 workers that wake each second and never stop, ~4000 by the time this
+	// runs), and a wake-up burst inside the window is charged to this function.
+	// A real allocation shows up on every attempt, so one clean attempt suffices;
+	// the pause lets a burst pass before measuring again.
+	var allocations float64
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			time.Sleep(20 * time.Millisecond)
 		}
-	})
+		allocations = testing.AllocsPerRun(5, func() {
+			if openAIResponsesInputMayNeedOrphanCleanup(body) {
+				panic("unexpected cleanup candidate")
+			}
+		})
+		if allocations == 0 {
+			break
+		}
+	}
 	require.Zero(t, allocations, "large borrowed strings must not be unescaped or copied")
 }
 
