@@ -714,7 +714,7 @@ func (s *BillingCacheService) QueueUpdateAPIKeyRateLimitUsage(apiKeyID int64, co
 // 把 TOCTOU 超支窗口限制在并发 in-flight 请求数量内（而非随时间无限累积）。
 // 写延迟通常 < 1ms（本地 Redis），换取 quota 视图实时性的取舍合理。
 //
-// Redis 写失败用 ALERT 级 log；DB 持久化由 caller 单独 goroutine 兜底（gateway_service.go）。
+// Redis 写失败用 ALERT 级 log；DB 持久化由计费 worker 内同步执行或批量 flusher 处理。
 func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, platform string, cost float64) {
 	if s.cache == nil {
 		return
@@ -938,12 +938,9 @@ func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *G
 
 	// ── 第一层：分组级检查（override 或 group.rpm_limit） ──
 	if group != nil {
-		// 解析 override：优先信任 auth cache snapshot 是否已经查过（Checked），而不是看
-		// UserGroupRPMOverride 是否为 nil——"确认无 override"和"没查过"都会让指针是 nil，
-		// 只有 Checked 才能区分二者。Checked=false 时才回退 DB，否则"无 override"这个最
-		// 常见的场景会导致缓存对几乎每个请求都失效，等于每请求多打一次数据库。
+		// 解析 override：优先从 auth cache snapshot；snapshot 未确认该分组时回退 DB。
 		var override *int
-		if user.UserGroupRPMOverrideChecked {
+		if user.UserGroupRPMOverride != nil || user.UserGroupRPMOverrideGroupID == group.ID {
 			override = user.UserGroupRPMOverride
 		} else if s.userGroupRateRepo != nil {
 			dbOverride, err := s.userGroupRateRepo.GetRPMOverrideByUserAndGroup(ctx, user.ID, group.ID)

@@ -50,14 +50,12 @@ type APIKeyAuthUserSnapshot struct {
 	// RPMLimit 用户级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 兜底判断。
 	RPMLimit int `json:"rpm_limit"`
 
-	// UserGroupRPMOverride 该 API Key 对应的 (user, group) 专属 RPM 覆盖值，仅在
-	// UserGroupRPMOverrideChecked 为 true 时才有意义：nil = 确认无 override（回退到
-	// group/user 级）；0 = 不限流；>0 = 专属上限。
+	// UserGroupRPMOverride 该 API Key 对应的 (user, group) 专属 RPM 覆盖值。
+	// nil = 无 override（回退到 group/user 级）；0 = 不限流；>0 = 专属上限。
 	UserGroupRPMOverride *int `json:"user_group_rpm_override,omitempty"`
-	// UserGroupRPMOverrideChecked 标记构建 snapshot 时是否已经真正查过 DB（无论结果是否
-	// 为 nil）。为 false 时 checkRPM 必须回退查 DB，不能把 UserGroupRPMOverride==nil
-	// 误当作"确认无 override"，否则等于让缓存对"无 override"这个最常见的场景永远失效。
-	UserGroupRPMOverrideChecked bool `json:"user_group_rpm_override_checked"`
+	// UserGroupRPMOverrideGroupID 是成功查询 override 的分组（0 = 未查询或查询失败），
+	// 让 checkRPM 区分"该分组确认无 override"与"需要回源"。
+	UserGroupRPMOverrideGroupID int64 `json:"user_group_rpm_override_group_id,omitempty"`
 }
 
 // APIKeyAuthGroupSnapshot 分组快照
@@ -146,6 +144,9 @@ type APIKeyAuthGroupSnapshot struct {
 	ProfitControlEnabled bool    `json:"profit_control_enabled"`
 	ProfitMinMargin      float64 `json:"profit_min_margin"`
 	ProfitSafetyBuffer   float64 `json:"profit_safety_buffer"`
+
+	// RequirePrivacySet 由 OpenAI 选号从 ctx 分组读取，与 GetByKeyForAuth 投影同步。
+	RequirePrivacySet bool `json:"require_privacy_set"`
 }
 
 // APIKeyAuthCacheEntry 缓存条目，支持负缓存

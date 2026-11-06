@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 26 // v26: 合并 fork v25（UserGroupRPMOverrideChecked）与上游 v25（group image_count_billing）；两边各自的 v25 快照都缺字段，必须一起失效
+const apiKeyAuthSnapshotVersion = 27 // v27: group require_privacy_set (OpenAI scheduling reads it from ctx)；fork 同时弃用自己 v26 的 user_group_rpm_override_checked，改用上游 user_group_rpm_override_group_id，fork 的 v26 快照必须一起失效
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -370,14 +370,15 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 	}
 
 	// 填充 (user, group) RPM override —— snapshot 构建时查一次 DB，后续请求零 DB 往返。
-	// 关键：只有 err != nil（DB 查询本身失败）才留 Checked=false 让 checkRPM 回退查 DB；
-	// err == nil 时无论 override 是否为 nil 都标记为已查过，"确认无 override"也要能命中缓存。
+	// 关键：只有 err != nil（DB 查询本身失败）才不记录 GroupID，让 checkRPM 回退查 DB；
+	// err == nil 时无论 override 是否为 nil 都记录分组，"确认无 override"也要能命中缓存。
 	if apiKey.GroupID != nil && *apiKey.GroupID > 0 && s.userGroupRateRepo != nil {
 		override, err := s.userGroupRateRepo.GetRPMOverrideByUserAndGroup(ctx, apiKey.UserID, *apiKey.GroupID)
 		if err == nil {
 			snapshot.User.UserGroupRPMOverride = override
-			snapshot.User.UserGroupRPMOverrideChecked = true
+			snapshot.User.UserGroupRPMOverrideGroupID = *apiKey.GroupID
 		}
+		// 查询失败时不记录分组，checkRPM 会回退到 DB 查询
 	}
 	if apiKey.Group != nil {
 		snapshot.Group = &APIKeyAuthGroupSnapshot{
@@ -438,6 +439,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			ProfitControlEnabled:            apiKey.Group.ProfitControlEnabled,
 			ProfitMinMargin:                 apiKey.Group.ProfitMinMargin,
 			ProfitSafetyBuffer:              apiKey.Group.ProfitSafetyBuffer,
+			RequirePrivacySet:               apiKey.Group.RequirePrivacySet,
 		}
 	}
 	return snapshot
@@ -479,7 +481,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			TotalRecharged:              snapshot.User.TotalRecharged,
 			RPMLimit:                    snapshot.User.RPMLimit,
 			UserGroupRPMOverride:        snapshot.User.UserGroupRPMOverride,
-			UserGroupRPMOverrideChecked: snapshot.User.UserGroupRPMOverrideChecked,
+			UserGroupRPMOverrideGroupID: snapshot.User.UserGroupRPMOverrideGroupID,
 		},
 	}
 	if snapshot.Group != nil {
@@ -542,6 +544,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ProfitControlEnabled:            snapshot.Group.ProfitControlEnabled,
 			ProfitMinMargin:                 snapshot.Group.ProfitMinMargin,
 			ProfitSafetyBuffer:              snapshot.Group.ProfitSafetyBuffer,
+			RequirePrivacySet:               snapshot.Group.RequirePrivacySet,
 		}
 	}
 	s.compileAPIKeyIPRules(apiKey)
