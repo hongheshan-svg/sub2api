@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -167,39 +168,39 @@ func TestBillingCacheService_CheckRPM_NilOverrideFallsThroughToGroup(t *testing.
 	require.EqualValues(t, 1, atomic.LoadInt32(&cache.userCalls), "group 未超时 user 也应检查；group 超时直接返回")
 }
 
-func TestBillingCacheService_CheckRPM_CheckedNilOverrideSkipsDBAndFallsThroughToGroup(t *testing.T) {
+func TestBillingCacheService_CheckRPM_ConfirmedNilOverrideSkipsDBAndFallsThroughToGroup(t *testing.T) {
 	// 回归测试（SC-1）：auth cache snapshot 已经查过 (user, group) 且确认无 override
-	// （UserGroupRPMOverrideChecked=true, UserGroupRPMOverride=nil）时，checkRPM 不应该
+	// （UserGroupRPMOverrideGroupID==group.ID, UserGroupRPMOverride=nil）时，checkRPM 不应该
 	// 再回退查 DB —— 这正是此前的 bug：nil 被误当成"没查过"，导致几乎每个请求都多打一次库。
 	cache := &userRPMCacheStub{userGroupCounts: []int{5, 6}}
 	repo := &rpmOverrideRepoStub{override: func() *int { v := 999; return &v }()} // 若被误查到，会走 override 分支而非 group 分支，测试能借此发现回归
 	svc := newBillingServiceForRPM(t, cache, repo)
 
-	user := &User{ID: 1, RPMLimit: 999, UserGroupRPMOverrideChecked: true, UserGroupRPMOverride: nil}
+	user := &User{ID: 1, RPMLimit: 999, UserGroupRPMOverrideGroupID: 10, UserGroupRPMOverride: nil}
 	group := &Group{ID: 10, RPMLimit: 5}
 
 	require.NoError(t, svc.checkRPM(context.Background(), user, group))                      // ug=5, 未超
 	require.ErrorIs(t, svc.checkRPM(context.Background(), user, group), ErrGroupRPMExceeded) // ug=6 > 5
 
-	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls), "Checked=true 时不应回退查 DB")
+	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls), "snapshot 已确认该分组时不应回退查 DB")
 	require.EqualValues(t, 2, atomic.LoadInt32(&cache.userGroupCalls), "确认无 override 应回退到 group.rpm_limit 计数")
 }
 
-func TestBillingCacheService_CheckRPM_CheckedNonNilOverrideSkipsDB(t *testing.T) {
+func TestBillingCacheService_CheckRPM_CachedNonNilOverrideSkipsDB(t *testing.T) {
 	// 回归测试（SC-1）：snapshot 已经缓存了一个非 nil override 时同样不应回退查 DB。
 	cache := &userRPMCacheStub{userGroupCounts: []int{1, 2, 3}}
 	repo := &rpmOverrideRepoStub{override: func() *int { v := 1; return &v }()} // 若被误查到，值不同会导致断言失败
 	svc := newBillingServiceForRPM(t, cache, repo)
 
 	override := 2
-	user := &User{ID: 1, RPMLimit: 100, UserGroupRPMOverrideChecked: true, UserGroupRPMOverride: &override}
+	user := &User{ID: 1, RPMLimit: 100, UserGroupRPMOverrideGroupID: 10, UserGroupRPMOverride: &override}
 	group := &Group{ID: 10, RPMLimit: 100}
 
 	require.NoError(t, svc.checkRPM(context.Background(), user, group))
 	require.NoError(t, svc.checkRPM(context.Background(), user, group))
 	require.ErrorIs(t, svc.checkRPM(context.Background(), user, group), ErrGroupRPMExceeded)
 
-	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls), "Checked=true 时不应回退查 DB")
+	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls), "snapshot 已确认该分组时不应回退查 DB")
 	require.EqualValues(t, 3, atomic.LoadInt32(&cache.userGroupCalls), "应使用 snapshot 里缓存的 override=2，而非 DB 里的 1")
 }
 
@@ -286,4 +287,56 @@ func TestBillingCacheService_CheckRPM_NilUserIsNoop(t *testing.T) {
 	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userGroupCalls))
 	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userCalls))
 	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls))
+}
+
+func TestBillingCacheService_CheckRPM_SnapshotConfirmedNoOverrideSkipsLookup(t *testing.T) {
+	cache := &userRPMCacheStub{userGroupCounts: []int{5, 6}}
+	repo := &rpmOverrideRepoStub{err: errors.New("must not be queried")}
+	svc := newBillingServiceForRPM(t, cache, repo)
+
+	user := &User{ID: 1, UserGroupRPMOverrideGroupID: 10}
+	group := &Group{ID: 10, RPMLimit: 5}
+
+	require.NoError(t, svc.checkRPM(context.Background(), user, group))
+	require.ErrorIs(t, svc.checkRPM(context.Background(), user, group), ErrGroupRPMExceeded)
+	require.EqualValues(t, 0, atomic.LoadInt32(&repo.calls), "snapshot 已确认无 override 时不应查 DB")
+}
+
+func TestBillingCacheService_CheckRPM_SnapshotForAnotherGroupStillLooksUp(t *testing.T) {
+	override := 0
+	cache := &userRPMCacheStub{}
+	repo := &rpmOverrideRepoStub{override: &override}
+	svc := newBillingServiceForRPM(t, cache, repo)
+
+	user := &User{ID: 1, UserGroupRPMOverrideGroupID: 10}
+	group := &Group{ID: 11, RPMLimit: 5}
+
+	require.NoError(t, svc.checkRPM(context.Background(), user, group))
+	require.EqualValues(t, 1, atomic.LoadInt32(&repo.calls), "snapshot 只确认了 key 所属分组")
+	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userGroupCalls), "DB override=0 应跳过分组计数")
+}
+
+func TestAPIKeyAuthSnapshotRecordsResolvedRPMOverrideGroup(t *testing.T) {
+	groupID := int64(10)
+	newKey := func() *APIKey {
+		return &APIKey{ID: 2, UserID: 1, GroupID: &groupID, Status: StatusActive,
+			User: &User{ID: 1, Status: StatusActive}}
+	}
+
+	svc := &APIKeyService{userGroupRateRepo: &rpmOverrideRepoStub{}}
+	snapshot := svc.snapshotFromAPIKey(context.Background(), newKey())
+	require.Nil(t, snapshot.User.UserGroupRPMOverride)
+	require.Equal(t, groupID, snapshot.User.UserGroupRPMOverrideGroupID)
+	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	var restored APIKeyAuthCacheEntry
+	require.NoError(t, json.Unmarshal(payload, &restored))
+	materialized, used, err := svc.applyAuthCacheEntry("k", &restored)
+	require.NoError(t, err)
+	require.True(t, used)
+	require.Equal(t, groupID, materialized.User.UserGroupRPMOverrideGroupID)
+
+	failing := &APIKeyService{userGroupRateRepo: &rpmOverrideRepoStub{err: errors.New("db down")}}
+	snapshot = failing.snapshotFromAPIKey(context.Background(), newKey())
+	require.Zero(t, snapshot.User.UserGroupRPMOverrideGroupID, "查询失败时必须保留回源")
 }
