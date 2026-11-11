@@ -427,3 +427,38 @@ func TestDecodeDataImage(t *testing.T) {
 		require.False(t, ok, bad)
 	}
 }
+
+func TestResolveSiteLogo(t *testing.T) {
+	const logoA = "data:image/png;base64,aGVsbG8="
+	const logoB = "data:image/svg+xml,%3Csvg%2F%3E"
+
+	img, ok := ResolveSiteLogo(logoA)
+	require.True(t, ok)
+	require.Equal(t, "image/png", img.ContentType)
+	require.Equal(t, "hello", string(img.Data))
+	require.Equal(t, SiteLogoVersion(logoA), img.Version)
+
+	// 同一个设置值复用上一次解码出的那份字节，不重新解码。
+	again, ok := ResolveSiteLogo(logoA)
+	require.True(t, ok)
+	require.Same(t, &img.Data[0], &again.Data[0])
+
+	// 设置值变了：返回新 logo，而不是缓存里的旧图。
+	img, ok = ResolveSiteLogo(logoB)
+	require.True(t, ok)
+	require.Equal(t, "image/svg+xml", img.ContentType)
+	require.Equal(t, "<svg/>", string(img.Data))
+	require.Equal(t, SiteLogoVersion(logoB), img.Version)
+
+	// 不是可下发的 data:image（路径、URL、空值、非法 base64）：ok=false，且不会沿用旧图。
+	for _, bad := range []string{"", "/logo.png", "https://cdn.example.com/l.png", "data:text/html;base64,PGI+", "data:image/png;base64,!!!"} {
+		img, ok := ResolveSiteLogo(bad)
+		require.False(t, ok, bad)
+		require.Empty(t, img.Data, bad)
+	}
+
+	// 再切回来仍然正确。
+	img, ok = ResolveSiteLogo(logoA)
+	require.True(t, ok)
+	require.Equal(t, "hello", string(img.Data))
+}

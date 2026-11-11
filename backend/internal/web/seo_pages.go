@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/url"
 	"strings"
+	"sync/atomic"
 )
 
 // LandingBenefit 是落地页的一个价值点。
@@ -288,4 +289,40 @@ func DecodeDataImage(uri string) (contentType string, data []byte, ok bool) {
 		return "", nil, false
 	}
 	return contentType, []byte(unescaped), true
+}
+
+// SiteLogoImage is a decoded data: URI site logo, ready to be served.
+type SiteLogoImage struct {
+	ContentType string
+	Data        []byte // shared between requests: read-only
+	Version     string // SiteLogoVersion of the setting it was decoded from
+}
+
+type siteLogoCacheEntry struct {
+	logo string
+	img  SiteLogoImage
+	ok   bool
+}
+
+// siteLogoCache remembers the last decoded logo. There is only one site logo,
+// so a single entry keyed by the setting value is enough; a changed setting
+// simply replaces it.
+var siteLogoCache atomic.Pointer[siteLogoCacheEntry]
+
+// ResolveSiteLogo returns the decoded image and content version for the logo
+// setting. SiteLogoPath is public and unauthenticated, and decoding means
+// base64-decoding plus hashing a few hundred KB, so the result is kept until
+// the setting value changes instead of being recomputed on every request.
+// ok is false when the setting is not a servable data:image URI.
+func ResolveSiteLogo(logo string) (img SiteLogoImage, ok bool) {
+	if cached := siteLogoCache.Load(); cached != nil && cached.logo == logo {
+		return cached.img, cached.ok
+	}
+	entry := &siteLogoCacheEntry{logo: logo}
+	if contentType, data, decoded := DecodeDataImage(logo); decoded {
+		entry.img = SiteLogoImage{ContentType: contentType, Data: data, Version: SiteLogoVersion(logo)}
+		entry.ok = true
+	}
+	siteLogoCache.Store(entry)
+	return entry.img, entry.ok
 }
