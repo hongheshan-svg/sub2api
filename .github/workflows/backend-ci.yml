@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # fork：手动补跑。push 限定到 main 之后，某个提交漏跑 CI 时没有别的办法重新触发
+  # （`gh workflow run backend-ci.yml --ref <分支或 tag>`，或 Actions 页 Run workflow）。
+  workflow_dispatch:
 
 permissions:
   contents: read

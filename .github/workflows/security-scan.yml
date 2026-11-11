@@ -8,6 +8,8 @@ on:
   pull_request:
   schedule:
     - cron: '0 3 * * 1'
+  # fork：手动补跑，理由同 backend-ci.yml。
+  workflow_dispatch:
 
 permissions:
   contents: read
