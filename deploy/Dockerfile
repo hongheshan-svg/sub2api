@@ -8,7 +8,7 @@
 
 ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.27.4-alpine
-ARG ALPINE_IMAGE=alpine:3.20
+ARG ALPINE_IMAGE=alpine:3.21
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
@@ -23,15 +23,16 @@ WORKDIR /app/frontend
 # ceiling, not a reservation.
 ENV NODE_OPTIONS=--max-old-space-size=4096
 
-# Install pnpm (pinned to v9 to match root Dockerfile, CI, and the lockfile)
-RUN corepack enable && corepack prepare pnpm@9 --activate
+# Install pnpm. Keep this pinned to the lockfile-compatible major version so
+# Docker builds remain reproducible when pnpm changes config validation rules.
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 # xlsx is installed from a vendored SheetJS tarball (file: dependency), so it
 # must be present before `pnpm install`. See frontend/third_party/sheetjs/.
 COPY frontend/third_party/ ./third_party/
-RUN pnpm install --prefer-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # Copy frontend source and build.
 # LegalDocumentView.vue (admin-compliance gate) build-time imports
