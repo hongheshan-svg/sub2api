@@ -143,7 +143,7 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			})
 			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 			setGroupContext(c, apiKey.Group)
-			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+			touchLastUsedAsync(apiKeyService, apiKey.ID) // fork：与 /v1/* 一致，不在请求路径上同步写库
 			c.Next()
 			return
 		}
@@ -216,7 +216,7 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 		})
 		c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 		setGroupContext(c, apiKey.Group)
-		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+		touchLastUsedAsync(apiKeyService, apiKey.ID) // fork：与 /v1/* 一致，不在请求路径上同步写库
 		c.Next()
 	}
 }
