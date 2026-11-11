@@ -770,7 +770,7 @@ export default {
         maxAmount: '最高金额',
         dailyLimit: '每日限额',
         balanceRechargeMultiplier: '余额充值倍率',
-        balanceRechargeMultiplierHint: '用户每支付 1 CNY 可获得多少 USD 余额',
+        balanceRechargeMultiplierHint: '用户每支付 1 CNY 可获得多少 USD 余额（最多 6 位小数，可按实时汇率配置）',
         balanceRechargePreview: '预览：1 CNY = {usd} USD',
         subscriptionUsdToCnyRate: '订阅 CNY 换算汇率',
         subscriptionUsdToCnyRateHint:
@@ -892,6 +892,8 @@ export default {
         field_notifyConfirmHint: '开启后，收到支付成功回调时先调用易支付查单接口（api.php?act=order）核对已支付、金额和交易号，一致才入账，可拦截伪造回调。支付FM 等只兼容易支付下单和回调、没有该查单接口的平台必须关闭，否则回调会失败、订单无法自动到账。关闭后仅凭验签通过的回调入账。',
         notifyConfirmQuery: '开启（推荐）',
         notifyConfirmOff: '关闭（平台没有查单接口时）',
+        field_refundSuccessCode: '退款成功码',
+        field_refundSuccessCodeHint: '按当前网关的退款接口文档选择成功码。默认 1（如 ZPAY），仅在网关文档规定时选择 0。此设置只影响退款，下单和查单仍要求成功码为 1。',
         easypayCustomMethods: '易支付自定义支付方式',
         easypayCustomMethodsHint: '添加当前易支付服务商额外支持的支付方式。支付方式会记录到 Sub2API 订单中，上游 type 会作为易支付 type 参数提交。',
         addCustomMethod: '添加方式',
