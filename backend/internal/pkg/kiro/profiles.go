@@ -56,11 +56,6 @@ func ListProfilesHostFor(region string) string {
 	return fmt.Sprintf("https://q.%s.amazonaws.com", region)
 }
 
-// BuildListProfilesURL 拼出完整的 ListAvailableProfiles 地址。
-func BuildListProfilesURL(region string) string {
-	return ListProfilesHostFor(region) + "/ListAvailableProfiles"
-}
-
 // BuildListProfilesRequestBody 构造分页请求体。
 //
 // 不带 maxResults 字段——真实账号测试证实带了这个字段（不管是 JSON 数字
