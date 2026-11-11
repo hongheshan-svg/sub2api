@@ -200,11 +200,13 @@ var DefaultAntigravityModelMapping = map[string]string{
 // aws_region 自动调整为匹配的区域前缀（如 eu.、apac.、jp. 等）
 var DefaultBedrockModelMapping = map[string]string{
 	// Claude Fable
-	// Fable has no In-Region deployment on bedrock-runtime, only the us geo
-	// profile and the global one; other source regions switch to global
+	// Fable and Mythos have no In-Region deployment on bedrock-runtime, only the
+	// us geo profile and the global one; other source regions switch to global
 	// (fableBedrockGeoPrefix in bedrock_request.go).
-	"claude-fable-5-1": "us.anthropic.claude-fable-5-1",
-	"claude-fable-5":   "us.anthropic.claude-fable-5",
+	"claude-fable-5-2":  "us.anthropic.claude-fable-5-2",
+	"claude-mythos-5-2": "us.anthropic.claude-mythos-5-2",
+	"claude-fable-5-1":  "us.anthropic.claude-fable-5-1",
+	"claude-fable-5":    "us.anthropic.claude-fable-5",
 	// Claude Opus
 	// The 5.5 models only offer us/eu/jp/au geo profiles (Sonnet 5.5: no jp,
 	// none has apac); the region adjustment switches to the global profile in

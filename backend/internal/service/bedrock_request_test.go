@@ -176,6 +176,8 @@ func TestIsBedrockClaude45OrNewer(t *testing.T) {
 		{"us.anthropic.claude-opus-4-6-v1", true},
 		{"us.anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-fable-5", true},
+		{"us.anthropic.claude-fable-5-2", true},
+		{"global.anthropic.claude-mythos-5-2", true},
 		{"us.anthropic.claude-sonnet-4-6", true},
 		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
 		{"us.anthropic.claude-opus-4-5-20251101-v1:0", true},
@@ -836,6 +838,13 @@ func TestSanitizeBedrockThinking(t *testing.T) {
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
+	t.Run("Mythos 5.2 将 enabled 转换为 adaptive 并移除预算", func(t *testing.T) {
+		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
+		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-mythos-5-2")
+		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
+	})
+
 	t.Run("Fable 5 adaptive 移除预算", func(t *testing.T) {
 		input := `{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "claude-fable-5")
@@ -1273,7 +1282,9 @@ func TestResolveBedrockModelIDFableGeoProfiles(t *testing.T) {
 		"mx-central-1":   "global",
 		"me-central-1":   "global",
 	}
-	for _, model := range []string{"claude-fable-5", "claude-fable-5-1"} {
+	// Fable 5.2 / Mythos 5.2 also count as signed-thinking models; they must still
+	// take the Fable geo path rather than the 5.5 one (no eu / jp / au profiles).
+	for _, model := range []string{"claude-fable-5", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-2"} {
 		for region, prefix := range cases {
 			account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock,
 				Credentials: map[string]any{"aws_region": region}}
