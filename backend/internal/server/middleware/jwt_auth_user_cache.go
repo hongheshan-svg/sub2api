@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -32,6 +33,7 @@ type jwtAuthUserCacheEntry struct {
 
 // jwtAuthUserCache 用短 TTL 包装 jwtUserReader，仅供 JWT 鉴权中间件使用。
 // 命中同一 *service.User 指针的多次读取（缓存命中期间）均为只读——调用方不得修改返回值。
+// 只缓存成功结果和 ErrUserNotFound；瞬时错误不缓存，下一次请求会重新查询。
 type jwtAuthUserCache struct {
 	inner jwtUserReader
 	ttl   time.Duration
@@ -59,6 +61,12 @@ func (c *jwtAuthUserCache) GetByID(ctx context.Context, id int64) (*service.User
 	c.mu.Unlock()
 
 	user, err := c.inner.GetByID(ctx, id)
+	if err != nil && !errors.Is(err, service.ErrUserNotFound) {
+		// 只缓存确定性的结果（查到了 / 确认不存在）。其余错误都是瞬时的——请求被客户端
+		// 取消（前端切页、搜索框输入时会 abort 上一个请求）、DB 超时、连接池耗尽——
+		// 它们不代表这个用户的状态，缓存下来会让该用户在 TTL 内的后续请求全部 500。
+		return user, err
+	}
 
 	c.mu.Lock()
 	c.entries[id] = jwtAuthUserCacheEntry{user: user, err: err, expiresAt: now.Add(c.ttl)}

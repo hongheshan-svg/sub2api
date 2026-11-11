@@ -56,13 +56,6 @@ func TestListProfilesHostFor(t *testing.T) {
 		"非 us-east-1 区域走区域化的 Amazon Q host，不是 codewhisperer host")
 }
 
-func TestBuildListProfilesURL(t *testing.T) {
-	t.Parallel()
-
-	require.Equal(t, "https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles", BuildListProfilesURL("us-east-1"))
-	require.Equal(t, "https://q.eu-central-1.amazonaws.com/ListAvailableProfiles", BuildListProfilesURL("eu-central-1"))
-}
-
 func TestBuildListProfilesRequestBody(t *testing.T) {
 	t.Parallel()
 

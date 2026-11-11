@@ -86,7 +86,7 @@
   <div v-else class="home-page">
 
     <!-- ── HEADER ── -->
-    <header ref="headerRef" class="home-header" :class="{ 'is-scrolled': headerScrolled }">
+    <header class="home-header" :class="{ 'is-scrolled': headerScrolled }">
       <div class="home-header__inner">
         <router-link to="/" class="home-header__brand">
           <img v-if="brandLogo" :src="brandLogo" :alt="brandName" class="home-header__logo" />
@@ -506,8 +506,8 @@ function toggleTheme() {
 }
 
 // ── header scroll ────────────────────────────────────────────────────────────
-const headerRef = ref<HTMLElement | null>(null)
 const headerScrolled = ref(false)
+const onScroll = () => { headerScrolled.value = window.scrollY > 10 }
 
 // ── mirror-reveal (IntersectionObserver for .mirror-reveal elements) ─────────
 let revealObs: IntersectionObserver | null = null
@@ -615,10 +615,7 @@ onMounted(() => {
   if (!appStore.publicSettingsLoaded) appStore.fetchPublicSettings()
 
   // header scroll
-  const onScroll = () => { headerScrolled.value = window.scrollY > 10 }
   window.addEventListener('scroll', onScroll, { passive: true })
-  ;(headerRef.value as any)?.__scrollHandler || (document as any).__scrollCleanup
-  ;(document as any).__scrollCleanup = () => window.removeEventListener('scroll', onScroll)
 
   // mirror-reveal via IntersectionObserver
   revealObs = new IntersectionObserver(
@@ -654,7 +651,7 @@ onMounted(() => {
 onUnmounted(() => {
   revealObs?.disconnect()
   statsObs?.disconnect()
-  ;(document as any).__scrollCleanup?.()
+  window.removeEventListener('scroll', onScroll)
 })
 </script>
 

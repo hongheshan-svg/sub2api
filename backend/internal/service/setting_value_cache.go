@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -11,15 +12,19 @@ import (
 // /llms.txt 端点在每次访问时调用，容易被爬虫/扫描器高频命中。TTL 与本文件其它设置缓存
 // （如 panelRateLimitCacheTTL）保持一致；写入侧通过 refreshCachedSettingsAfterWrite
 // 主动失效，这里的 TTL 只是兜底上限，不是唯一的生效延迟来源。
+//
+// settingValueErrorBackoff 是查询失败（非"key 不存在"）后的重试退避：只为不放大对故障 DB 的
+// 查询压力，远短于正常 TTL，DB 恢复后几秒内即可重新读到真实值。
 const (
-	settingValueCacheTTL    = 60 * time.Second
-	settingValueDBTimeout   = 5 * time.Second
-	settingValueSFKeyPrefix = "setting_value:"
+	settingValueCacheTTL     = 60 * time.Second
+	settingValueErrorBackoff = 5 * time.Second
+	settingValueDBTimeout    = 5 * time.Second
+	settingValueSFKeyPrefix  = "setting_value:"
 )
 
 type cachedSettingValueEntry struct {
 	value     string
-	found     bool // 对应 settingRepo.GetValue 是否成功返回（区分"确认为空字符串"与"查询失败"）
+	found     bool // 对应 settingRepo.GetValue 是否成功返回（区分"确认为空字符串"与"未配置/查询失败"）
 	expiresAt int64
 }
 
@@ -29,8 +34,12 @@ func (e cachedSettingValueEntry) fresh(now int64) bool {
 
 // getSettingValueCached 是"单 key 读取 settingRepo.GetValue，短 TTL 缓存"这一重复模式的
 // 统一实现，供 IsSessionBindingEnabled / GetSiteName / GetSiteSubtitle / GetDocURL /
-// GetFrontendURL 复用。found=false 时表示底层查询失败或未初始化，调用方应按自身语义
-// 回退默认值（与直接调用 settingRepo.GetValue 出错时的行为一致）。
+// GetFrontendURL 复用。found=false 时表示 key 未配置、底层查询失败或未初始化，调用方应按
+// 自身语义回退默认值（与直接调用 settingRepo.GetValue 出错时的行为一致）。
+//
+// 查询失败（DB 抖动、超时等，非 ErrSettingNotFound）不会被当成"未配置"缓存满一个 TTL：
+// 之前确认过的值继续沿用，没有旧值时才回退 found=false，并且只退避
+// settingValueErrorBackoff。否则一次 DB 抖动会让会话绑定这类安全开关静默关闭 60 秒。
 func (s *SettingService) getSettingValueCached(ctx context.Context, key string) (value string, found bool) {
 	if s == nil || s.settingRepo == nil {
 		return "", false
@@ -60,10 +69,19 @@ func (s *SettingService) getSettingValueCached(ctx context.Context, key string) 
 		defer cancel()
 
 		v, err := s.settingRepo.GetValue(dbCtx, key)
-		entry := cachedSettingValueEntry{expiresAt: time.Now().Add(settingValueCacheTTL).UnixNano()}
-		if err == nil {
-			entry.value = v
-			entry.found = true
+		var entry cachedSettingValueEntry
+		switch {
+		case err == nil:
+			entry = cachedSettingValueEntry{value: v, found: true}
+			entry.expiresAt = time.Now().Add(settingValueCacheTTL).UnixNano()
+		case errors.Is(err, ErrSettingNotFound):
+			entry.expiresAt = time.Now().Add(settingValueCacheTTL).UnixNano()
+		default:
+			// 瞬时故障：沿用上一次确认过的结果（已过期的旧条目仍留在 map 里），短退避后重试。
+			if prev, ok := s.settingValueCache.Load(key); ok {
+				entry, _ = prev.(cachedSettingValueEntry)
+			}
+			entry.expiresAt = time.Now().Add(settingValueErrorBackoff).UnixNano()
 		}
 		s.settingValueCache.Store(key, entry)
 		return entry, nil

@@ -34,8 +34,8 @@
 ### 开发工具
 
 ```bash
-# golangci-lint（CI 用 v2.13，本地建议装同一版以免版本差异带来的噪音）
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13
+# golangci-lint（CI 固定 v2.14.0，见 backend-ci.yml；本地建议装同一版以免版本差异带来的噪音）
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
 # pnpm (前端包管理)
 npm install -g pnpm
@@ -47,10 +47,12 @@ npm install -g pnpm
 
 | Workflow | 触发条件 | 检查内容 |
 |----------|----------|----------|
-| **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.13 + 部署脚本检查（`shell`，ubuntu） |
-| **apple-container-ci.yml**（fork） | push / pull_request 且改动 `deploy/apple-container.sh`、`deploy/tests/apple-container-test.sh`、`deploy/tests/fixtures/**`，或手动 `workflow_dispatch` | Apple container 脚本测试（macos-15） |
-| **security-scan.yml** | push, pull_request, 每周一 | govulncheck + gosec + pnpm audit |
+| **backend-ci.yml** | push（仅 main）, pull_request | 单元测试 + 集成测试 + golangci-lint v2.14（含 gosec）+ 部署脚本检查（`shell`，ubuntu） |
+| **apple-container-ci.yml**（fork） | push（仅 main）/ pull_request 且改动 `deploy/apple-container.sh`、`deploy/tests/apple-container-test.sh`、`deploy/tests/fixtures/**`，或手动 `workflow_dispatch` | Apple container 脚本测试（macos-15） |
+| **security-scan.yml** | push（仅 main）, pull_request, 每周一 | govulncheck + pnpm audit（按 `.github/audit-exceptions.yml` 豁免）；gosec 不在这里，由 backend-ci 的 golangci-lint 跑 |
 | **release.yml** | tag `v*`，或手动 `workflow_dispatch`（输入已存在的 tag，可选 `simple_release`） | 构建发布（PR 不触发） |
+
+> **触发范围（fork）**：`push` 只在 `main` 上触发，分支上的改动靠 `pull_request` 跑 CI——只推分支不开 PR 不会有 CI。上游这两个事件都不设过滤，每个 PR 会跑两遍；同步上游时如果 workflow 的 `on:` 段冲突，保留 fork 的写法。
 
 ### CI 要求
 
@@ -81,7 +83,7 @@ cd frontend && pnpm install
 也可以在 Actions 页手动 `workflow_dispatch` 触发（无需重新推 tag）：输入已存在的 `tag`（如 `v1.0.0`），可选勾选 `simple_release`（仅构建 x86_64 GHCR 镜像，跳过其余产物）——用于给已打好的 tag 重跑失败的发布，或临时出一个精简镜像。
 
 ```bash
-# 在已同步的 main 上发版（fork 版本与上游 1:1 对齐，见「坑 12」）
+# 在已同步的 main 上发版（fork 版本号独立于上游且领先，见「坑 12」；下面的 v0.1.X 只是占位）
 # ⚠️ 必须用 -f：git fetch upstream --tags 会在本地留下指向「上游同名 commit」的
 #    v0.1.X tag，普通 git tag -a 会「already exists」静默失败，随后 push 会把
 #    上游那个错的 commit 当发版目标。-f 强制把 tag 移到 fork main。
@@ -358,7 +360,7 @@ git add backend/cmd/server/VERSION
 **同步上游时的典型冲突集**（均为 fork 附加功能 vs upstream 新增的"两边都加行"机械冲突，保留双方即可）：
 
 - `backend/internal/handler/handler.go` / `wire.go`：保留 fork 的 handler（如 `Invoice`）**＋** upstream 新增的（如 `Compliance`）
-- `backend/cmd/server/wire_gen.go`：手动保留双方；**不要用 `go generate` / `wire gen` 重新生成**（invoice 的 `NotificationService` 不是注册 provider，会报 `no provider found for *service.NotificationService`），改用 `go build ./...` 验证编译通过即可
+- `backend/cmd/server/wire_gen.go`：是纯生成产物（#99 起发票的依赖都走注册的 provider），冲突时不用手工合，先解决 `wire.go` / 各层 provider set 的冲突，再重新生成：`cd backend && go generate ./cmd/server`（或 `make generate`，连 ent 一起），然后 `go build ./...` 验证。`main.go` 的 `go:generate` 指令固定了 `wire@v0.7.0`（fork；与 `go.mod` 里的 wire 版本一致，升级 wire 时一起改），不带版本号时会因 `go.sum` 缺 wire CLI 自身依赖的校验和报 `missing go.sum entry for module providing package github.com/google/subcommands`——同步上游时这一行如果冲突，保留带版本号的写法
 - 前端若两边对同一处做了等价重构（如 `bedrock_cc_compat` 改顶层 bool），取 fork 版
 
 **相关标签坑**：fork 自己的 `vX.Y.Z` release tag 可能和 upstream 的同名标签撞名（指向不同提交）。`git fetch upstream --tags` 会提示 `would clobber existing tag`，这是预期现象，**不要用 `--force` 覆盖 fork 自己的发布标签**。
@@ -388,10 +390,10 @@ psql -U sub2api -h 127.0.0.1 -d sub2api -f migration.sql
 git fetch upstream
 git checkout main
 git merge upstream/main
-# 解决冲突：VERSION 保留 fork 较高版本；handler/wire/wire_gen 保留双方；go build ./... 验证
+# 解决冲突：VERSION 保留 fork 较高版本；handler/wire 保留双方；wire_gen.go 重新生成（见「坑 12」）；go build ./... 验证
 # 落地走 PR（不直接 push 到共享 main）：
-git switch -c feat/sync-upstream-<ver>
-git push -u origin feat/sync-upstream-<ver>
+git switch -c chore/sync-upstream-<日期>
+git push -u origin chore/sync-upstream-<日期>
 gh pr create --base main
 
 # 创建功能分支
@@ -425,6 +427,12 @@ go run ./cmd/server/
 
 # 生成 Ent 代码
 go generate ./ent
+
+# 生成 Wire 代码（改了 provider set 之后）
+go generate ./cmd/server
+
+# 两个一起
+make generate
 
 # 运行测试
 go test -tags=unit ./...

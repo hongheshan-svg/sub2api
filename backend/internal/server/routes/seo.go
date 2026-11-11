@@ -67,13 +67,12 @@ func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 	// Admin-uploaded logos are stored as data: URIs; the HTML references them
 	// via web.SiteLogoHref so pages stay small and og:image is a real URL.
 	r.GET(web.SiteLogoPath, func(c *gin.Context) {
-		logo := settingService.GetSiteLogo(c.Request.Context())
-		contentType, data, ok := web.DecodeDataImage(logo)
+		img, ok := web.ResolveSiteLogo(settingService.GetSiteLogo(c.Request.Context()))
 		if !ok {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		if c.Query("v") == web.SiteLogoVersion(logo) {
+		if c.Query("v") == img.Version {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
 			c.Header("Cache-Control", "public, max-age=300")
@@ -81,6 +80,6 @@ func RegisterSEORoutes(r *gin.Engine, settingService *service.SettingService) {
 		// The image is admin-supplied; never let a (SVG) logo run as a document.
 		c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 		c.Header("X-Content-Type-Options", "nosniff")
-		c.Data(http.StatusOK, contentType, data)
+		c.Data(http.StatusOK, img.ContentType, img.Data)
 	})
 }
