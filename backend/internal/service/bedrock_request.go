@@ -72,9 +72,9 @@ func claude55BedrockGeoPrefix(modelID, region string) string {
 	}
 }
 
-// fableBedrockGeoPrefix 返回 Fable 5 / 5.1 在给定源区域可用的跨区域推理前缀。
-// 它们在 bedrock-runtime 上没有 In-Region 部署，Geo 配置只有 us（美国、加拿大
-// 源区域；Fable 5.1 另有 GovCloud），其余商业区域只能走 Global。
+// fableBedrockGeoPrefix 返回 Fable 5 / 5.1 / 5.2 与 Mythos 5.2 在给定源区域可用的
+// 跨区域推理前缀。它们在 bedrock-runtime 上没有 In-Region 部署，Geo 配置只有 us
+// （美国、加拿大源区域；Fable 5 之外的另有 GovCloud），其余商业区域只能走 Global。
 // 参见 AWS 模型卡片的 Regional availability。
 func fableBedrockGeoPrefix(region string) string {
 	switch {
@@ -95,10 +95,12 @@ func AdjustBedrockModelRegionPrefix(modelID, region string) string {
 	switch {
 	case region == "global":
 		targetPrefix = "global"
-	case isClaude55SignedThinkingModel(modelID):
-		targetPrefix = claude55BedrockGeoPrefix(modelID, region)
+	// Fable / Mythos must be matched before the 5.5 check: Fable 5.2 and Mythos 5.2
+	// also count as signed-thinking models, but have no eu/jp/au geo profiles.
 	case isBedrockFable5(modelID):
 		targetPrefix = fableBedrockGeoPrefix(region)
+	case isClaude55SignedThinkingModel(modelID):
+		targetPrefix = claude55BedrockGeoPrefix(modelID, region)
 	default:
 		targetPrefix = BedrockCrossRegionPrefix(region)
 	}
@@ -765,8 +767,11 @@ func isBedrockOpus47OrNewer(modelID string) bool {
 	return major > 4 || (major == 4 && minor >= 7)
 }
 
+// isBedrockFable5 判断 Bedrock 模型 ID 是否属于 Fable 5.x 或与其同源的 Mythos 5.x。
+// 两者的推理配置（仅 us / global）、缓存 TTL 与 always-on adaptive thinking 规则一致。
 func isBedrockFable5(modelID string) bool {
-	return strings.Contains(strings.ToLower(modelID), "claude-fable-5")
+	lower := strings.ToLower(modelID)
+	return strings.Contains(lower, "claude-fable-5") || strings.Contains(lower, "claude-mythos-5")
 }
 
 const defaultThinkingBudgetTokens = 10000
