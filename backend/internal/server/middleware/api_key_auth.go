@@ -28,7 +28,12 @@ const touchLastUsedTimeout = 5 * time.Second
 // touchLastUsedAsync 异步触发 last_used_at 的防抖更新，不阻塞当前请求。
 // TouchLastUsed 内部已有 L1 防抖 + singleflight；真正的数据库写入只在防抖窗口到期时才
 // 发生，但那次写入不应该占用请求的关键路径（尾延迟），因此这里整体挪到独立 goroutine。
+// 防抖窗口内（绝大多数请求）TouchLastUsed 是空操作，先用 LastUsedTouchDue 判断，
+// 不为每个请求都起一个 goroutine 和带定时器的 context。
 func touchLastUsedAsync(apiKeyService *service.APIKeyService, keyID int64) {
+	if !apiKeyService.LastUsedTouchDue(keyID) {
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), touchLastUsedTimeout)
 		defer cancel()
