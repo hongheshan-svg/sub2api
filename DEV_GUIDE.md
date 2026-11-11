@@ -47,10 +47,12 @@ npm install -g pnpm
 
 | Workflow | 触发条件 | 检查内容 |
 |----------|----------|----------|
-| **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.14（含 gosec）+ 部署脚本检查（`shell`，ubuntu） |
-| **apple-container-ci.yml**（fork） | push / pull_request 且改动 `deploy/apple-container.sh`、`deploy/tests/apple-container-test.sh`、`deploy/tests/fixtures/**`，或手动 `workflow_dispatch` | Apple container 脚本测试（macos-15） |
-| **security-scan.yml** | push, pull_request, 每周一 | govulncheck + pnpm audit（按 `.github/audit-exceptions.yml` 豁免）；gosec 不在这里，由 backend-ci 的 golangci-lint 跑 |
+| **backend-ci.yml** | push（仅 main）, pull_request | 单元测试 + 集成测试 + golangci-lint v2.14（含 gosec）+ 部署脚本检查（`shell`，ubuntu） |
+| **apple-container-ci.yml**（fork） | push（仅 main）/ pull_request 且改动 `deploy/apple-container.sh`、`deploy/tests/apple-container-test.sh`、`deploy/tests/fixtures/**`，或手动 `workflow_dispatch` | Apple container 脚本测试（macos-15） |
+| **security-scan.yml** | push（仅 main）, pull_request, 每周一 | govulncheck + pnpm audit（按 `.github/audit-exceptions.yml` 豁免）；gosec 不在这里，由 backend-ci 的 golangci-lint 跑 |
 | **release.yml** | tag `v*`，或手动 `workflow_dispatch`（输入已存在的 tag，可选 `simple_release`） | 构建发布（PR 不触发） |
+
+> **触发范围（fork）**：`push` 只在 `main` 上触发，分支上的改动靠 `pull_request` 跑 CI——只推分支不开 PR 不会有 CI。上游这两个事件都不设过滤，每个 PR 会跑两遍；同步上游时如果 workflow 的 `on:` 段冲突，保留 fork 的写法。
 
 ### CI 要求
 

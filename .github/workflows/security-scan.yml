@@ -1,7 +1,10 @@
 name: Security Scan
 
 on:
+  # fork：push 只在 main 上触发。分支上的改动都走 PR（pull_request 已覆盖），
+  # 两个事件都不设过滤时每个 PR 的 CI 会各跑一遍。
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: '0 3 * * 1'

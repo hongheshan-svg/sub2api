@@ -6,7 +6,7 @@ name: Apple container
 # 变动时触发，排不到时也只影响本 workflow，可在 Actions 页重跑或手动触发。
 on:
   push:
-    branches: ['**']
+    branches: [main] # 分支上的改动由下面的 pull_request 覆盖，避免同一个 PR 跑两遍
     paths:
       - deploy/apple-container.sh
       - deploy/tests/apple-container-test.sh
