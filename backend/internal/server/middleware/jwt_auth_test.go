@@ -300,6 +300,36 @@ func TestJWTAuthUserCache_RefetchesAfterExpiry(t *testing.T) {
 	require.EqualValues(t, 2, inner.calls.Load(), "TTL 过期后应该重新回源")
 }
 
+func TestJWTAuthUserCache_DoesNotCacheTransientErrors(t *testing.T) {
+	// 请求被客户端取消、DB 超时等瞬时错误不代表用户状态：缓存它们会让同一用户在 TTL 内的
+	// 后续请求全部失败（中间件对非 ErrUserNotFound 的错误回 500）。
+	for _, transient := range []error{context.Canceled, context.DeadlineExceeded, errors.New("db: connection reset")} {
+		inner := &countingJWTUserReader{err: transient}
+		cache := newJWTAuthUserCache(inner, time.Minute)
+
+		_, err := cache.GetByID(context.Background(), 1)
+		require.ErrorIs(t, err, transient)
+
+		inner.user, inner.err = &service.User{ID: 1, Status: service.StatusActive}, nil
+		u, err := cache.GetByID(context.Background(), 1)
+		require.NoError(t, err, "瞬时错误不应被缓存：%v", transient)
+		require.Same(t, inner.user, u)
+		require.EqualValues(t, 2, inner.calls.Load())
+	}
+}
+
+func TestJWTAuthUserCache_CachesUserNotFound(t *testing.T) {
+	// "用户不存在"是确定性结果，TTL 内不必重复回源。
+	inner := &countingJWTUserReader{err: service.ErrUserNotFound}
+	cache := newJWTAuthUserCache(inner, time.Minute)
+
+	for i := 0; i < 3; i++ {
+		_, err := cache.GetByID(context.Background(), 1)
+		require.ErrorIs(t, err, service.ErrUserNotFound)
+	}
+	require.EqualValues(t, 1, inner.calls.Load())
+}
+
 type countingJWTUserReader struct {
 	user  *service.User
 	err   error

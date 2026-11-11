@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -73,6 +74,22 @@ func (s *NotificationService) db() (*sql.DB, error) {
 	return drv.DB(), nil
 }
 
+// user_notifications.title / link 的列宽（VARCHAR(255) / VARCHAR(512)），单位是字符。
+const (
+	notificationTitleMaxChars = 255
+	notificationLinkMaxChars  = 512
+)
+
+// truncateNotificationField 按字符截断到列宽。不能按字节切：VARCHAR(n) 的 n 是字符数，
+// 按字节算会把中文标题提前截短到约 n/3 个字；更糟的是可能把一个多字节字符切成两半，
+// Postgres 会以 invalid byte sequence for encoding "UTF8" 拒绝整条 INSERT。
+func truncateNotificationField(s string, maxChars int) string {
+	if len(s) <= maxChars || utf8.RuneCountInString(s) <= maxChars {
+		return s
+	}
+	return string([]rune(s)[:maxChars])
+}
+
 // Create inserts a new notification. It is best-effort safe — caller may ignore the error.
 func (s *NotificationService) Create(ctx context.Context, input CreateUserNotificationInput) (*UserNotification, error) {
 	if input.UserID <= 0 {
@@ -83,14 +100,10 @@ func (s *NotificationService) Create(ctx context.Context, input CreateUserNotifi
 	if category == "" || title == "" {
 		return nil, infraerrors.BadRequest("NOTIFICATION_INVALID", "category and title are required")
 	}
-	if len(title) > 255 {
-		title = title[:255]
-	}
+	title = truncateNotificationField(title, notificationTitleMaxChars)
 	body := strings.TrimSpace(input.Body)
 	link := strings.TrimSpace(input.Link)
-	if len(link) > 512 {
-		link = link[:512]
-	}
+	link = truncateNotificationField(link, notificationLinkMaxChars)
 
 	var metadataBytes []byte
 	if len(input.Metadata) > 0 {
