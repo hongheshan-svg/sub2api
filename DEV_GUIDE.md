@@ -360,7 +360,7 @@ git add backend/cmd/server/VERSION
 **同步上游时的典型冲突集**（均为 fork 附加功能 vs upstream 新增的"两边都加行"机械冲突，保留双方即可）：
 
 - `backend/internal/handler/handler.go` / `wire.go`：保留 fork 的 handler（如 `Invoice`）**＋** upstream 新增的（如 `Compliance`）
-- `backend/cmd/server/wire_gen.go`：是纯生成产物（#99 起发票的依赖都走注册的 provider），冲突时不用手工合，先解决 `wire.go` / 各层 provider set 的冲突，再重新生成：`cd backend && go run github.com/google/wire/cmd/wire@v0.7.0 gen ./cmd/server`，然后 `go build ./...` 验证。**`go generate ./cmd/server` 和 `make generate` 目前跑不通**：`go.sum` 里没有 wire CLI 依赖的校验和，会报 `missing go.sum entry for module providing package github.com/google/subcommands`，所以要用上面带版本号的写法
+- `backend/cmd/server/wire_gen.go`：是纯生成产物（#99 起发票的依赖都走注册的 provider），冲突时不用手工合，先解决 `wire.go` / 各层 provider set 的冲突，再重新生成：`cd backend && go generate ./cmd/server`（或 `make generate`，连 ent 一起），然后 `go build ./...` 验证。`main.go` 的 `go:generate` 指令固定了 `wire@v0.7.0`（fork；与 `go.mod` 里的 wire 版本一致，升级 wire 时一起改），不带版本号时会因 `go.sum` 缺 wire CLI 自身依赖的校验和报 `missing go.sum entry for module providing package github.com/google/subcommands`——同步上游时这一行如果冲突，保留带版本号的写法
 - 前端若两边对同一处做了等价重构（如 `bedrock_cc_compat` 改顶层 bool），取 fork 版
 
 **相关标签坑**：fork 自己的 `vX.Y.Z` release tag 可能和 upstream 的同名标签撞名（指向不同提交）。`git fetch upstream --tags` 会提示 `would clobber existing tag`，这是预期现象，**不要用 `--force` 覆盖 fork 自己的发布标签**。
@@ -428,8 +428,11 @@ go run ./cmd/server/
 # 生成 Ent 代码
 go generate ./ent
 
-# 生成 Wire 代码（go generate ./cmd/server 会因 go.sum 缺 wire CLI 的校验和失败，用带版本号的写法）
-go run github.com/google/wire/cmd/wire@v0.7.0 gen ./cmd/server
+# 生成 Wire 代码（改了 provider set 之后）
+go generate ./cmd/server
+
+# 两个一起
+make generate
 
 # 运行测试
 go test -tags=unit ./...
