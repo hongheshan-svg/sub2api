@@ -191,6 +191,13 @@ func requireStartsWithPing(t *testing.T, body string) {
 	require.True(t, strings.HasPrefix(body, upstreamWaitPingFrame), "上游响应前应先发 ping，got: %q", body)
 }
 
+// countStreamErrorFrames 数流内 error 帧。帧有两个出处、两种写法：handler 层的错误经
+// upstreamWaitPingWriter 转成 "event: error"；service 层 writeGatewayErrorResponse 发现 SSE
+// 已经开始时走 gin 的 SSEvent，写成 "event:error"（冒号后没有空格，SSE 规范里两者等价）。
+func countStreamErrorFrames(body string) int {
+	return strings.Count(body, "event: error\n") + strings.Count(body, "event:error\n")
+}
+
 func TestMessages_UpstreamWaitPing_SlowUpstreamStreamsAfterPings(t *testing.T) {
 	rec, upstream := serveUpstreamWaitPingMessages(t, map[int64]upstreamWaitPingResponse{
 		9611: {delay: 1300 * time.Millisecond, status: http.StatusOK, body: upstreamWaitPingTestSSE},
@@ -202,7 +209,7 @@ func TestMessages_UpstreamWaitPing_SlowUpstreamStreamsAfterPings(t *testing.T) {
 	requireStartsWithPing(t, body)
 	require.Contains(t, body, "event: message_start\n")
 	require.True(t, strings.HasSuffix(body, "event: message_stop\n"+`data: {"type":"message_stop"}`+"\n\n"), "got: %q", body)
-	require.NotContains(t, body, "event: error")
+	require.Zero(t, countStreamErrorFrames(body), "got: %q", body)
 }
 
 // 首个账号在 ping 之后才返回可换号的错误：ping 不算已写出响应，仍换到下一个账号。
@@ -219,7 +226,7 @@ func TestMessages_UpstreamWaitPing_FailoverAfterPings(t *testing.T) {
 	body := rec.Body.String()
 	requireStartsWithPing(t, body)
 	require.Contains(t, body, "event: message_start\n")
-	require.NotContains(t, body, "event: error")
+	require.Zero(t, countStreamErrorFrames(body), "got: %q", body)
 }
 
 // ping 之后上游返回不可换号的错误：状态码已是 200，错误转成流内 error 事件，且只发一帧。
@@ -231,7 +238,7 @@ func TestMessages_UpstreamWaitPing_UpstreamErrorAfterPingsBecomesErrorEvent(t *t
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
 	requireStartsWithPing(t, body)
-	require.Equal(t, 1, strings.Count(body, "event: error\n"), "got: %q", body)
+	require.Equal(t, 1, countStreamErrorFrames(body), "got: %q", body)
 	require.Contains(t, body, `"type":"invalid_request_error"`)
 	require.Contains(t, body, "prompt is too long")
 }
@@ -250,5 +257,5 @@ func TestMessages_UpstreamWaitPing_StreamBrokenBeforeFirstEventFailsOver(t *test
 	body := rec.Body.String()
 	requireStartsWithPing(t, body)
 	require.Contains(t, body, "event: message_start\n")
-	require.NotContains(t, body, "event: error")
+	require.Zero(t, countStreamErrorFrames(body), "got: %q", body)
 }

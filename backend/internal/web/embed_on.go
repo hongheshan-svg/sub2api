@@ -222,7 +222,7 @@ func (s *FrontendServer) serveIndexHTMLForPath(c *gin.Context, routePath string)
 
 	if cached := s.cache.Get(cacheKey); cached != nil {
 		content := replaceNoncePlaceholder(cached.Content, nonce)
-		c.Header("Cache-Control", "no-store, must-revalidate")
+		applyHTMLNoCacheHeaders(c.Writer.Header())
 		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
 		c.Abort()
 		return
@@ -233,12 +233,16 @@ func (s *FrontendServer) serveIndexHTMLForPath(c *gin.Context, routePath string)
 
 	settings, err := s.settings.GetPublicSettingsForInjection(ctx)
 	if err != nil {
+		// Fallback: serve without injection
+		applyHTMLNoCacheHeaders(c.Writer.Header())
 		c.Data(http.StatusOK, "text/html; charset=utf-8", s.baseHTML)
 		c.Abort()
 		return
 	}
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
+		// Fallback: serve without injection
+		applyHTMLNoCacheHeaders(c.Writer.Header())
 		c.Data(http.StatusOK, "text/html; charset=utf-8", s.baseHTML)
 		c.Abort()
 		return
@@ -248,7 +252,7 @@ func (s *FrontendServer) serveIndexHTMLForPath(c *gin.Context, routePath string)
 	s.cache.Set(cacheKey, rendered, settingsJSON)
 
 	content := replaceNoncePlaceholder(rendered, nonce)
-	c.Header("Cache-Control", "no-store, must-revalidate")
+	applyHTMLNoCacheHeaders(c.Writer.Header())
 	c.Data(http.StatusOK, "text/html; charset=utf-8", content)
 	c.Abort()
 }
