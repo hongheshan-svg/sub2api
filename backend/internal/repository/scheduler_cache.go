@@ -658,8 +658,11 @@ func (c *schedulerCache) dropSnapshotEntry(bucketKey string) {
 // schedulerSnapshotTagKeys 返回 GetSnapshot 一次读取的键：ready、active、全局修订号、bucket 平台的修订号，
 // mixed 模式再加 antigravity 平台的修订号。按平台判定失效依赖 bucket 成员只取自 bucket 平台
 // （mixed 模式另含开启混合调度的 antigravity 账号）；账号平台发生变化时，写入方另行写入全局修订号。
+//
+// fork：anthropic 的 mixed bucket 还会混入开启混合调度的 kiro 账号（service.mixedSchedulingPlatforms），
+// 所以再加 kiro 平台的修订号；kiro 不混入 gemini。
 func schedulerSnapshotTagKeys(bucket service.SchedulerBucket) []string {
-	keys := make([]string, 0, 5)
+	keys := make([]string, 0, 6)
 	keys = append(keys,
 		schedulerBucketKey(schedulerReadyPrefix, bucket),
 		schedulerBucketKey(schedulerActivePrefix, bucket),
@@ -668,6 +671,9 @@ func schedulerSnapshotTagKeys(bucket service.SchedulerBucket) []string {
 	)
 	if bucket.Mode == service.SchedulerModeMixed && bucket.Platform != service.PlatformAntigravity {
 		keys = append(keys, schedulerAccountMetaRevisionKeyForPlatform(service.PlatformAntigravity))
+	}
+	if bucket.Mode == service.SchedulerModeMixed && bucket.Platform == service.PlatformAnthropic {
+		keys = append(keys, schedulerAccountMetaRevisionKeyForPlatform(service.PlatformKiro))
 	}
 	return keys
 }
