@@ -647,6 +647,7 @@ export interface AdminGroup extends Group {
   // 管理端的 name / description 始终是原字段，各语言译文另放在 i18n 里
   i18n?: GroupI18n
   force_openai_fast: boolean
+  force_openai_ultrafast: boolean
   free_openai_fast: boolean
   model_pricing: import('@/api/admin/channels').ChannelModelPricing[]
   // 分组利润控制（openai/anthropic/gemini/grok/antigravity 分组可启用；margin/buffer 为小数存储）。
@@ -822,6 +823,7 @@ export interface CreateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   force_openai_fast?: boolean
+  force_openai_ultrafast?: boolean
   free_openai_fast?: boolean
   model_pricing?: import('@/api/admin/channels').ChannelModelPricing[]
   allow_image_generation?: boolean
@@ -890,6 +892,7 @@ export interface UpdateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   force_openai_fast?: boolean
+  force_openai_ultrafast?: boolean
   free_openai_fast?: boolean
   model_pricing?: import('@/api/admin/channels').ChannelModelPricing[]
   allow_image_generation?: boolean
