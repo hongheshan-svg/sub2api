@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"os/exec"
+	"regexp"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	gocache "github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,12 +78,21 @@ func newInflightEstimateGateway(t *testing.T, channelService *ChannelService) *G
 	cfg := &config.Config{}
 	cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, DefaultMaxTokens: 1000, MaxInputTokens: 200000, MaxOutputTokens: 128000}
 	billing := NewBillingService(cfg, nil)
-	return &GatewayService{
-		cfg:            cfg,
-		billingService: billing,
-		resolver:       NewModelPricingResolver(channelService, billing),
-		channelService: channelService,
+	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
+	svc := &GatewayService{
+		cfg:                cfg,
+		billingService:     billing,
+		resolver:           NewModelPricingResolver(channelService, billing),
+		channelService:     channelService,
+		userGroupRateCache: gocache.New(userGroupRateTTL, 0),
 	}
+	// Match NewGatewayService's shared resolver. Leaving it nil creates a new
+	// cache and janitor per estimate; their asynchronous finalizers distort heap
+	// measurements. This fixture needs no background expiration worker.
+	svc.userGroupRateResolver = newUserGroupRateResolver(
+		nil, svc.userGroupRateCache, userGroupRateTTL, &svc.userGroupRateSF, "service.gateway",
+	)
+	return svc
 }
 
 func TestInflightEstimate_ChannelAliasUsesMappedModel(t *testing.T) {
@@ -434,6 +447,21 @@ func attachInflightSnapshot(svc *GatewayService, snap *inflightSnapshotCacheStub
 
 // 已定价模型永不查账号映射；随机未定价模型名不直接查库、不产生按模型名的缓存（内存有界）。
 func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
+	// HeapAlloc is process-wide: unrelated background work in other service
+	// tests must not be counted as memory retained by this estimate path.
+	const childEnv = "SUB2API_BILLING_HEAP_TEST_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "isolated heap test failed:\n%s", output)
+		return
+	}
+
 	groupID := int64(40)
 	svc := newInflightEstimateGateway(t, nil)
 	snap := &inflightSnapshotCacheStub{byBucket: map[string][]Account{inflightBucketKey(groupID, PlatformAnthropic): {
@@ -449,37 +477,23 @@ func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
 	}
 	require.Zero(t, snap.reads.Load(), "priced models must never trigger account-mapping lookup")
 
-	// A process-wide HeapAlloc sample is noisy even with no other goroutines
-	// running: the same loop measures 0.3–5.8 MiB in isolation and once hit
-	// 8.07 MiB in CI. Every attempt uses fresh model names, so unbounded
-	// per-model growth exceeds the bound on each one; a single attempt under the
-	// bound is enough.
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
 	const n = 20000
-	const growthBound = int64(8 << 20)
-	var growth int64
-	attempts := 0
-	for attempts < 3 {
-		attempts++
-		var before, after runtime.MemStats
-		runtime.GC()
-		runtime.ReadMemStats(&before)
-		for i := 0; i < n; i++ {
-			_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: fmt.Sprintf("rand-%d-%d-%d", attempts, i, time.Now().UnixNano()), BodyBytes: 4000, MaxTokens: 1000})
-			require.False(t, priced)
-		}
-		runtime.GC()
-		runtime.ReadMemStats(&after)
-		delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-		if attempts == 1 || delta < growth {
-			growth = delta
-		}
-		if growth < growthBound {
-			break
-		}
+	for i := 0; i < n; i++ {
+		_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: fmt.Sprintf("rand-%d-%d", i, time.Now().UnixNano()), BodyBytes: 4000, MaxTokens: 1000})
+		require.False(t, priced)
 	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	// Keep the measured service and request reachable through the final GC so
+	// a per-model cache regression cannot disappear with a dead test fixture.
+	runtime.KeepAlive(svc)
+	runtime.KeepAlive(apiKey)
 	require.Zero(t, repo.dbCalls.Load(), "no direct DB query on the request path")
-	require.Equal(t, int64(attempts*n), snap.reads.Load(), "unpriced lookups read the scheduler snapshot only")
-	require.Less(t, growth, growthBound, "no per-model cache growth")
+	require.Equal(t, int64(n), snap.reads.Load(), "unpriced lookups read the scheduler snapshot only")
+	require.Less(t, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(8<<20), "no per-model cache growth")
 }
 
 // 无分组 API Key：使用调度器的未分组账号池，估算与计费回退的账号映射模型同口径。
