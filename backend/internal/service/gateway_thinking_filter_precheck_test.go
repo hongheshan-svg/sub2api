@@ -2,9 +2,14 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/stretchr/testify/require"
@@ -75,6 +80,24 @@ func signedThinkingHistoryBody() []byte {
 }
 
 func TestFilterThinkingBlocksSignedHistorySkipsDecode(t *testing.T) {
+	// fork：AllocsPerRun 统计的是整个进程的分配。同包其他测试留下的后台 goroutine
+	// （每个带仓储的 ContentModerationService 起约 33 个 worker，每秒唤醒、从不退出）
+	// 在测量窗口里醒来分配，会被算到这里——CI 实测出现过 31 次/轮（阈值 16）。
+	// 与上游处理 TestOpenAIResponsesOrphanPrecheckLargeEscapedContent 的做法一致，
+	// 只在子进程里单独测这一个用例。
+	const childEnv = "SUB2API_THINKING_FILTER_ALLOC_TEST_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "isolated allocation test failed:\n%s", output)
+		return
+	}
+
 	body := signedThinkingHistoryBody()
 	allocs := testing.AllocsPerRun(5, func() {
 		got := filterThinkingBlocksInternal(body, false)
