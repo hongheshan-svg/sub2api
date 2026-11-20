@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -93,6 +94,36 @@ func TestEffortFromThinkingTypeAndBudget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.wantVal, effortFromThinkingTypeAndBudget(tt.typ, tt.budget))
+		})
+	}
+}
+
+func TestCanonicalRequestedReasoningEffortFromConfigurationUpdates(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"current turn", `[{"role":"user","content":"hi"},{"type":"configuration_update","reasoning":{"effort":"high"}}]`, "high"},
+		{"history and partial updates", `[{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"configuration_update","reasoning":{"effort":"MAX"}},{"type":"configuration_update","text":{"verbosity":"low"}},{"role":"user","content":"next"}]`, "max"},
+		{"thinking off", `[{"type":"configuration_update","reasoning":{"effort":"none"}}]`, "none"},
+		{"escaped type", `[{"type":"configuration\u005fupdate","reasoning":{"effort":"low"}}]`, "low"},
+		{"no effort selected", `[{"type":"configuration_update","text":{"verbosity":"low"}}]`, "medium"},
+		{"non-string effort", `[{"type":"configuration_update","reasoning":{"effort":123}}]`, "medium"},
+		{"nested in message", `[{"role":"user","content":[{"type":"configuration_update","reasoning":{"effort":"low"}}]}]`, "medium"},
+		{"non-array input", `{"item":{"type":"configuration_update","reasoning":{"effort":"low"}}}`, "medium"},
+		{"unknown explicit effort", `[{"type":"configuration_update","reasoning":{"effort":"unknown"}}]`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-6.1-sol","reasoning":{"effort":"medium"},"input":` + tc.input + `}`)
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(body, &parsed))
+			for _, got := range []*string{CanonicalRequestedReasoningEffort(body), CanonicalRequestedReasoningEffortFromReqBody(parsed)} {
+				if tc.want == "" {
+					require.Nil(t, got)
+				} else {
+					require.NotNil(t, got)
+					require.Equal(t, tc.want, *got)
+				}
+			}
 		})
 	}
 }

@@ -814,14 +814,7 @@ func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 	}
 
 	if claude.IsSonnet55(modelID) {
-		switch thinkingType {
-		case "enabled":
-			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
-			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
-		case "disabled":
-			body, _ = sjson.SetBytes(body, "thinking.type", "between_tools")
-		}
-		return body
+		return adaptThinkingToClaude55(body, modelID)
 	}
 
 	if claude.IsOpus55(modelID) {
